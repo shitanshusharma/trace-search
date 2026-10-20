@@ -30,8 +30,8 @@ except ImportError:
     HAVE_JSONSCHEMA = False
 
 from trace_search.ingest.ffmpeg_check import (  # noqa: E402
-    OPENCV_FFMPEG_DISTRIBUTIONS,
     inspect_opencv_libavcodec,
+    is_opencv_ffmpeg_distribution,
 )
 
 # Banned license patterns (case-insensitive, checked against each SPDX component)
@@ -104,11 +104,14 @@ ALLOWED_SPDX = {
 # Intentionally absent pending an owner decision: OpenSSL,
 # LicenseRef-Intel-Simplified-Software-License.
 
-# Exact pip-licenses free-text (no trove classifier) -> SPDX id.
-# Lookup is the whole string, including case. Unknown strings are not rewritten.
+# (normalized package name, exact pip-licenses string) -> SPDX id.
+# The license text is exact, including case, and only that package is rewritten.
 PIP_LICENSES_TO_SPDX = {
-    '2-clause BSD License': 'BSD-2-Clause',
+    ('imagehash', '2-clause BSD License'): 'BSD-2-Clause',
 }
+
+# Parse failures that do not match a banned pattern. Still fail closed.
+_UNPARSEABLE = "unparseable license"
 
 # Also allow common non-SPDX forms
 ALLOWED_NON_SPDX = {
@@ -382,12 +385,14 @@ def _eval_spdx(node, component_name: str) -> tuple[bool, bool, str]:
         return False, False, ""
 
     if kind == "OR":
+        # PRD §3: a banned term fails the row even inside OR.
+        # OR passes only when every term is allowed (GCC exception included).
         results = [_eval_spdx(child, component_name) for child in node[1]]
-        if any(allowed for _banned, allowed, _reason in results):
-            return False, True, ""
         for banned, _allowed, reason in results:
             if banned:
                 return True, False, reason
+        if all(allowed for _banned, allowed, _reason in results):
+            return False, True, ""
         return False, False, ""
 
     if kind == "WITH":
@@ -407,16 +412,19 @@ def _license_decision(license_str: str, component_name: str = '') -> tuple[bool,
     """
     Classify one license string.
 
-    Returns (banned, allowed, reason). Parse failures are banned (fail closed).
-    ';' is the pip-licenses conjunction: every part must be allowed.
-    SPDX AND requires every term. SPDX OR requires one allowed term.
-    WITH is allowed only for the named GCC runtime exception.
+    Returns (banned, allowed, reason). Unparseable text is not banned; it still
+    fails closed. ';' is the pip-licenses conjunction: every part must be allowed.
+    AND and OR both require every term to be allowed. A banned term fails either
+    operator. WITH is allowed only for the named GCC runtime exception.
     """
     license_str = license_str.strip()
     if not license_str:
         return True, False, "empty license"
 
-    license_str = PIP_LICENSES_TO_SPDX.get(license_str, license_str)
+    license_str = PIP_LICENSES_TO_SPDX.get(
+        (normalize_package_name(component_name), license_str),
+        license_str,
+    )
 
     if is_gcc_runtime_exception(license_str, component_name):
         return False, True, ""
@@ -427,12 +435,15 @@ def _license_decision(license_str: str, component_name: str = '') -> tuple[bool,
     if ";" in license_str:
         parts = [part.strip() for part in license_str.split(";")]
         decisions = [_license_decision(part, component_name) for part in parts]
-        for banned, _allowed, reason in decisions:
+        pending = ""
+        for banned, allowed, reason in decisions:
             if banned:
                 return True, False, reason
+            if not allowed and reason and not pending:
+                pending = reason
         if all(allowed for _banned, allowed, _reason in decisions):
             return False, True, ""
-        return False, False, ""
+        return False, False, pending
 
     try:
         node = _parse_spdx(license_str)
@@ -440,13 +451,28 @@ def _license_decision(license_str: str, component_name: str = '') -> tuple[bool,
         banned, reason = _id_matches_banned(license_str)
         if banned:
             return True, False, reason
-        return True, False, "malformed SPDX expression"
+        return False, False, _UNPARSEABLE
 
     return _eval_spdx(node, component_name)
 
 
+def _license_failure(license_str: str, component_name: str = '') -> str | None:
+    """Phrase for a failing license, or None when it is allowed."""
+    banned, allowed, reason = _license_decision(license_str, component_name)
+    if banned:
+        return f"banned license '{license_str}' ({reason})"
+    if not allowed:
+        if reason == _UNPARSEABLE:
+            return f"unparseable license '{license_str}'"
+        return (
+            f"license '{license_str}' not in allowed list "
+            "(must be exact SPDX or approved non-SPDX)"
+        )
+    return None
+
+
 def is_license_banned(license_str: str, component_name: str = '') -> tuple[bool, str]:
-    """Return whether the license is banned, and why. Malformed expressions are banned."""
+    """Return whether the license matched a banned pattern, and why."""
     banned, _allowed, reason = _license_decision(license_str, component_name)
     if banned:
         return True, reason
@@ -468,14 +494,9 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
         name = entry.get('name', 'unknown')
         entry_type = entry.get('type', '')
 
-        is_banned, reason = is_license_banned(license_str, name)
-        if is_banned:
-            violations.append(f"{name}: banned license '{license_str}' ({reason})")
-        elif not is_license_allowed(license_str, name):
-            violations.append(
-                f"{name}: license '{license_str}' not in allowed list "
-                "(must be exact SPDX or approved non-SPDX)"
-            )
+        failure = _license_failure(license_str, name)
+        if failure:
+            violations.append(f"{name}: {failure}")
 
         # generator_license uses the same allowlist / SPDX parser as packages.
         # Applies to every row that carries a generator: synthetic_clip,
@@ -489,13 +510,19 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
                     f"{name}: {entry_type} missing required generator_license field"
                 )
             else:
-                gen_is_banned, gen_reason = is_license_banned(generator_license)
-                if gen_is_banned:
+                gen_banned, _gen_allowed, gen_reason = _license_decision(
+                    generator_license
+                )
+                if gen_banned:
                     violations.append(
                         f"{name}: generator_license '{generator_license}' is banned "
                         f"({gen_reason})"
                     )
-                elif not is_license_allowed(generator_license):
+                elif gen_reason == _UNPARSEABLE:
+                    violations.append(
+                        f"{name}: generator_license '{generator_license}' is unparseable"
+                    )
+                elif not _gen_allowed:
                     violations.append(
                         f"{name}: generator_license '{generator_license}' not in allowed list"
                     )
@@ -662,15 +689,9 @@ def check_installed_packages(
         if norm_name not in manifest_packages:
             missing.append(f"{name} ({version}): installed but not in manifest")
 
-        is_banned, reason = is_license_banned(license_str, name)
-        if is_banned:
-            violations.append(
-                f"{name} ({version}): banned license '{license_str}' ({reason})"
-            )
-        elif not is_license_allowed(license_str, name):
-            violations.append(
-                f"{name} ({version}): license '{license_str}' not in allowed list"
-            )
+        failure = _license_failure(license_str, name)
+        if failure:
+            violations.append(f"{name} ({version}): {failure}")
 
     return violations, missing
 
@@ -679,7 +700,8 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
     """
     Check FFmpeg via the opencv wheel's bundled libavcodec.
 
-    Distribution names come from ffmpeg_check.OPENCV_FFMPEG_DISTRIBUTIONS.
+    Wheel names are matched by ffmpeg_check.is_opencv_ffmpeg_distribution,
+    which is the only normalisation of OPENCV_FFMPEG_DISTRIBUTIONS.
     System ffmpeg is not a project dependency. When none of those wheels
     is declared, the status is NOT_A_DEPENDENCY.
 
@@ -691,7 +713,7 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
         - 'MISSING': libavcodec could not be loaded (fail-closed)
     """
     opencv_declared = any(
-        e.get('name', '').lower().replace('_', '-') in OPENCV_FFMPEG_DISTRIBUTIONS
+        is_opencv_ffmpeg_distribution(e.get('name', ''))
         for e in manifest.get('entries', [])
     )
 

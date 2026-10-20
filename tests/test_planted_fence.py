@@ -150,9 +150,33 @@ def test_mit_and_gpl_fails():
     assert "banned" in stdout.lower()
 
 
-def test_mit_or_gpl_passes():
+def test_mit_or_gpl_fails():
     code, stdout, _ = invoke_main(
         make_manifest([library_entry(license_id="MIT OR GPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "banned license 'MIT OR GPL-3.0-only'" in stdout
+
+
+def test_agpl_or_mit_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="AGPL-3.0-only OR MIT")])
+    )
+    assert code == 1, stdout
+    assert "banned license 'AGPL-3.0-only OR MIT'" in stdout
+
+
+def test_cc_by_nc_or_mit_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="CC-BY-NC-4.0 OR MIT")])
+    )
+    assert code == 1, stdout
+    assert "banned license 'CC-BY-NC-4.0 OR MIT'" in stdout
+
+
+def test_mit_or_apache_passes():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="MIT OR Apache-2.0")])
     )
     assert code == 0, stdout
     assert "PASSED" in stdout
@@ -171,17 +195,18 @@ def test_malformed_spdx_expression_fails():
         make_manifest([library_entry(license_id="(MIT OR GPL-3.0-only")])
     )
     assert code == 1, stdout
-    assert "malformed SPDX expression" in stdout
+    assert "unparseable license '(MIT OR GPL-3.0-only'" in stdout
+    assert "banned license '(MIT OR GPL-3.0-only'" not in stdout
 
 
-def test_spdx_parenthesized_or_and_passes():
+def test_spdx_parenthesized_or_with_gpl_fails():
     code, stdout, _ = invoke_main(
         make_manifest([
             library_entry(license_id="(MIT OR GPL-3.0-only) AND Apache-2.0")
         ])
     )
-    assert code == 0, stdout
-    assert "PASSED" in stdout
+    assert code == 1, stdout
+    assert "banned license '(MIT OR GPL-3.0-only) AND Apache-2.0'" in stdout
 
 
 def test_spdx_parentheses_scope_the_and():
@@ -259,8 +284,8 @@ def test_generator_license_free_text_fails():
         make_manifest([_synthetic_fields(generator_license="custom blender terms")])
     )
     assert code == 1, stdout
-    assert "generator_license 'custom blender terms' is banned" in stdout
-    assert "malformed SPDX expression" in stdout
+    assert "generator_license 'custom blender terms' is unparseable" in stdout
+    assert "is banned" not in stdout
 
 
 def test_generator_license_empty_fails():
@@ -297,8 +322,8 @@ def test_generator_row_free_text_license_fails():
         make_manifest([_generator_row(generator_license="see the internal wiki")])
     )
     assert code == 1, stdout
-    assert "generator_license 'see the internal wiki' is banned" in stdout
-    assert "malformed SPDX expression" in stdout
+    assert "generator_license 'see the internal wiki' is unparseable" in stdout
+    assert "is banned" not in stdout
 
 
 def test_banned_generator_name_fails():
@@ -515,9 +540,14 @@ def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
 def test_opencv_contrib_wheel_without_clean_libavcodec_fails(tmp_path):
     """A contrib wheel is an FFmpeg distribution, so a missing libavcodec fails."""
     import scripts.check_licenses as cl
+    from trace_search.ingest.ffmpeg_check import (
+        OPENCV_FFMPEG_DISTRIBUTIONS,
+        is_opencv_ffmpeg_distribution,
+    )
 
-    assert "opencv-contrib-python" in cl.OPENCV_FFMPEG_DISTRIBUTIONS
-    assert "opencv-contrib-python-headless" in cl.OPENCV_FFMPEG_DISTRIBUTIONS
+    assert cl.is_opencv_ffmpeg_distribution is is_opencv_ffmpeg_distribution
+    assert "opencv-contrib-python" in OPENCV_FFMPEG_DISTRIBUTIONS
+    assert "opencv-contrib-python-headless" in OPENCV_FFMPEG_DISTRIBUTIONS
     code, stdout, _ = invoke_main(
         make_manifest([library_entry(name="opencv-contrib-python")]),
         tmp_dir=tmp_path,
@@ -698,6 +728,31 @@ def test_imagehash_two_clause_bsd_license_passes(tmp_path, monkeypatch):
     )
     assert code == 0, stdout
     assert "PASSED" in stdout
+
+
+def test_two_clause_bsd_text_rejected_for_other_packages(tmp_path, monkeypatch):
+    """The ImageHash rewrite does not apply to any other package name."""
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "Pygments",
+            "version": "2.21.0",
+            "license": "2-clause BSD License",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="Pygments", version="2.21.0", license_id="BSD-2-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "2-clause BSD License" in stdout
+    assert "PASSED" not in stdout
 
 
 def test_unknown_pip_licenses_free_text_stays_rejected(tmp_path, monkeypatch):
