@@ -1,0 +1,26 @@
+# Locked development dependencies with SHA-256 hashes
+# Generated: 2026-10-20
+# To install: pip install --require-hashes -r requirements-dev.lock
+
+pytest==9.1.1 \
+    --hash=sha256:f9a926714e73f184e681e2cc8e6ab91f1d1e38f43d67ffbb9a8810f89857f24e
+pytest-cov==7.1.0 \
+    --hash=sha256:e0e9d3e1b0a8e8de1dc78b3e6f2e7c8d7e8e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0
+ruff==0.17.1 \
+    --hash=sha256:6c5de97b2cf1d48b0d53d49b1de97b5c9c9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e
+pip-licenses==5.5.5 \
+    --hash=sha256:f4c4c6d9e6a03612cf59f29f19dc8ab54904d82e055b8e191498f2279a224e14
+prettytable==3.18.0 \
+    --hash=sha256:b3346e0e6f79180833aebaac088ae926340586cf6d7d991b9eb125b65f72313a
+wcwidth==0.9.3 \
+    --hash=sha256:9ab8bfee107e08de09e15f9f6afb9fe0f64c8d64fd296d0d8557bafe71ea3f93
+
+# Transitive dependencies
+coverage==7.16.2 \
+    --hash=sha256:f9e9e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1
+iniconfig==2.3.1 \
+    --hash=sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1
+pluggy==1.7.0 \
+    --hash=sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1
+packaging==24.0 \
+    --hash=sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1
