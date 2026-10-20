@@ -43,8 +43,8 @@ def _synthetic_fields(**overrides):
         "phash": [f"{i:016x}" for i in range(10)],
         "use": "SMOKE_ONLY",
         "fixture_id": "FX-SMOKE-SYN-001",
-        "generator": "blender",
-        "generator_version": "3.6.0",
+        "generator": "trace-procedural",
+        "generator_version": "1.0.0",
         "generator_license": "Apache-2.0",
         "seed": "12345",
     }
@@ -62,6 +62,10 @@ def _code_fixture(**overrides):
         "sha256": "a" * 64,
         "use": "CODE_TEST",
         "fixture_id": "FX-CODE-001",
+        "generator": "trace-procedural",
+        "generator_version": "1.0.0",
+        "generator_license": "Apache-2.0",
+        "seed": "1",
     }
     base.update(overrides)
     return base
@@ -458,3 +462,122 @@ def test_semicolon_joined_gpl_on_installed_path(tmp_path, monkeypatch):
     assert code == 1, stdout
     assert "banned license 'Apache-2.0; GPL-2.0'" in stdout
     assert "GPL-2.0" in stdout
+
+
+def _generator_row(**overrides):
+    base = {
+        "name": "trace-procedural",
+        "version": "1.0.0",
+        "type": "generator",
+        "license": "Apache-2.0",
+        "source_url": "https://example.com/trace-procedural",
+        "sha256": "b" * 64,
+        "generator_license": "Apache-2.0",
+        "seed": "1",
+    }
+    base.update(overrides)
+    return base
+
+
+def _assert_missing_required(entry, field):
+    row = dict(entry)
+    row.pop(field)
+    errors = _schema_errors(make_manifest([row]))
+    needle = f"'{field}' is a required property"
+    assert any(needle in err for err in errors), errors
+
+
+CLIP_REQUIRED = [
+    "license_version",
+    "date_checked_ist",
+    "phash",
+    "use",
+    "fixture_id",
+]
+SYNTHETIC_REQUIRED = [
+    "license_version",
+    "date_checked_ist",
+    "phash",
+    "use",
+    "fixture_id",
+    "generator",
+    "generator_version",
+    "generator_license",
+    "seed",
+]
+CODE_FIXTURE_REQUIRED = [
+    "use",
+    "fixture_id",
+    "generator",
+    "generator_version",
+    "generator_license",
+    "seed",
+]
+GENERATOR_REQUIRED = ["generator_license", "seed"]
+
+
+@pytest.mark.parametrize("field", CLIP_REQUIRED)
+def test_clip_missing_required_field(field):
+    _assert_missing_required(_clip_fields(), field)
+
+
+@pytest.mark.parametrize("field", SYNTHETIC_REQUIRED)
+def test_synthetic_clip_missing_required_field(field):
+    _assert_missing_required(_synthetic_fields(), field)
+
+
+@pytest.mark.parametrize("field", CODE_FIXTURE_REQUIRED)
+def test_code_fixture_missing_required_field(field):
+    _assert_missing_required(_code_fixture(), field)
+
+
+@pytest.mark.parametrize("field", GENERATOR_REQUIRED)
+def test_generator_missing_required_field(field):
+    _assert_missing_required(_generator_row(), field)
+
+
+def test_pip_licenses_not_on_path_fails(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(cl.shutil, "which", lambda _name: None)
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="pytest")]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "Failed to scan installed packages: pip-licenses is not on PATH" in stdout
+    assert "PASSED" not in stdout
+
+
+def test_empty_installed_scan_fails(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(cl, "get_installed_packages", lambda **kw: [])
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="pytest")]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "Package scan failed: installed package list is empty" in stdout
+    assert "PASSED" not in stdout
+
+
+def test_requirements_txt_missing_numpy_fails(tmp_path):
+    req = tmp_path / "requirements.txt"
+    req.write_text("numpy==1.26.4\n", encoding="utf-8")
+    dev = tmp_path / "requirements-dev.txt"
+    dev.write_text("pytest==9.1.1\n", encoding="utf-8")
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="pytest")]),
+        extra_args=[
+            "--requirements",
+            str(req),
+            "--requirements",
+            str(dev),
+        ],
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "numpy: required by requirements.txt but not in manifest" in stdout

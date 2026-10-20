@@ -112,7 +112,7 @@
               "required": ["type"]
             },
             "then": {
-              "required": ["license_version", "date_checked_ist", "phash", "use"],
+              "required": ["license_version", "date_checked_ist", "phash", "use", "fixture_id"],
               "properties": {
                 "use": { "const": "SMOKE_ONLY" },
                 "fixture_id": { "pattern": "^FX-SMOKE-[0-9]+$" }
@@ -125,7 +125,17 @@
               "required": ["type"]
             },
             "then": {
-              "required": ["license_version", "date_checked_ist", "phash", "use", "generator_license"],
+              "required": [
+                "license_version",
+                "date_checked_ist",
+                "phash",
+                "use",
+                "fixture_id",
+                "generator",
+                "generator_version",
+                "generator_license",
+                "seed"
+              ],
               "properties": {
                 "use": { "const": "SMOKE_ONLY" },
                 "fixture_id": { "pattern": "^FX-SMOKE-SYN-[0-9]+$" }
@@ -138,10 +148,30 @@
               "required": ["type"]
             },
             "then": {
-              "required": ["use", "fixture_id"],
+              "required": [
+                "use",
+                "fixture_id",
+                "generator",
+                "generator_version",
+                "generator_license",
+                "seed"
+              ],
               "properties": {
                 "use": { "const": "CODE_TEST" },
                 "fixture_id": { "pattern": "^FX-CODE-[0-9]+$" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "generator" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["generator_license", "seed"],
+              "properties": {
+                "generator_license": { "type": "string", "minLength": 1 },
+                "seed": { "type": "string", "minLength": 1 }
               }
             }
           },

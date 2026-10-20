@@ -112,6 +112,7 @@ def test_license_checker_accepts_valid_clip():
             "sha256": "c" * 64,
             "phash": [f"{i:016x}" for i in range(10)],
             "use": "SMOKE_ONLY",
+            "fixture_id": "FX-SMOKE-001",
         }
     ])
     code, stdout, _ = invoke_main(manifest)

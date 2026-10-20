@@ -75,6 +75,11 @@ def invoke_main(manifest, extra_args=None, scan_installed=False, tmp_dir=None):
         argv.append("--no-scan-installed")
     if extra_args:
         argv.extend(extra_args)
+    # Keep tiny manifests off the repo requirements files unless a test opts in.
+    if "--requirements" not in argv:
+        empty_req = tmp_dir / "empty-requirements.txt"
+        empty_req.write_text("# no third-party dependencies\n", encoding="utf-8")
+        argv.extend(["--requirements", str(empty_req)])
 
     stdout = io.StringIO()
     stderr = io.StringIO()

@@ -103,7 +103,7 @@ def test_schema_synthetic_clip_fixture_id():
             "phash": [f"{i:016x}" for i in range(10)],
             "use": "SMOKE_ONLY",
             "fixture_id": "FX-SMOKE-SYN-001",
-            "generator": "blender",
+            "generator": "trace-procedural",
             "generator_version": "3.6.0",
             "generator_license": "Apache-2.0",
             "seed": "12345",

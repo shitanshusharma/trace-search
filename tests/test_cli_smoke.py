@@ -24,6 +24,8 @@ def test_cli_subprocess_smoke(tmp_path):
     }
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    empty_req = tmp_path / "requirements.txt"
+    empty_req.write_text("# no third-party dependencies\n", encoding="utf-8")
 
     result = subprocess.run(
         [
@@ -31,6 +33,8 @@ def test_cli_subprocess_smoke(tmp_path):
             "scripts/check_licenses.py",
             "--manifest",
             str(manifest_path),
+            "--requirements",
+            str(empty_req),
             "--no-scan-installed",
         ],
         capture_output=True,

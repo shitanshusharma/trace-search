@@ -18,6 +18,7 @@ Exit codes:
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -368,30 +369,60 @@ def check_banned_components(manifest: dict) -> list[str]:
     return violations
 
 
+def parse_requirement_name(line: str) -> str | None:
+    """Return a normalized package name from one requirements.txt line."""
+    line = line.split('#', 1)[0].strip()
+    if not line or line.startswith('-'):
+        return None
+    line = line.split(';', 1)[0].strip()
+    line = re.sub(r'\[[^\]]*\]', '', line)
+    name = re.split(r'[<>=!~]', line, maxsplit=1)[0].strip().strip(',')
+    if not name or not re.match(r'^[A-Za-z0-9]', name):
+        return None
+    return normalize_package_name(name)
+
+
 def get_direct_dependencies(requirements_files: list[Path]) -> set[str]:
     """Parse requirements files and return set of direct dependencies."""
     direct_deps = set()
-
     for req_file in requirements_files:
         if not req_file.exists():
             continue
-
-        with req_file.open('r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if line.startswith('-e'):
-                    continue
-                pkg_name = re.split(r'[<>=!]', line)[0].strip()
-                if pkg_name:
-                    direct_deps.add(pkg_name.lower().replace('_', '-'))
-
+        for raw in req_file.read_text(encoding='utf-8').splitlines():
+            name = parse_requirement_name(raw)
+            if name:
+                direct_deps.add(name)
     return direct_deps
+
+
+def check_requirements_in_manifest(
+    manifest: dict,
+    requirements_files: list[Path],
+) -> list[str]:
+    """Fail when a requirements.txt package has no library row in the manifest."""
+    violations = []
+    manifest_libs = {
+        normalize_package_name(entry.get('name', ''))
+        for entry in manifest.get('entries', [])
+        if entry.get('type') == 'library'
+    }
+    for req_file in requirements_files:
+        if not req_file.exists():
+            violations.append(f"Requirements file not found: {req_file}")
+            continue
+        for raw in req_file.read_text(encoding='utf-8').splitlines():
+            name = parse_requirement_name(raw)
+            if name and name not in manifest_libs:
+                violations.append(
+                    f"{name}: required by {req_file.name} but not in manifest"
+                )
+    return violations
 
 
 def get_installed_packages(include_system: bool = False) -> list[dict]:
     """Get list of installed packages with licenses using pip-licenses."""
+    if shutil.which('pip-licenses') is None:
+        raise RuntimeError("pip-licenses is not on PATH")
     try:
         cmd = ['pip-licenses', '--format=json']
         if include_system:
@@ -670,8 +701,9 @@ def main(argv: list[str] | None = None) -> int:
         '--requirements',
         type=Path,
         action='append',
-        help='Requirements file (can be specified multiple times). '
-             'If provided, only check direct dependencies from these files.'
+        help='Requirements file to require in the manifest '
+             '(repeat for more than one). Defaults to requirements.txt '
+             'and requirements-dev.txt.'
     )
     parser.add_argument(
         '--check-ffmpeg',
@@ -723,34 +755,55 @@ def main(argv: list[str] | None = None) -> int:
         print("✓ No banned components found")
     print()
 
+    print("=== Checking declared requirements ===")
+    req_files = args.requirements if args.requirements else [
+        Path('requirements.txt'),
+        Path('requirements-dev.txt'),
+    ]
+    req_violations = check_requirements_in_manifest(manifest, req_files)
+    if req_violations:
+        for violation in req_violations:
+            print(f"ERROR: {violation}")
+        all_violations.extend(req_violations)
+    else:
+        print("✓ Declared requirements are in the manifest")
+    print()
+
     if args.scan_installed:
         print("=== Scanning installed packages ===")
         try:
             installed = get_installed_packages(include_system=args.include_system)
-            print(f"Found {len(installed)} installed packages")
-            print("Checking ALL packages (full closure per AC-01)")
-
-            install_violations, missing = check_installed_packages(
-                installed, manifest
-            )
-
-            if install_violations:
-                print()
-                for violation in install_violations:
-                    print(f"ERROR: {violation}")
-                all_violations.extend(install_violations)
-
-            if missing:
-                print()
-                for miss in missing:
-                    print(f"ERROR: {miss}")
-                all_violations.extend(missing)
-
-            if not install_violations and not missing:
-                print("✓ All installed packages are clean and in manifest")
-        except RuntimeError as e:
+        except Exception as e:
             print(f"\nERROR: Failed to scan installed packages: {e}")
             all_violations.append(f"Package scan failed: {e}")
+            installed = []
+        else:
+            if not installed:
+                message = "Package scan failed: installed package list is empty"
+                print(f"ERROR: {message}")
+                all_violations.append(message)
+            else:
+                print(f"Found {len(installed)} installed packages")
+                print("Checking ALL packages (full closure per AC-01)")
+
+                install_violations, missing = check_installed_packages(
+                    installed, manifest
+                )
+
+                if install_violations:
+                    print()
+                    for violation in install_violations:
+                        print(f"ERROR: {violation}")
+                    all_violations.extend(install_violations)
+
+                if missing:
+                    print()
+                    for miss in missing:
+                        print(f"ERROR: {miss}")
+                    all_violations.extend(missing)
+
+                if not install_violations and not missing:
+                    print("✓ All installed packages are clean and in manifest")
         print()
 
     ffmpeg_status = 'NOT_A_DEPENDENCY'
