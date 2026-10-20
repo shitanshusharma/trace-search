@@ -11,11 +11,11 @@ import hmac
 import json
 import os
 import zoneinfo
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable
 
 # IST timezone for all timestamps
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")

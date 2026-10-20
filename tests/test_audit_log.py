@@ -11,7 +11,7 @@ Verifies AC-13 plus Engineering Lead review blockers B1-B3:
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,6 @@ from trace_search.audit import (
     AuditAction,
     AuditEntry,
     AuditLog,
-    VerificationResult,
     is_audit_path,
 )
 
@@ -295,7 +294,10 @@ class TestTamperingDetection:
         assert "Head anchor" in result.error_message
 
     def test_edit_last_entry_and_rehash_fails(self, tmp_path):
-        """B1: Editing the last entry and recomputing its HMAC should fail (wrong key or head anchor)."""
+        """
+        B1: Editing the last entry and recomputing its HMAC should fail
+        (wrong key or head anchor).
+        """
         log_path = tmp_path / "audit.jsonl"
         key_path = tmp_path / ".key"
         audit_log = AuditLog(log_path, key_path=key_path)
