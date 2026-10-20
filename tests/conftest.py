@@ -15,19 +15,22 @@ SCHEMA_PATH = Path("licenses/manifest_schema.json")
 @pytest.fixture(autouse=True)
 def stub_ffmpeg_for_all_tests(monkeypatch, request):
     """
-    Autouse fixture that stubs check_ffmpeg_build for all tests.
+    Keep the suite off a real libavcodec.
 
-    FFmpeg-specific tests opt out with @pytest.mark.ffmpeg_real.
+    check_ffmpeg_build still runs. The inspector is stubbed so a manifest
+    that names an OpenCV wheel cannot load a library by accident. Tests that
+    mock the inspector override this stub. @pytest.mark.ffmpeg_real opts out
+    and is only for a test that loads a real libavcodec.
     """
     if "ffmpeg_real" in request.keywords:
         return
 
-    def mock_check(*args, **kwargs):
-        return [], "NOT_A_DEPENDENCY"
+    def mock_inspect():
+        raise FileNotFoundError("opencv bundled libavcodec not found")
 
     import scripts.check_licenses as cl
 
-    monkeypatch.setattr(cl, "check_ffmpeg_build", mock_check)
+    monkeypatch.setattr(cl, "inspect_opencv_libavcodec", mock_inspect)
 
 
 def make_manifest(entries=None, **kwargs):

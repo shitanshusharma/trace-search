@@ -39,5 +39,5 @@ python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --strict-markers"
 markers = [
-    "ffmpeg_real: marks tests that test real FFmpeg behavior",
+    "ffmpeg_real: marks tests that load a real libavcodec",
 ]

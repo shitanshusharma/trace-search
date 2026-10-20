@@ -119,8 +119,9 @@ ALLOWED_NON_SPDX = {
     'libtiff',  # opencv-python-headless bundled libs
 }
 
-# Banned component patterns (name, source_url, notes) - normalize before matching
-# Normalize: lowercase, replace _ and . with -, then match with (?<![a-z0-9])pattern(?![a-z0-9])
+# Banned component patterns. Scanned text is name, source_url, notes, generator,
+# and generator_version. Normalize: lowercase, replace _ and . with -, then match
+# with (?<![a-z0-9])pattern(?![a-z0-9]).
 BANNED_COMPONENTS = [
     (r'(?<![a-z0-9])ultralytics(?![a-z0-9])', 'ultralytics (AGPL)'),
     (r'(?<![a-z0-9])boxmot(?![a-z0-9])', 'boxmot (AGPL)'),
@@ -361,13 +362,15 @@ def check_banned_components(manifest: dict) -> list[str]:
         source_url = entry.get('source_url', '')
         notes = entry.get('notes', '')
         generator = entry.get('generator', '')
+        generator_version = entry.get('generator_version', '')
 
         def normalize(s):
             return s.lower().replace('_', '-').replace('.', '-')
 
         combined = (
             f"{normalize(name)} {normalize(source_url)} "
-            f"{normalize(notes)} {normalize(generator)}"
+            f"{normalize(notes)} {normalize(generator)} "
+            f"{normalize(generator_version)}"
         )
 
         for pattern, desc in BANNED_COMPONENTS:

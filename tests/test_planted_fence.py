@@ -220,12 +220,50 @@ def test_banned_generator_name_fails():
     assert "ultralytics" in stdout
 
 
+def test_banned_generator_name_on_synthetic_clip_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_synthetic_fields(generator="ultralytics")])
+    )
+    assert code == 1, stdout
+    assert "banned component" in stdout
+    assert "ultralytics" in stdout
+
+
+def test_banned_generator_version_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_code_fixture(generator_version="ultralytics-8.1")])
+    )
+    assert code == 1, stdout
+    assert "banned component" in stdout
+    assert "ultralytics" in stdout
+
+
 @pytest.mark.parametrize("field", ["generator", "generator_version", "seed"])
 def test_empty_generator_field_fails(field):
     row = _synthetic_fields(**{field: ""})
     errors = _schema_errors(make_manifest([row]))
     assert any(
         f"at entries.0.{field}" in err and "non-empty" in err
+        for err in errors
+    ), errors
+
+
+@pytest.mark.parametrize("field", ["generator", "generator_version", "seed"])
+def test_whitespace_only_generator_field_fails(field):
+    row = _synthetic_fields(**{field: "   "})
+    errors = _schema_errors(make_manifest([row]))
+    assert any(
+        f"at entries.0.{field}" in err and "does not match" in err
+        for err in errors
+    ), errors
+
+
+def test_empty_license_version_fails():
+    errors = _schema_errors(
+        make_manifest([_synthetic_fields(license_version="")])
+    )
+    assert any(
+        "at entries.0.license_version" in err and "non-empty" in err
         for err in errors
     ), errors
 
@@ -281,7 +319,6 @@ def test_schema_valid_stock_clip_passes():
 # ----- 3. FFmpeg ctypes / fail-closed -----
 
 
-@pytest.mark.ffmpeg_real
 def test_ffmpeg_not_a_dependency_when_no_opencv():
     from scripts.check_licenses import check_ffmpeg_build
 
@@ -290,7 +327,6 @@ def test_ffmpeg_not_a_dependency_when_no_opencv():
     assert status == "NOT_A_DEPENDENCY"
 
 
-@pytest.mark.ffmpeg_real
 def test_opencv_libavcodec_lgpl_passes(monkeypatch):
     import scripts.check_licenses as cl
 
@@ -306,7 +342,6 @@ def test_opencv_libavcodec_lgpl_passes(monkeypatch):
     assert status == "LGPL_OK"
 
 
-@pytest.mark.ffmpeg_real
 def test_opencv_libavcodec_gpl_fails(monkeypatch):
     import scripts.check_licenses as cl
 
@@ -321,7 +356,6 @@ def test_opencv_libavcodec_gpl_fails(monkeypatch):
     assert any("--enable-gpl" in v for v in violations)
 
 
-@pytest.mark.ffmpeg_real
 def test_opencv_libavcodec_nonfree_fails(monkeypatch):
     import scripts.check_licenses as cl
 
@@ -336,7 +370,6 @@ def test_opencv_libavcodec_nonfree_fails(monkeypatch):
     assert any("--enable-nonfree" in v for v in violations)
 
 
-@pytest.mark.ffmpeg_real
 def test_opencv_libavcodec_missing_fails_closed(monkeypatch):
     import scripts.check_licenses as cl
 
@@ -351,7 +384,6 @@ def test_opencv_libavcodec_missing_fails_closed(monkeypatch):
     assert any("libavcodec" in v for v in violations)
 
 
-@pytest.mark.ffmpeg_real
 def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
     """A contrib-named wheel with an LGPL libavcodec passes, any case."""
     import scripts.check_licenses as cl
@@ -368,7 +400,6 @@ def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
     assert status == "LGPL_OK"
 
 
-@pytest.mark.ffmpeg_real
 def test_opencv_contrib_gpl_configuration_fails_fence(tmp_path, monkeypatch):
     """A contrib wheel whose libavcodec reports --enable-gpl fails the fence."""
     import scripts.check_licenses as cl
