@@ -66,6 +66,7 @@ ALLOWED_SPDX = {
     'MPL-2.0',
     'Unlicense',
     '0BSD',
+    'HPND',
 }
 
 # Also allow common non-SPDX forms
@@ -78,6 +79,7 @@ ALLOWED_NON_SPDX = {
     'ISC License (ISCL)',
     'Python Software Foundation License',
     'Public Domain',
+    'Historical Permission Notice and Disclaimer (HPND)',
     'Pexels License',  # For stock footage (§2a)
     'Pixabay Content License',
 }

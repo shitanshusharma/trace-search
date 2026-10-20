@@ -1,6 +1,7 @@
 """Tests for the license fence."""
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,7 +13,8 @@ def test_license_checker_passes_on_valid_manifest():
         ['python3', 'scripts/check_licenses.py', '--no-scan-installed'],
         cwd=Path.cwd(),
         capture_output=True,
-        text=True
+        text=True,
+        env={**os.environ, 'NO_FFMPEG_CHECK': '1'}
     )
     assert result.returncode == 0, f"License check failed: {result.stdout}\n{result.stderr}"
     assert "✅ License fence check PASSED" in result.stdout

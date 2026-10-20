@@ -234,3 +234,65 @@ def test_installed_package_scan_with_system_packages():
     else:
         # Clean system - verify it passed correctly
         assert "PASSED" in result.stdout or "✅" in result.stdout
+
+
+def test_hpnd_license_passes():
+    """Test that HPND (Pillow's license) is allowed."""
+    manifest = make_manifest(entries=[
+        {
+            "name": "Pillow",
+            "version": "10.0.0",
+            "type": "library",
+            "license": "HPND",
+            "source_url": "https://pypi.org/project/Pillow/",
+            "sha256": "a" * 64
+        }
+    ])
+
+    returncode, stdout, stderr = run_checker_with_manifest(manifest)
+    assert returncode == 0, f"HPND license should pass: {stdout}"
+    assert "PASSED" in stdout or "✅" in stdout
+
+
+def test_hpnd_non_spdx_variant_passes():
+    """Test that HPND non-SPDX variant is allowed."""
+    manifest = make_manifest(entries=[
+        {
+            "name": "Pillow",
+            "version": "10.0.0",
+            "type": "library",
+            "license": "Historical Permission Notice and Disclaimer (HPND)",
+            "source_url": "https://pypi.org/project/Pillow/",
+            "sha256": "a" * 64
+        }
+    ])
+
+    returncode, stdout, stderr = run_checker_with_manifest(manifest)
+    assert returncode == 0, f"HPND non-SPDX variant should pass: {stdout}"
+    assert "PASSED" in stdout or "✅" in stdout
+
+
+def test_gpl_still_fails_with_hpnd_allowed():
+    """Test that GPL still fails even when HPND is allowed."""
+    manifest = make_manifest(entries=[
+        {
+            "name": "Pillow",
+            "version": "10.0.0",
+            "type": "library",
+            "license": "HPND",
+            "source_url": "https://pypi.org/project/Pillow/",
+            "sha256": "a" * 64
+        },
+        {
+            "name": "gpl-package",
+            "version": "1.0.0",
+            "type": "library",
+            "license": "GPL-3.0",
+            "source_url": "https://example.com",
+            "sha256": "b" * 64
+        }
+    ])
+
+    returncode, stdout, stderr = run_checker_with_manifest(manifest)
+    assert returncode == 1, f"GPL should fail even with HPND allowed: {stdout}"
+    assert "GPL" in stdout or "banned" in stdout.lower()
