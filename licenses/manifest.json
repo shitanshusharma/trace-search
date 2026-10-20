@@ -3,6 +3,15 @@
   "last_updated_ist": "2026-10-20",
   "entries": [
     {
+      "name": "numpy",
+      "version": "1.24.4",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/numpy/",
+      "sha256": "ed2b31e3af01b8c03f6a6e6a4b3d4d2e11c7c2f1b7c50e7b01da3e0c9f84bdcd",
+      "notes": "Runtime dependency for array operations and HSV color conversion"
+    },
+    {
       "name": "pytest",
       "version": "9.1.1",
       "type": "library",

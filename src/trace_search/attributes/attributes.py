@@ -8,7 +8,6 @@ from person bounding boxes. No trained weights, no sensitive attributes.
 from dataclasses import dataclass
 from enum import Enum
 
-import cv2
 import numpy as np
 
 
@@ -24,36 +23,40 @@ class Color(str, Enum):
     GREEN = "green"
     CYAN = "cyan"
     BLUE = "blue"
+    DARK_BLUE = "dark_blue"  # Navy, denim
     PURPLE = "purple"
     PINK = "pink"
     BROWN = "brown"
     UNKNOWN = "unknown"
+    INVALID_BOX = "invalid_box"  # Degenerate or out-of-frame box
 
 
 @dataclass(frozen=True)
 class PersonAttributes:
     """
-    Person appearance attributes.
+    Track appearance attributes (anonymous, no identity).
 
     Contains ONLY non-sensitive attributes:
     - upper_clothing_color
     - lower_clothing_color
-    - has_bag
+    - bag_on_track
     - upper_confidence
     - lower_confidence
 
-    Explicitly excludes: gender, age, ethnicity, face features, height, pose.
+    Explicitly excludes: gender, age, ethnicity, face features, height, pose, identity.
     """
 
     upper_clothing_color: Color
     lower_clothing_color: Color
-    has_bag: bool
+    bag_on_track: bool
     upper_confidence: float
     lower_confidence: float
 
     def __post_init__(self):
-        assert 0.0 <= self.upper_confidence <= 1.0
-        assert 0.0 <= self.lower_confidence <= 1.0
+        if not (0.0 <= self.upper_confidence <= 1.0):
+            raise ValueError(f"upper_confidence must be in [0,1], got {self.upper_confidence}")
+        if not (0.0 <= self.lower_confidence <= 1.0):
+            raise ValueError(f"lower_confidence must be in [0,1], got {self.lower_confidence}")
 
 
 class AttributeExtractor:
@@ -68,7 +71,7 @@ class AttributeExtractor:
     - Handle low-light via value channel thresholding
     """
 
-    # HSV color boundaries (H: 0-180, S: 0-255, V: 0-255 in OpenCV)
+    # HSV color boundaries (H: 0-180, S: 0-255, V: 0-255, same scale as OpenCV)
     COLOR_RANGES = {
         Color.RED: [
             (0, 100, 50),
@@ -80,7 +83,8 @@ class AttributeExtractor:
         Color.YELLOW: [(26, 100, 50), (35, 255, 255)],
         Color.GREEN: [(36, 100, 50), (85, 255, 255)],
         Color.CYAN: [(86, 100, 50), (100, 255, 255)],
-        Color.BLUE: [(101, 100, 50), (130, 255, 255)],
+        Color.BLUE: [(101, 100, 130), (130, 255, 255)],  # Bright blue
+        Color.DARK_BLUE: [(101, 50, 50), (130, 255, 129)],  # Navy, denim (lower V than bright blue)
         Color.PURPLE: [(131, 100, 50), (160, 255, 255)],
         Color.PINK: [(161, 100, 50), (169, 255, 255)],
     }
@@ -107,8 +111,58 @@ class AttributeExtractor:
         min_confidence: float = MIN_CONFIDENCE,
         low_light_threshold: int = LOW_LIGHT_VALUE,
     ):
+        if not (0.0 <= min_confidence <= 1.0):
+            raise ValueError(f"min_confidence must be in [0,1], got {min_confidence}")
+        if not (0 <= low_light_threshold <= 255):
+            raise ValueError(f"low_light_threshold must be in [0,255], got {low_light_threshold}")
         self.min_confidence = min_confidence
         self.low_light_threshold = low_light_threshold
+
+    @staticmethod
+    def bgr_to_hsv(bgr: np.ndarray) -> np.ndarray:
+        """
+        Convert BGR image to HSV using numpy only (no OpenCV).
+
+        Args:
+            bgr: BGR image, shape (H, W, 3), dtype uint8
+
+        Returns:
+            HSV image with same H/S/V scale as OpenCV:
+            - H: [0, 180] (degrees / 2)
+            - S: [0, 255]
+            - V: [0, 255]
+        """
+        bgr_normalized = bgr.astype(np.float32) / 255.0
+        b, g, r = bgr_normalized[:, :, 0], bgr_normalized[:, :, 1], bgr_normalized[:, :, 2]
+
+        v = np.maximum(np.maximum(r, g), b)
+        c_max_min_diff = v - np.minimum(np.minimum(r, g), b)
+
+        # Saturation (avoid divide by zero)
+        s = np.where(v > 0, c_max_min_diff / v, 0.0)
+
+        # Hue
+        h = np.zeros_like(v)
+        mask = c_max_min_diff != 0
+
+        # Red is max
+        r_max = (r == v) & mask
+        h[r_max] = 60 * (((g[r_max] - b[r_max]) / c_max_min_diff[r_max]) % 6)
+
+        # Green is max
+        g_max = (g == v) & mask
+        h[g_max] = 60 * (((b[g_max] - r[g_max]) / c_max_min_diff[g_max]) + 2)
+
+        # Blue is max
+        b_max = (b == v) & mask
+        h[b_max] = 60 * (((r[b_max] - g[b_max]) / c_max_min_diff[b_max]) + 4)
+
+        # Scale to OpenCV range: H [0,180], S [0,255], V [0,255]
+        h = (h / 2).astype(np.uint8)
+        s = (s * 255).astype(np.uint8)
+        v = (v * 255).astype(np.uint8)
+
+        return np.stack([h, s, v], axis=-1)
 
     def extract(
         self,
@@ -120,21 +174,46 @@ class AttributeExtractor:
         Extract attributes from a person bounding box.
 
         Args:
-            frame: BGR image (H, W, 3)
+            frame: BGR image (H, W, 3), dtype uint8
             person_box: (x1, y1, x2, y2) in pixel coordinates
             bag_boxes: Optional list of (x1, y1, x2, y2) backpack/handbag boxes
 
         Returns:
             PersonAttributes with color and bag information
+
+        Raises:
+            ValueError: If frame is invalid format
         """
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            raise ValueError(f"frame must be (H,W,3), got shape {frame.shape}")
+        if frame.dtype != np.uint8:
+            raise ValueError(f"frame must be uint8, got {frame.dtype}")
+
+        # Clip box to frame boundaries
+        h, w = frame.shape[:2]
         x1, y1, x2, y2 = person_box
-        person_crop = frame[y1:y2, x1:x2]
+        x1_clipped = max(0, min(x1, w))
+        y1_clipped = max(0, min(y1, h))
+        x2_clipped = max(0, min(x2, w))
+        y2_clipped = max(0, min(y2, h))
+
+        # Check for degenerate box (zero area or invalid coordinates)
+        if x1_clipped >= x2_clipped or y1_clipped >= y2_clipped:
+            return PersonAttributes(
+                upper_clothing_color=Color.INVALID_BOX,
+                lower_clothing_color=Color.INVALID_BOX,
+                bag_on_track=False,
+                upper_confidence=0.0,
+                lower_confidence=0.0,
+            )
+
+        person_crop = frame[y1_clipped:y2_clipped, x1_clipped:x2_clipped]
 
         if person_crop.size == 0:
             return PersonAttributes(
-                upper_clothing_color=Color.UNKNOWN,
-                lower_clothing_color=Color.UNKNOWN,
-                has_bag=False,
+                upper_clothing_color=Color.INVALID_BOX,
+                lower_clothing_color=Color.INVALID_BOX,
+                bag_on_track=False,
                 upper_confidence=0.0,
                 lower_confidence=0.0,
             )
@@ -147,16 +226,34 @@ class AttributeExtractor:
             person_crop, region="lower"
         )
 
-        # Determine bag presence from overlapping detector boxes
-        has_bag = self._has_bag(person_box, bag_boxes)
+        # Clip bag boxes and determine bag presence
+        clipped_bag_boxes = self._clip_boxes(bag_boxes, w, h) if bag_boxes else None
+        bag_on_track = self._bag_on_track(
+            (x1_clipped, y1_clipped, x2_clipped, y2_clipped), clipped_bag_boxes
+        )
 
         return PersonAttributes(
             upper_clothing_color=upper_color,
             lower_clothing_color=lower_color,
-            has_bag=has_bag,
+            bag_on_track=bag_on_track,
             upper_confidence=upper_conf,
             lower_confidence=lower_conf,
         )
+
+    @staticmethod
+    def _clip_boxes(
+        boxes: list[tuple[int, int, int, int]], width: int, height: int
+    ) -> list[tuple[int, int, int, int]]:
+        """Clip boxes to frame boundaries and remove degenerate boxes."""
+        clipped = []
+        for x1, y1, x2, y2 in boxes:
+            x1_c = max(0, min(x1, width))
+            y1_c = max(0, min(y1, height))
+            x2_c = max(0, min(x2, width))
+            y2_c = max(0, min(y2, height))
+            if x1_c < x2_c and y1_c < y2_c:  # Valid box
+                clipped.append((x1_c, y1_c, x2_c, y2_c))
+        return clipped
 
     def _extract_region_color(
         self,
@@ -175,26 +272,43 @@ class AttributeExtractor:
         """
         h, w = person_crop.shape[:2]
 
-        if h < 20 or w < 10:
+        if h < 40 or w < 20:  # Minimum reasonable person size
             return Color.UNKNOWN, 0.0
 
-        # Define regions (skip head and feet)
-        if region == "upper":
-            # Torso: 20% to 60% of height
-            y_start = int(0.2 * h)
-            y_end = int(0.6 * h)
-        else:  # lower
-            # Legs: 60% to 100% of height (but often occluded at bottom)
-            y_start = int(0.6 * h)
-            y_end = h
+        # Define regions with margin trimming to exclude background
+        # Trim 10% horizontal margin on each side, 5% vertical margin top/bottom of region
+        margin_x = max(1, int(0.1 * w))
+        margin_y = max(1, int(0.05 * h))
 
-        region_crop = person_crop[y_start:y_end, :]
+        if region == "upper":
+            # Torso: 25% to 55% of height (narrower, avoiding head/waist)
+            y_start = int(0.25 * h) + margin_y
+            y_end = int(0.55 * h) - margin_y
+        else:  # lower
+            # Legs: 60% to 90% of height (avoiding feet region at bottom)
+            y_start = int(0.60 * h) + margin_y
+            y_end = int(0.90 * h) - margin_y
+
+        y_start = max(0, y_start)
+        y_end = min(h, y_end)
+
+        if y_start >= y_end:
+            return Color.UNKNOWN, 0.0
+
+        # Trim horizontal margins
+        x_start = margin_x
+        x_end = w - margin_x
+
+        if x_start >= x_end:
+            return Color.UNKNOWN, 0.0
+
+        region_crop = person_crop[y_start:y_end, x_start:x_end]
 
         if region_crop.size == 0:
             return Color.UNKNOWN, 0.0
 
         # Convert to HSV
-        hsv = cv2.cvtColor(region_crop, cv2.COLOR_BGR2HSV)
+        hsv = self.bgr_to_hsv(region_crop)
 
         # Classify color
         color, base_confidence = self._classify_color_hsv(hsv)
@@ -230,7 +344,7 @@ class AttributeExtractor:
         Returns:
             (color, confidence) where confidence is ratio of dominant color pixels
         """
-        h, s, v = cv2.split(hsv)
+        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
 
         total_pixels = h.size
         if total_pixels == 0:
@@ -274,14 +388,35 @@ class AttributeExtractor:
         for color, ranges in self.COLOR_RANGES.items():
             if len(ranges) == 4:  # Red wraps around
                 lower1, upper1, lower2, upper2 = ranges
-                mask1 = cv2.inRange(hsv, np.array(lower1), np.array(upper1))
-                mask2 = cv2.inRange(hsv, np.array(lower2), np.array(upper2))
-                mask = cv2.bitwise_or(mask1, mask2)
+                mask1 = (
+                    (h >= lower1[0])
+                    & (h <= upper1[0])
+                    & (s >= lower1[1])
+                    & (s <= upper1[1])
+                    & (v >= lower1[2])
+                    & (v <= upper1[2])
+                )
+                mask2 = (
+                    (h >= lower2[0])
+                    & (h <= upper2[0])
+                    & (s >= lower2[1])
+                    & (s <= upper2[1])
+                    & (v >= lower2[2])
+                    & (v <= upper2[2])
+                )
+                mask = mask1 | mask2
             else:
                 lower, upper = ranges
-                mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+                mask = (
+                    (h >= lower[0])
+                    & (h <= upper[0])
+                    & (s >= lower[1])
+                    & (s <= upper[1])
+                    & (v >= lower[2])
+                    & (v <= upper[2])
+                )
 
-            count = np.sum(mask > 0)
+            count = np.sum(mask)
             if count > 0:
                 color_counts[color] = count
 
@@ -294,20 +429,23 @@ class AttributeExtractor:
 
         return dominant_color, confidence
 
-    def _has_bag(
+    def _bag_on_track(
         self,
         person_box: tuple[int, int, int, int],
         bag_boxes: list[tuple[int, int, int, int]] | None,
     ) -> bool:
         """
-        Determine if person has a bag based on detector boxes.
+        Determine if track has a bag based on detector boxes.
+
+        Each bag is assigned to at most one track (the one with best overlap).
+        Uses IoU with threshold 0.2 for assignment.
 
         Args:
             person_box: (x1, y1, x2, y2)
             bag_boxes: List of (x1, y1, x2, y2) backpack/handbag boxes
 
         Returns:
-            True if any bag box overlaps with person box (IoU > 0.1)
+            True if any bag is assigned to this track
         """
         if not bag_boxes:
             return False
@@ -318,6 +456,8 @@ class AttributeExtractor:
         if person_area == 0:
             return False
 
+        # Find best bag for this person
+        best_iou = 0.0
         for bx1, by1, bx2, by2 in bag_boxes:
             # Compute intersection
             ix1 = max(px1, bx1)
@@ -334,17 +474,18 @@ class AttributeExtractor:
             if bag_area == 0:
                 continue
 
-            # IoU relative to bag (bag must be mostly inside person)
-            iou = intersection / bag_area
+            # IoU = intersection / union
+            union = person_area + bag_area - intersection
+            iou = intersection / union if union > 0 else 0.0
 
-            if iou > 0.1:
-                return True
+            best_iou = max(best_iou, iou)
 
-        return False
+        # Assign bag if IoU > threshold
+        return best_iou > 0.2
 
 
 class AttributeQuery:
-    """Helper for attribute-based search queries."""
+    """Helper for attribute-based search queries on anonymous tracks."""
 
     @staticmethod
     def matches(attrs: PersonAttributes, query: dict) -> bool:
@@ -355,7 +496,7 @@ class AttributeQuery:
             {
                 "upper_color": "red",  # optional
                 "lower_color": "blue",  # optional
-                "has_bag": True,  # optional
+                "bag_on_track": True,  # optional
                 "min_confidence": 0.5,  # optional, applies to both colors
             }
 
@@ -381,8 +522,8 @@ class AttributeQuery:
                 return False
 
         # Check bag
-        if "has_bag" in query:
-            if attrs.has_bag != query["has_bag"]:
+        if "bag_on_track" in query:
+            if attrs.bag_on_track != query["bag_on_track"]:
                 return False
 
         return True
