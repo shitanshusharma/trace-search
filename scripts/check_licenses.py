@@ -82,36 +82,44 @@ ALLOWED_NON_SPDX = {
     'Pixabay Content License',
 }
 
-# Banned component patterns (name, source_url, notes) - use word boundaries
+# Banned component patterns (name, source_url, notes) - normalize before matching
+# Normalize: lowercase, replace _ and . with -, then match with (?<![a-z0-9])pattern(?![a-z0-9])
 BANNED_COMPONENTS = [
-    (r'\bultralytics\b', 'ultralytics (AGPL)'),
-    (r'\bboxmot\b', 'boxmot (AGPL)'),
-    (r'\binsightface\b', 'insightface/ArcFace'),
-    (r'\barcface\b', 'ArcFace'),
-    (r'\bopengait\b', 'OpenGait'),
-    (r'\bmarket-?1501\b', 'Market-1501 dataset'),
-    (r'\bmsmt17\b', 'MSMT17 dataset'),
-    (r'\bduke-?mtmc\b', 'DukeMTMC dataset'),
-    (r'\bcuhk03\b', 'CUHK03 dataset'),
-    (r'\bcasia-?b\b', 'CASIA-B dataset'),
-    (r'\bgrew\b', 'GREW dataset'),
-    (r'\bgait3d\b', 'Gait3D dataset'),
-    (r'\bobjects365\b', 'Objects365 (academic only)'),
-    (r'\blaion\b', 'LAION dataset/weights'),
-    (r'\bdatacomp\b', 'DataComp dataset'),
-    (r'\bclip\b.*\b(laion|openai)\b', 'CLIP weights (LAION/OpenAI)'),
-    (r'\bpa-?100k\b', 'PA-100K dataset'),
-    (r'\brap\b.*\battr', 'RAP attribute dataset'),
-    (r'\bpp-?human\b', 'PP-Human (PA-100K/RAP)'),
-    (r'\bfast-?reid\b', 'fast-reid model zoo weights'),
-    (r'\bbot-?sort\b.*\breid\b', 'BoT-SORT ReID weights'),
-    (r'osnet_.*_(duke|market|msmt)', 'OSNet model zoo (Duke/Market/MSMT)'),
-    (r'\bretinaface\b', 'RetinaFace (face model)'),
-    (r'\bface.*detect', 'face detection model'),
-    (r'\bimagenet\b.*\bpretrain', 'ImageNet-pretrained backbone'),
-    (r'\bearthcam\b', 'EarthCam (public webcam)'),
-    (r'\byoutube\b.*\blive\b', 'YouTube live stream'),
-    (r'\binsecam\b', 'Insecam (exposed cameras)'),
+    (r'(?<![a-z0-9])ultralytics(?![a-z0-9])', 'ultralytics (AGPL)'),
+    (r'(?<![a-z0-9])boxmot(?![a-z0-9])', 'boxmot (AGPL)'),
+    (r'(?<![a-z0-9])insightface(?![a-z0-9])', 'insightface/ArcFace'),
+    (r'(?<![a-z0-9])arcface(?![a-z0-9])', 'ArcFace'),
+    (r'(?<![a-z0-9])opengait(?![a-z0-9])', 'OpenGait'),
+    (r'(?<![a-z0-9])market-?1501(?![a-z0-9])', 'Market-1501 dataset'),
+    (r'(?<![a-z0-9])msmt17(?![a-z0-9])', 'MSMT17 dataset'),
+    (r'(?<![a-z0-9])duke-?mtmc(?![a-z0-9])', 'DukeMTMC dataset'),
+    (r'(?<![a-z0-9])cuhk03(?![a-z0-9])', 'CUHK03 dataset'),
+    (r'(?<![a-z0-9])casia-?b(?![a-z0-9])', 'CASIA-B dataset'),
+    (r'(?<![a-z0-9])grew(?![a-z0-9])', 'GREW dataset'),
+    (r'(?<![a-z0-9])gait3d(?![a-z0-9])', 'Gait3D dataset'),
+    (r'(?<![a-z0-9])objects365(?![a-z0-9])', 'Objects365 (academic only)'),
+    (r'(?<![a-z0-9])laion(?![a-z0-9])', 'LAION dataset/weights'),
+    (r'(?<![a-z0-9])datacomp(?![a-z0-9])', 'DataComp dataset'),
+    (
+        r'(?<![a-z0-9])clip(?![a-z0-9]).*(?<![a-z0-9])(laion|openai)(?![a-z0-9])',
+        'CLIP weights (LAION/OpenAI)',
+    ),
+    (r'(?<![a-z0-9])pa-?100k(?![a-z0-9])', 'PA-100K dataset'),
+    (r'(?<![a-z0-9])rap(?![a-z0-9]).*attr', 'RAP attribute dataset'),
+    (r'(?<![a-z0-9])pp-?human(?![a-z0-9])', 'PP-Human (PA-100K/RAP)'),
+    (r'(?<![a-z0-9])fast-?reid(?![a-z0-9])', 'fast-reid model zoo weights'),
+    (r'(?<![a-z0-9])bot-?sort(?![a-z0-9]).*reid', 'BoT-SORT ReID weights'),
+    (r'osnet.*(?<![a-z0-9])(duke|market|msmt)(?![a-z0-9])', 'OSNet model zoo (Duke/Market/MSMT)'),
+    (r'(?<![a-z0-9])retinaface(?![a-z0-9])', 'RetinaFace (face model)'),
+    (r'(?<![a-z0-9])scrfd(?![a-z0-9])', 'SCRFD (face model)'),
+    (r'(?<![a-z0-9])buffalo-?l(?![a-z0-9])', 'Buffalo_L (face model)'),
+    (r'(?<![a-z0-9])mtcnn(?![a-z0-9])', 'MTCNN (face model)'),
+    (r'(?<![a-z0-9])facenet-pytorch(?![a-z0-9])', 'facenet-pytorch (face model)'),
+    (r'(?<![a-z0-9])face.*detect', 'face detection model'),
+    (r'(?<![a-z0-9])imagenet(?![a-z0-9]).*pretrain', 'ImageNet-pretrained backbone'),
+    (r'(?<![a-z0-9])earthcam(?![a-z0-9])', 'EarthCam (public webcam)'),
+    (r'youtube.*live', 'YouTube live stream'),
+    (r'(?<![a-z0-9])insecam(?![a-z0-9])', 'Insecam (exposed cameras)'),
 ]
 
 
@@ -172,17 +180,26 @@ def is_license_banned(license_str: str) -> tuple[bool, str]:
     """
     Check if a license string is banned.
 
-    Splits SPDX expressions and checks each component.
+    Splits on '; ' (pip-licenses format), SPDX OR/AND/WITH, and checks each component.
     Returns (is_banned, reason).
     """
     if not license_str or not license_str.strip():
         return True, "empty license"
 
-    # Split SPDX expression (OR, AND, WITH)
-    components = re.split(r'\s+(?:OR|AND|WITH)\s+', license_str)
+    # Split on '; ' (pip-licenses format) and SPDX operators
+    # First split on ';', then on SPDX operators within each part
+    all_components = []
+    for part in license_str.split(';'):
+        part = part.strip()
+        if part:
+            # Split SPDX expression (OR, AND, WITH)
+            spdx_components = re.split(r'\s+(?:OR|AND|WITH)\s+', part)
+            all_components.extend(spdx_components)
 
-    for comp in components:
+    for comp in all_components:
         comp = comp.strip().strip('()')
+        if not comp:
+            continue
 
         # Check banned patterns
         for pattern in BANNED_LICENSE_PATTERNS:
@@ -196,9 +213,19 @@ def is_license_allowed(license_str: str) -> bool:
     """
     Check if a license is in the allowed list.
 
-    Must be exact match (no prefix matching).
+    Handles '; ' (pip-licenses format) and SPDX expressions.
+    For AND/';' expressions: ALL components must be allowed.
+    For OR expressions: at least one component must be allowed.
     """
     license_str = license_str.strip()
+    if not license_str:
+        return False
+
+    # Handle '; ' separated licenses (pip-licenses format)
+    # Treat as AND - all must be allowed
+    if '; ' in license_str:
+        parts = [p.strip() for p in license_str.split('; ')]
+        return all(is_license_allowed(p) for p in parts if p)
 
     # Check SPDX identifiers (case-sensitive)
     if license_str in ALLOWED_SPDX:
@@ -210,11 +237,15 @@ def is_license_allowed(license_str: str) -> bool:
         if license_upper == allowed.upper():
             return True
 
-    # Handle SPDX expressions with OR
+    # Handle SPDX OR expression - at least one must be allowed
     if ' OR ' in license_str:
         components = [c.strip() for c in license_str.split(' OR ')]
-        # All components must be allowed
-        return all(is_license_allowed(c) for c in components)
+        return any(is_license_allowed(c) for c in components if c)
+
+    # Handle SPDX AND expression - all must be allowed
+    if ' AND ' in license_str:
+        components = [c.strip() for c in license_str.split(' AND ')]
+        return all(is_license_allowed(c) for c in components if c)
 
     return False
 
@@ -240,14 +271,19 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
 
 
 def check_banned_components(manifest: dict) -> list[str]:
-    """Check for banned component names using word boundaries."""
+    """Check for banned component names using normalized matching."""
     violations = []
 
     for entry in manifest.get('entries', []):
-        name = entry.get('name', '').lower()
-        source_url = entry.get('source_url', '').lower()
-        notes = entry.get('notes', '').lower()
-        combined = f"{name} {source_url} {notes}"
+        name = entry.get('name', '')
+        source_url = entry.get('source_url', '')
+        notes = entry.get('notes', '')
+
+        # Normalize: lowercase, replace _ and . with -
+        def normalize(s):
+            return s.lower().replace('_', '-').replace('.', '-')
+
+        combined = f"{normalize(name)} {normalize(source_url)} {normalize(notes)}"
 
         for pattern, desc in BANNED_COMPONENTS:
             if re.search(pattern, combined, re.IGNORECASE):
@@ -296,8 +332,16 @@ def get_installed_packages(include_system: bool = False) -> list[dict]:
         cmd = ['pip-licenses', '--format=json']
         if include_system:
             cmd.append('--with-system')
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
+
+        if not result.stdout or not result.stdout.strip():
+            raise RuntimeError("pip-licenses returned empty output")
+
         packages = json.loads(result.stdout)
+
+        if not packages:
+            raise RuntimeError("pip-licenses returned empty package list")
+
         return [
             {
                 'name': pkg.get('Name', ''),
@@ -306,9 +350,23 @@ def get_installed_packages(include_system: bool = False) -> list[dict]:
             }
             for pkg in packages
         ]
-    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"WARNING: Failed to get installed packages: {e}", file=sys.stderr)
-        return []
+    except subprocess.TimeoutExpired:
+        print("ERROR: pip-licenses timed out after 30 seconds", file=sys.stderr)
+        raise RuntimeError("pip-licenses command timed out")
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: pip-licenses failed with exit code {e.returncode}", file=sys.stderr)
+        print(f"stderr: {e.stderr}", file=sys.stderr)
+        raise RuntimeError(f"pip-licenses command failed: {e}")
+    except FileNotFoundError:
+        print("ERROR: pip-licenses command not found", file=sys.stderr)
+        raise RuntimeError("pip-licenses not installed")
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Failed to parse pip-licenses JSON output: {e}", file=sys.stderr)
+        print(f"stdout: {result.stdout[:500]}", file=sys.stderr)
+        raise RuntimeError("pip-licenses returned invalid JSON")
+    except Exception as e:
+        print(f"ERROR: Unexpected error getting installed packages: {e}", file=sys.stderr)
+        raise
 
 
 def check_installed_packages(
@@ -321,6 +379,8 @@ def check_installed_packages(
 
     Checks ALL installed packages (full closure) to meet AC-01.
     direct_deps parameter is ignored - kept for compatibility.
+
+    Exempts the project's own package (trace-search) explicitly.
     """
     violations = []
     missing = []
@@ -336,6 +396,10 @@ def check_installed_packages(
         version = pkg['version']
         license_str = pkg['license']
         norm_name = name.lower().replace('_', '-')
+
+        # Explicitly exempt the project's own package
+        if norm_name == 'trace-search':
+            continue
 
         # Check ALL installed packages (full closure for AC-01)
         if norm_name not in manifest_packages:
@@ -373,22 +437,38 @@ def check_ffmpeg_build() -> list[str]:
 
         return violations
     except FileNotFoundError:
-        return ["WARNING: FFmpeg not found (will be required for T2)"]
+        return ["FFmpeg not found (required for T2+)"]
     except Exception as e:
-        return [f"WARNING: Failed to check FFmpeg: {e}"]
+        return [f"Failed to check FFmpeg: {e}"]
 
 
 def generate_report(
     manifest: dict,
     installed: list[dict],
-    all_violations: list[str]
+    all_violations: list[str],
+    manifest_path: Path
 ) -> dict:
     """Generate machine-readable scanner report."""
+    import subprocess
+    from datetime import datetime, timezone
+
+    # Get git commit SHA
+    try:
+        git_sha = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        ).stdout.strip()
+    except Exception:
+        git_sha = "unknown"
+
     return {
         "version": "1.0",
-        "timestamp": "2026-10-20T18:15:00Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_commit": git_sha,
         "manifest": {
-            "path": "licenses/manifest.json",
+            "path": str(manifest_path),
             "entries_count": len(manifest.get('entries', [])),
         },
         "installed_packages": {
@@ -452,8 +532,8 @@ def main():
     parser.add_argument(
         '--check-ffmpeg',
         action='store_true',
-        default='NO_FFMPEG_CHECK' not in os.environ,
-        help='Check FFmpeg build configuration (default: True)'
+        default=True,
+        help='Check FFmpeg build configuration (default: True, set NO_FFMPEG_CHECK=1 to disable)'
     )
 
     args = parser.parse_args()
@@ -501,50 +581,48 @@ def main():
     # Scan installed packages
     if args.scan_installed:
         print("=== Scanning installed packages ===")
-        installed = get_installed_packages(include_system=args.include_system)
-        print(f"Found {len(installed)} installed packages")
-        print("Checking ALL packages (full closure per AC-01)")
+        try:
+            installed = get_installed_packages(include_system=args.include_system)
+            print(f"Found {len(installed)} installed packages")
+            print("Checking ALL packages (full closure per AC-01)")
 
-        install_violations, missing = check_installed_packages(
-            installed, manifest
-        )
+            install_violations, missing = check_installed_packages(
+                installed, manifest
+            )
 
-        if install_violations:
-            print()
-            for violation in install_violations:
-                print(f"ERROR: {violation}")
-            all_violations.extend(install_violations)
+            if install_violations:
+                print()
+                for violation in install_violations:
+                    print(f"ERROR: {violation}")
+                all_violations.extend(install_violations)
 
-        if missing:
-            print()
-            for miss in missing:
-                print(f"ERROR: {miss}")
-            all_violations.extend(missing)
+            if missing:
+                print()
+                for miss in missing:
+                    print(f"ERROR: {miss}")
+                all_violations.extend(missing)
 
-        if not install_violations and not missing:
-            print("✓ All installed packages are clean and in manifest")
+            if not install_violations and not missing:
+                print("✓ All installed packages are clean and in manifest")
+        except RuntimeError as e:
+            print(f"\nERROR: Failed to scan installed packages: {e}")
+            all_violations.append(f"Package scan failed: {e}")
         print()
 
     # FFmpeg check
-    if args.check_ffmpeg:
+    if args.check_ffmpeg and 'NO_FFMPEG_CHECK' not in os.environ:
         print("=== Checking FFmpeg build configuration ===")
         ffmpeg_violations = check_ffmpeg_build()
         for violation in ffmpeg_violations:
-            if violation.startswith("WARNING"):
-                print(violation)
-            else:
-                print(f"ERROR: {violation}")
-                all_violations.append(violation)
-        if not any('ERROR' in v or not v.startswith('WARNING') for v in ffmpeg_violations):
-            if ffmpeg_violations:
-                pass  # Warnings only
-            else:
-                print("✓ FFmpeg build is LGPL-only")
+            print(f"ERROR: {violation}")
+            all_violations.append(violation)
+        if not ffmpeg_violations:
+            print("✓ FFmpeg build is LGPL-only")
         print()
 
     # Generate report
     if args.report:
-        report = generate_report(manifest, installed, all_violations)
+        report = generate_report(manifest, installed, all_violations, args.manifest)
         args.report.parent.mkdir(parents=True, exist_ok=True)
         with args.report.open('w') as f:
             json.dump(report, f, indent=2)

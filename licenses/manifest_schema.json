@@ -81,8 +81,8 @@
           },
           "fixture_id": {
             "type": "string",
-            "pattern": "^FX-[A-Z]+-[0-9]+$",
-            "description": "Fixture identifier (e.g., FX-SMOKE-001, FX-DEV-023)"
+            "pattern": "^FX-[A-Z]+-([A-Z]+-)?[0-9]+$",
+            "description": "Fixture identifier (e.g., FX-SMOKE-001, FX-SMOKE-SYN-001, FX-DEV-023)"
           },
           "generator": {
             "type": "string",

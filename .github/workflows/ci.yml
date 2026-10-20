@@ -31,7 +31,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements-dev.txt
+        pip install --require-hashes -r requirements-dev.lock
         pip install -e .
     
     - name: Lint with ruff
@@ -41,14 +41,10 @@ jobs:
     - name: Run unit tests
       run: |
         pytest tests/ -v --tb=short
-      env:
-        NO_FFMPEG_CHECK: '1'
     
     - name: License fence check
       run: |
         python scripts/check_licenses.py --report=license-report.json
-      env:
-        NO_FFMPEG_CHECK: '1'
     
     - name: Upload license report
       if: always()
