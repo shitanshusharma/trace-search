@@ -666,28 +666,39 @@ def check_installed_packages(
     direct_deps parameter is ignored - kept for compatibility.
 
     Exempts the project's own package (trace-search) explicitly.
+    A library row matches only when the normalised name and the exact
+    installed version both match. A stale version fails closed.
     """
     del direct_deps  # unused; full-closure scan
     violations = []
     missing = []
 
-    manifest_packages = {}
+    manifest_by_name: dict[str, list[dict]] = {}
     for entry in manifest.get('entries', []):
         if entry.get('type') == 'library':
             norm_name = entry.get('name', '').lower().replace('_', '-')
-            manifest_packages[norm_name] = entry
+            manifest_by_name.setdefault(norm_name, []).append(entry)
 
     for pkg in installed:
         name = pkg['name']
-        version = pkg['version']
+        version = str(pkg['version']).strip()
         license_str = pkg['license']
         norm_name = name.lower().replace('_', '-')
 
         if norm_name == 'trace-search':
             continue
 
-        if norm_name not in manifest_packages:
+        rows = manifest_by_name.get(norm_name)
+        if not rows:
             missing.append(f"{name} ({version}): installed but not in manifest")
+        else:
+            manifest_versions = [str(row.get('version', '')).strip() for row in rows]
+            if version not in manifest_versions:
+                listed = ", ".join(manifest_versions)
+                violations.append(
+                    f"{name}: installed version {version} does not match "
+                    f"manifest version {listed}"
+                )
 
         failure = _license_failure(license_str, name)
         if failure:

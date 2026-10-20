@@ -622,6 +622,27 @@ def test_installed_gpl_package_fails_with_specific_message(tmp_path, monkeypatch
     assert "gpl-pkg (1.0.0): banned license 'GPL-3.0'" in stdout
 
 
+def test_installed_version_mismatch_fails(tmp_path, monkeypatch):
+    """A stale manifest version does not cover a newer installed package."""
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{"name": "numpy", "version": "2.2.0", "license": "BSD-3-Clause"}],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="numpy", version="1.26.4", license_id="BSD-3-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "numpy: installed version 2.2.0 does not match manifest version 1.26.4" in stdout
+    assert "PASSED" not in stdout
+
+
 def test_installed_unlisted_requirements_package_fails(tmp_path, monkeypatch):
     """An installed runtime package with no manifest row fails closed."""
     import scripts.check_licenses as cl
