@@ -21,13 +21,13 @@ The CI pipeline enforces quality gates and security checks on every PR and push 
 **Run locally:**
 ```bash
 ruff check src/ tests/ scripts/ --output-format=github
-ruff format --check src/ tests/ scripts/
+ruff format --check --exclude scripts/check_licenses.py src/ tests/ scripts/
 ```
 
 **Auto-fix:**
 ```bash
 ruff check --fix src/ tests/ scripts/
-ruff format src/ tests/ scripts/
+ruff format --exclude scripts/check_licenses.py src/ tests/ scripts/
 ```
 
 ---
@@ -385,7 +385,7 @@ echo "🔍 Running all CI checks locally..."
 # Quality
 echo "→ Lint..."
 ruff check src/ tests/ scripts/
-ruff format --check src/ tests/ scripts/
+ruff format --check --exclude scripts/check_licenses.py src/ tests/ scripts/
 
 echo "→ Types..."
 mypy src/ --strict
@@ -510,7 +510,7 @@ Dependabot configuration is in `.github/dependabot.yml`:
 
 **Lint failures:**
 - Run `ruff check --fix src/ tests/ scripts/`
-- Run `ruff format src/ tests/ scripts/`
+- Run `ruff format --exclude scripts/check_licenses.py src/ tests/ scripts/`
 
 **Type errors:**
 - Add missing type annotations

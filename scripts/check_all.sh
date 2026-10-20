@@ -15,7 +15,7 @@ echo ""
 
 echo "→ Lint (ruff)..."
 ruff check src/ tests/ scripts/ --output-format=github
-ruff format --check src/ tests/ scripts/
+ruff format --check --exclude scripts/check_licenses.py src/ tests/ scripts/
 echo "✅ Lint passed"
 echo ""
 

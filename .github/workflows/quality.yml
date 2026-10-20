@@ -36,7 +36,9 @@ jobs:
       run: ruff check src/ tests/ scripts/ --output-format=github
     
     - name: Run ruff format check
-      run: ruff format --check src/ tests/ scripts/
+      # scripts/check_licenses.py is owned by the licence PR. Leave it
+      # byte-for-byte with main; do not reformat it here.
+      run: ruff format --check --exclude scripts/check_licenses.py src/ tests/ scripts/
 
   types:
     name: quality / types
