@@ -1,12 +1,13 @@
 """Tests for AC-08 harness (attribute search precision@10)."""
 
 import pytest
-from trace_search.ac08_harness import (
+from trace_search.attributes import (
     AC08Harness,
     LabelledRecord,
     AttributeSearchQuery,
+    PersonAttributes,
+    Color,
 )
-from trace_search.attributes import PersonAttributes, Color
 
 
 class TestAC08Harness:
