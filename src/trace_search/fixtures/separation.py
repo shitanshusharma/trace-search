@@ -5,6 +5,10 @@ by pHash (Hamming distance <= 8). Source files are not data. The top-level
 ``smoke/`` store is the fixture directory and is not itself a leak; a copy
 anywhere else, including ``data/train/smoke/`` or a ``.dat`` rename, is.
 
+Training, eval, val, holdout, test, and study roots are matched
+case-insensitively (``eval/``, ``Data/Train/``, ``TRAIN/``). Every file under
+those roots is content-hashed, whatever its suffix.
+
 Fail closed:
 - explicit empty dataset or empty dataset directory
 - missing directory, missing file, unreadable file
@@ -30,7 +34,24 @@ from trace_search.fixtures.content import (
 )
 
 FORBIDDEN_TAGS = {"SMOKE_ONLY", "CODE_TEST"}
-DATA_DIR_NAMES = {"data", "train", "dev", "hold", "study", "datasets", "fixtures"}
+# Casefolded directory names. Any parent with one of these names is a
+# training, eval, or study input, including Data/Train and TRAIN.
+DATA_DIR_NAMES = {
+    "data",
+    "datasets",
+    "dev",
+    "eval",
+    "evaluation",
+    "fixtures",
+    "hold",
+    "holdout",
+    "study",
+    "test",
+    "train",
+    "training",
+    "val",
+    "validation",
+}
 SKIP_ROOT_DIRS = {
     ".git",
     ".venv",
@@ -93,22 +114,23 @@ def _skipped_store_or_tooling(path: Path, repo_root: Path) -> bool:
 
 
 def _in_training_root(parts: tuple[str, ...]) -> bool:
-    """True for files under data/train/dev/hold/study/datasets/fixtures stores.
+    """True for files under a training, eval, val, holdout, test, or study root.
 
-    ``src/`` and the other code roots are excluded so the package directory
-    named ``fixtures`` is not treated as a dataset.
+    Names are compared case-insensitively, so ``Data/Train`` and ``TRAIN``
+    match. ``src/`` and the other code roots are excluded so the package
+    directory named ``fixtures`` is not treated as a dataset.
     """
     if len(parts) < 2 or parts[0] in CODE_ROOTS:
         return False
-    return any(part in DATA_DIR_NAMES for part in parts[:-1])
+    return any(part.casefold() in DATA_DIR_NAMES for part in parts[:-1])
 
 
 def auto_discover_data_files(repo_root: Path) -> list[Path]:
-    """Media files, plus every file under a training or data root.
+    """Media files, plus every file under a training, eval, or study root.
 
     Suffix does not matter inside those roots: a smoke clip renamed to
-    ``data/train/clip.txt`` is still SHA-256 checked. pHash runs later, and
-    only when the bytes decode. Source trees are not data.
+    ``eval/clip.txt`` or ``Data/Train/clip.txt`` is still SHA-256 checked.
+    pHash runs later, and only when the bytes decode. Source trees are not data.
     """
     if not repo_root.exists():
         raise SeparationCheckError(f"FAIL-CLOSED: repository root does not exist: {repo_root}")

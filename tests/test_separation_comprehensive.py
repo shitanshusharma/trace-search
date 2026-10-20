@@ -175,6 +175,64 @@ def test_renamed_txt_inside_train_fails(tmp_path: Path):
     assert any(item[1] == "FX-SMOKE-SYN-021" for item in result["exact_matches"])
 
 
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "eval/clip.txt",
+        "val/clip.txt",
+        "holdout/clip.txt",
+        "test/clip.txt",
+        "training/clip.txt",
+        "Data/Train/clip.txt",
+        "TRAIN/clip.txt",
+    ],
+)
+def test_renamed_clip_under_eval_and_cased_roots_fails(tmp_path: Path, relative: str):
+    """A smoke clip under any train/eval/study root fails, whatever the case or suffix."""
+    original = tmp_path / "smoke" / "clip.mp4"
+    original.parent.mkdir()
+    gen = _clip(original, seed=34)
+    manifest = tmp_path / "manifest.json"
+    _manifest(
+        manifest,
+        gen.compute_sha256(original),
+        gen.compute_phashes(original, num_samples=10),
+        "FX-SMOKE-SYN-034",
+    )
+    leaked = tmp_path / relative
+    leaked.parent.mkdir(parents=True)
+    leaked.write_bytes(original.read_bytes())
+
+    result = run_separation_check(manifest, repo_root=tmp_path)
+    assert result["passed"] is False
+    assert result["files_checked"] >= 1
+    assert any(item[1] == "FX-SMOKE-SYN-034" for item in result["exact_matches"])
+
+
+def test_clean_tree_passes(tmp_path: Path):
+    """A tree with only the smoke store and source files passes."""
+    original = tmp_path / "smoke" / "clip.mp4"
+    original.parent.mkdir()
+    gen = _clip(original, seed=35)
+    manifest = tmp_path / "manifest.json"
+    _manifest(
+        manifest,
+        gen.compute_sha256(original),
+        gen.compute_phashes(original, num_samples=10),
+        "FX-SMOKE-SYN-035",
+    )
+    source = tmp_path / "src" / "trace_search" / "fixtures"
+    source.mkdir(parents=True)
+    (source / "helper.py").write_text("x = 1\n")
+    (tmp_path / "README.md").write_text("clean\n")
+
+    result = run_separation_check(manifest, repo_root=tmp_path)
+    assert result["passed"] is True
+    assert result["exact_matches"] == []
+    assert result["near_duplicates"] == []
+    assert result["files_checked"] == 0
+
+
 def test_image_copy_and_reencode_are_flagged(tmp_path: Path):
     """Images get a SHA-256 and a pHash check, including a .dat rename."""
     from PIL import Image
