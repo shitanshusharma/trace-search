@@ -130,8 +130,12 @@ jobs:
         body: ${{ env.COMMENT_BODY }}
         edit-mode: replace
     
-    - name: Create check summary
+    - name: Exit with failure if any check failed
+      if: always()
       env:
         SUMMARY: ${{ steps.aggregate.outputs.result }}
       run: |
-        echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
+        if echo "$SUMMARY" | grep -q "❌ FAILED"; then
+          echo "One or more required checks failed"
+          exit 1
+        fi

@@ -14,6 +14,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate-action-shas:
+    name: rules / validate-action-shas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+    
+    - name: Validate all action SHAs exist in upstream repos
+      run: |
+        echo "Validating action SHAs..."
+        
+        # Extract all uses: lines with SHAs
+        grep -r "uses:.*@[a-f0-9]\{40\}" .github/workflows/ | \
+        while IFS= read -r line; do
+          # Extract action and SHA
+          action=$(echo "$line" | sed -n 's/.*uses: *\([^@]*\)@\([a-f0-9]\{40\}\).*/\1/p')
+          sha=$(echo "$line" | sed -n 's/.*uses: *\([^@]*\)@\([a-f0-9]\{40\}\).*/\2/p')
+          
+          if [ -n "$action" ] && [ -n "$sha" ]; then
+            echo "Checking $action @ $sha"
+            
+            # Convert action to repo URL
+            repo_url="https://github.com/$action.git"
+            
+            # Check if SHA exists
+            if ! git ls-remote "$repo_url" "$sha" | grep -q "$sha"; then
+              echo "ERROR: SHA $sha does not exist in $repo_url"
+              exit 1
+            fi
+            echo "  ✓ Valid"
+          fi
+        done
+        
+        echo "All action SHAs validated successfully!"
+
   check:
     name: rules / project-rules
     runs-on: ubuntu-latest

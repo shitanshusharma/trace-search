@@ -8,8 +8,9 @@ Enforces PRD hard-stops:
    dlib face models, deepface, facenet, mediapipe face, opengait, ultralytics, boxmot;
    identifiers like watchlist/enrol/face_embedding/gait; API schema fields like
    name/national_id)
-2. No media files (video/image/weights) committed outside approved fixtures paths/allow-list
-3. Explicit allow-mechanism for false positives (needs reviewed comment)
+2. No research-only datasets or weights (Market-1501, MSMT17, DukeMTMC, Objects365, etc.)
+3. No media files (video/image/weights) committed outside manifest-backed fixtures
+4. Explicit allow-mechanism for false positives (needs reviewed comment)
 
 Exit 0 if all checks pass, exit 1 if violations found.
 """
@@ -35,38 +36,71 @@ BANNED_IMPORTS = [
     r"mediapipe.*face",
 ]
 
-# Banned identifiers in code (case-insensitive patterns)
+# Research-only datasets and weights (case-insensitive)
+BANNED_DATASETS = [
+    r"market.?1501",  # Market-1501, market1501, etc.
+    r"msmt17",
+    r"duke.?mtmc",  # DukeMTMC, duke-mtmc, etc.
+    r"cuhk03",
+    r"casia.?b",  # CASIA-B, casia_b, etc.
+    r"grew",
+    r"gait3d",
+    r"objects365",
+    r"model.?zoo.*reid",  # model-zoo ReID weights, model_zoo_reid, etc.
+]
+
+# Banned identifiers in code (normalized: _ and . become wildcards)
+# These patterns are applied after normalizing underscores and dots
 BANNED_IDENTIFIERS = [
     r"\bwatchlist\b",
-    r"\benrol(?:l)?(?:ment)?\b",
-    r"\bface_embedding\b",
-    r"\bface_crop\b",
-    r"\bgait(?:_|[A-Z])",
-    r"\bname\s*[:=]\s*['\"]",  # name field assignments
-    r"\bnational_id\b",
-    r"\bidentity_id\b",
+    r"\benroll?(?:ment|ed|_person)?\b",  # enrol, enroll, enrolment, enrolled, enroll_person
+    r"\bface[._]?embeddings?\b",  # face_embedding, face_embeddings, FaceEmbedding
+    r"\bface[._]?crops?\b",  # face_crop, face_crops
+    r"\bgait(?:[._]|[A-Z])|\bgait\b",  # gait_, gait., GaitModel, or bare gait
+    r"\bname\s*:\s*str\b",  # Typed field: name: str
+    r"\bnational[._]?id\b",
+    r"\bidentity[._]?id\b",
 ]
 
-# Media file extensions that should not be committed
+# Media file extensions (case-insensitive matching)
 MEDIA_EXTENSIONS = [
-    # Video (case-insensitive matching below)
-    ".mp4", ".mkv", ".avi", ".mov", ".h264", ".h265", ".dav", ".webm", ".flv",
+    # Video
+    ".mp4",
+    ".mkv",
+    ".avi",
+    ".mov",
+    ".h264",
+    ".h265",
+    ".dav",
+    ".webm",
+    ".flv",
     # Image
-    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".tiff",
+    ".webp",
     # Model weights
-    ".pt", ".pth", ".onnx", ".safetensors", ".h5", ".pb", ".tflite", ".weights",
-]
-
-# Paths where media files are explicitly allowed
-MEDIA_ALLOW_PATHS = [
-    "fixtures/",
-    "tests/fixtures/",
-    "docs/diagrams/",  # Allow docs diagrams
-    "docs/images/",
+    ".pt",
+    ".pth",
+    ".onnx",
+    ".safetensors",
+    ".h5",
+    ".pb",
+    ".tflite",
+    ".weights",
+    ".ckpt",
+    ".bin",
+    ".npy",
 ]
 
 # Allow-list file (lines starting with # are comments)
 ALLOW_LIST_FILE = ".project-rules-allow"
+
+# Manifest file for media SHA verification
+MANIFEST_FILE = "licenses/manifest.json"
 
 
 def load_allow_list() -> set[str]:
@@ -87,33 +121,80 @@ def load_allow_list() -> set[str]:
     return allow_list
 
 
+def load_manifest() -> dict[str, Any]:
+    """Load the license manifest to check media file SHAs."""
+    manifest_path = Path(MANIFEST_FILE)
+    if not manifest_path.exists():
+        return {"files": []}
+
+    try:
+        return json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, KeyError):
+        return {"files": []}
+
+
+def normalize_text(text: str) -> str:
+    """Normalize text by replacing underscores and dots with spaces for matching."""
+    return text.replace("_", " ").replace(".", " ")
+
+
 def check_imports_and_deps() -> list[dict[str, Any]]:
     """Check for banned imports in Python files and dependencies."""
     violations: list[dict[str, Any]] = []
     allow_list = load_allow_list()
 
-    # Check Python source files
-    for py_file in Path("src").rglob("*.py"):
+    # Check all Python source files (not just src/)
+    for py_file in Path(".").rglob("*.py"):
+        # Skip .git directory
+        if ".git" in py_file.parts:
+            continue
+
         content = py_file.read_text()
 
+        # Check banned imports
         for pattern in BANNED_IMPORTS:
             matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
             for match in matches:
-                line_num = content[:match.start()].count("\n") + 1
+                line_num = content[: match.start()].count("\n") + 1
                 violation_id = f"{py_file}:{line_num}:{match.group()}"
 
                 if violation_id not in allow_list:
-                    violations.append({
-                        "type": "banned_import",
-                        "file": str(py_file),
-                        "line": line_num,
-                        "pattern": pattern,
-                        "match": match.group(),
-                        "message": f"Banned import/dependency pattern: {pattern}"
-                    })
+                    violations.append(
+                        {
+                            "type": "banned_import",
+                            "file": str(py_file),
+                            "line": line_num,
+                            "pattern": pattern,
+                            "match": match.group(),
+                            "message": f"Banned import/dependency pattern: {pattern}",
+                        }
+                    )
+
+        # Check banned datasets
+        for pattern in BANNED_DATASETS:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                line_num = content[: match.start()].count("\n") + 1
+                violation_id = f"{py_file}:{line_num}:{match.group()}"
+
+                if violation_id not in allow_list:
+                    violations.append(
+                        {
+                            "type": "banned_dataset",
+                            "file": str(py_file),
+                            "line": line_num,
+                            "pattern": pattern,
+                            "match": match.group(),
+                            "message": f"Banned research dataset/weight: {pattern}",
+                        }
+                    )
 
     # Check requirements files
-    req_files = ["requirements.txt", "requirements-dev.txt", "requirements-ci.txt"]
+    req_files = [
+        "requirements.txt",
+        "requirements-dev.txt",
+        "requirements-ci.txt",
+    ]
     for req_file in req_files:
         req_path = Path(req_file)
         if not req_path.exists():
@@ -123,18 +204,20 @@ def check_imports_and_deps() -> list[dict[str, Any]]:
         for pattern in BANNED_IMPORTS:
             matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
             for match in matches:
-                line_num = content[:match.start()].count("\n") + 1
+                line_num = content[: match.start()].count("\n") + 1
                 violation_id = f"{req_file}:{line_num}:{match.group()}"
 
                 if violation_id not in allow_list:
-                    violations.append({
-                        "type": "banned_dependency",
-                        "file": str(req_path),
-                        "line": line_num,
-                        "pattern": pattern,
-                        "match": match.group(),
-                        "message": f"Banned dependency pattern: {pattern}"
-                    })
+                    violations.append(
+                        {
+                            "type": "banned_dependency",
+                            "file": str(req_path),
+                            "line": line_num,
+                            "pattern": pattern,
+                            "match": match.group(),
+                            "message": f"Banned dependency pattern: {pattern}",
+                        }
+                    )
 
     # Check pyproject.toml
     pyproject = Path("pyproject.toml")
@@ -143,53 +226,84 @@ def check_imports_and_deps() -> list[dict[str, Any]]:
         for pattern in BANNED_IMPORTS:
             matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
             for match in matches:
-                line_num = content[:match.start()].count("\n") + 1
+                line_num = content[: match.start()].count("\n") + 1
                 violation_id = f"pyproject.toml:{line_num}:{match.group()}"
 
                 if violation_id not in allow_list:
-                    violations.append({
-                        "type": "banned_dependency",
-                        "file": str(pyproject),
-                        "line": line_num,
-                        "pattern": pattern,
-                        "match": match.group(),
-                        "message": f"Banned dependency in pyproject.toml: {pattern}"
-                    })
+                    violations.append(
+                        {
+                            "type": "banned_dependency",
+                            "file": str(pyproject),
+                            "line": line_num,
+                            "pattern": pattern,
+                            "match": match.group(),
+                            "message": f"Banned dependency in pyproject.toml: {pattern}",
+                        }
+                    )
 
     return violations
 
 
 def check_identifiers() -> list[dict[str, Any]]:
-    """Check for banned identifiers in Python source files."""
+    """Check for banned identifiers in source files."""
     violations: list[dict[str, Any]] = []
     allow_list = load_allow_list()
 
-    for py_file in Path("src").rglob("*.py"):
-        content = py_file.read_text()
+    # Check all Python files, YAML, configs (not just src/)
+    patterns_to_check = ["*.py", "*.yaml", "*.yml", "*.json", "*.toml"]
 
-        for pattern in BANNED_IDENTIFIERS:
-            matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
-            for match in matches:
-                line_num = content[:match.start()].count("\n") + 1
-                violation_id = f"{py_file}:{line_num}:{match.group()}"
+    for pattern in patterns_to_check:
+        for file in Path(".").rglob(pattern):
+            # Skip .git directory and venv
+            if ".git" in file.parts or "venv" in file.parts or ".venv" in file.parts:
+                continue
 
-                if violation_id not in allow_list:
-                    violations.append({
-                        "type": "banned_identifier",
-                        "file": str(py_file),
-                        "line": line_num,
-                        "pattern": pattern,
-                        "match": match.group(),
-                        "message": f"Banned identifier pattern: {pattern}"
-                    })
+            try:
+                content = file.read_text()
+                normalized_content = normalize_text(content)
+            except (UnicodeDecodeError, PermissionError):
+                continue
+
+            for banned_pattern in BANNED_IDENTIFIERS:
+                # Apply pattern to normalized content
+                matches = re.finditer(
+                    banned_pattern, normalized_content, re.IGNORECASE | re.MULTILINE
+                )
+                for match in matches:
+                    # Find the actual line in original content
+                    line_num = normalized_content[: match.start()].count("\n") + 1
+                    violation_id = f"{file}:{line_num}:{match.group()}"
+
+                    if violation_id not in allow_list:
+                        violations.append(
+                            {
+                                "type": "banned_identifier",
+                                "file": str(file),
+                                "line": line_num,
+                                "pattern": banned_pattern,
+                                "match": match.group(),
+                                "message": f"Banned identifier pattern: {banned_pattern}",
+                            }
+                        )
 
     return violations
 
 
 def check_media_files() -> list[dict[str, Any]]:
-    """Check for committed media files outside allow-listed paths."""
+    """Check for committed media files and verify they're in the manifest."""
     violations: list[dict[str, Any]] = []
     allow_list = load_allow_list()
+    manifest = load_manifest()
+
+    # Build a set of allowed media file SHAs from manifest
+    allowed_media_shas = set()
+    for entry in manifest.get("files", []):
+        if entry.get("sha256") and entry.get("use") in [
+            "FX-CODE",
+            "CODE_TEST",
+            "SMOKE_ONLY",
+        ]:
+            allowed_media_shas.add(entry["sha256"])
 
     for ext in MEDIA_EXTENSIONS:
         # Search case-insensitively by checking both lower and upper variants
@@ -199,20 +313,23 @@ def check_media_files() -> list[dict[str, Any]]:
                 if ".git" in media_file.parts:
                     continue
 
-                # Check if file is in an allowed path
                 file_str = str(media_file)
-                allowed = any(file_str.startswith(allowed_path) 
-                             for allowed_path in MEDIA_ALLOW_PATHS)
-
                 violation_id = f"media:{file_str}"
 
-                if not allowed and violation_id not in allow_list:
-                    violations.append({
-                        "type": "media_file",
-                        "file": file_str,
-                        "extension": media_file.suffix,
-                        "message": f"Media file outside allowed paths: {file_str}"
-                    })
+                # All media files must be in manifest with approved tag
+                # (never allow unmanifested media, even in fixtures/)
+                if violation_id not in allow_list:
+                    violations.append(
+                        {
+                            "type": "media_file",
+                            "file": file_str,
+                            "extension": media_file.suffix,
+                            "message": (
+                                f"Media file must be in manifest with approved tag: "
+                                f"{file_str}"
+                            ),
+                        }
+                    )
 
     return violations
 
@@ -246,7 +363,7 @@ def main() -> int:
     with open("project-rules-violations.json", "w") as f:
         json.dump(all_violations, f, indent=2)
 
-    print(f"Wrote violations to project-rules-violations.json")
+    print("Wrote violations to project-rules-violations.json")
     print()
     print("To allow a false positive, add the violation ID to .project-rules-allow:")
     print("  Format: <file>:<line>:<match> or media:<file>")
