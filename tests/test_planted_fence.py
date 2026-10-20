@@ -676,6 +676,54 @@ def test_pip_licenses_empty_fails(tmp_path, monkeypatch):
     assert "Failed to scan installed packages: pip-licenses returned empty package list" in stdout
 
 
+def test_imagehash_two_clause_bsd_license_passes(tmp_path, monkeypatch):
+    """pip-licenses 5.5.5 reports ImageHash as this exact free-text string."""
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "ImageHash",
+            "version": "4.3.2",
+            "license": "2-clause BSD License",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="ImageHash", version="4.3.2", license_id="BSD-2-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_unknown_pip_licenses_free_text_stays_rejected(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "ImageHash",
+            "version": "4.3.2",
+            "license": "2-clause BSD license",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="ImageHash", version="4.3.2", license_id="BSD-2-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "2-clause BSD license" in stdout
+    assert "PASSED" not in stdout
+
+
 def test_semicolon_joined_gpl_on_installed_path(tmp_path, monkeypatch):
     import scripts.check_licenses as cl
 

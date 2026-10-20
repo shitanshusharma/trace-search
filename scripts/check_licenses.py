@@ -104,6 +104,12 @@ ALLOWED_SPDX = {
 # Intentionally absent pending an owner decision: OpenSSL,
 # LicenseRef-Intel-Simplified-Software-License.
 
+# Exact pip-licenses free-text (no trove classifier) -> SPDX id.
+# Lookup is the whole string, including case. Unknown strings are not rewritten.
+PIP_LICENSES_TO_SPDX = {
+    '2-clause BSD License': 'BSD-2-Clause',
+}
+
 # Also allow common non-SPDX forms
 ALLOWED_NON_SPDX = {
     'MIT License',
@@ -409,6 +415,8 @@ def _license_decision(license_str: str, component_name: str = '') -> tuple[bool,
     license_str = license_str.strip()
     if not license_str:
         return True, False, "empty license"
+
+    license_str = PIP_LICENSES_TO_SPDX.get(license_str, license_str)
 
     if is_gcc_runtime_exception(license_str, component_name):
         return False, True, ""
