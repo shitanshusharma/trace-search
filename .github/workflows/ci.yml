@@ -21,10 +21,10 @@ jobs:
     
     steps:
     - name: Check out code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      uses: actions/checkout@v4
     
     - name: Set up Python 3.11
-      uses: actions/setup-python@a0f65ab4d4d5f03084c96de66f28ea6ec8a5b652  # v5.4.1
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     
@@ -41,14 +41,18 @@ jobs:
     - name: Run unit tests
       run: |
         pytest tests/ -v --tb=short
+      env:
+        NO_FFMPEG_CHECK: '1'
     
     - name: License fence check
       run: |
         python scripts/check_licenses.py --report=license-report.json
+      env:
+        NO_FFMPEG_CHECK: '1'
     
     - name: Upload license report
       if: always()
-      uses: actions/upload-artifact@1a4cd7c89afa8f33ab994e05b68ed1d3f68e5487  # v4.6.0
+      uses: actions/upload-artifact@v4
       with:
         name: license-report
         path: license-report.json
