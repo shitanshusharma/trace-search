@@ -21,17 +21,18 @@ jobs:
     
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
     
     - name: Set up Python 3.11
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
       with:
         python-version: '3.11'
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements-dev.txt
+        pip install --require-hashes -r requirements-dev.lock
+        if [ -f requirements.txt ]; then pip install --require-hashes -r requirements.txt; fi
         pip install -e .
     
     - name: Lint with ruff
@@ -41,20 +42,14 @@ jobs:
     - name: Run unit tests
       run: |
         pytest tests/ -v --tb=short
-      env:
-        NO_FFMPEG_CHECK: '1'
     
     - name: License fence check
       run: |
-        python scripts/check_licenses.py \
-          --requirements=requirements-dev.txt \
-          --report=license-report.json
-      env:
-        NO_FFMPEG_CHECK: '1'
+        python scripts/check_licenses.py --requirements=requirements.txt --requirements=requirements-dev.txt --report=license-report.json
     
     - name: Upload license report
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874  # v4.4.0
       with:
         name: license-report
         path: license-report.json
