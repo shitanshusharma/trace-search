@@ -35,7 +35,7 @@
           },
           "type": {
             "type": "string",
-            "enum": ["library", "model", "weight", "dataset", "clip", "synthetic_clip", "generator", "tool"],
+            "enum": ["library", "model", "weight", "dataset", "clip", "synthetic_clip", "code_fixture", "generator", "tool"],
             "description": "Type of component"
           },
           "license": {
@@ -76,12 +76,13 @@
           },
           "use": {
             "type": "string",
-            "description": "For clips/fixtures only: usage tag. Clips and synthetic_clips must use SMOKE_ONLY."
+            "enum": ["SMOKE_ONLY", "CODE_TEST"],
+            "description": "Usage tag. Stock/synthetic clips are SMOKE_ONLY; FX-CODE fixtures are CODE_TEST."
           },
           "fixture_id": {
             "type": "string",
-            "pattern": "^FX-(SMOKE|CODE)(-SYN)?-[0-9]+$",
-            "description": "Fixture identifier matching PRD prefixes: FX-SMOKE-###, FX-CODE-###, FX-SMOKE-SYN-###"
+            "pattern": "^FX-(SMOKE(-SYN)?|CODE)-[0-9]+$",
+            "description": "FX-SMOKE-### (clip/SMOKE_ONLY), FX-SMOKE-SYN-### (synthetic_clip/SMOKE_ONLY), FX-CODE-### (code_fixture/CODE_TEST)"
           },
           "generator": {
             "type": "string",
@@ -107,18 +108,76 @@
         "allOf": [
           {
             "if": {
-              "properties": {
-                "type": {
-                  "enum": ["clip", "synthetic_clip"]
-                }
-              }
+              "properties": { "type": { "const": "clip" } },
+              "required": ["type"]
             },
             "then": {
               "required": ["license_version", "date_checked_ist", "phash", "use"],
               "properties": {
-                "use": {
-                  "const": "SMOKE_ONLY"
-                }
+                "use": { "const": "SMOKE_ONLY" },
+                "fixture_id": { "pattern": "^FX-SMOKE-[0-9]+$" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "synthetic_clip" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["license_version", "date_checked_ist", "phash", "use", "generator_license"],
+              "properties": {
+                "use": { "const": "SMOKE_ONLY" },
+                "fixture_id": { "pattern": "^FX-SMOKE-SYN-[0-9]+$" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "code_fixture" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["use", "fixture_id"],
+              "properties": {
+                "use": { "const": "CODE_TEST" },
+                "fixture_id": { "pattern": "^FX-CODE-[0-9]+$" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "fixture_id": { "pattern": "^FX-SMOKE-SYN-[0-9]+$" } },
+              "required": ["fixture_id"]
+            },
+            "then": {
+              "properties": {
+                "type": { "const": "synthetic_clip" },
+                "use": { "const": "SMOKE_ONLY" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "fixture_id": { "pattern": "^FX-CODE-[0-9]+$" } },
+              "required": ["fixture_id"]
+            },
+            "then": {
+              "properties": {
+                "type": { "const": "code_fixture" },
+                "use": { "const": "CODE_TEST" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "fixture_id": { "pattern": "^FX-SMOKE-[0-9]+$" } },
+              "required": ["fixture_id"]
+            },
+            "then": {
+              "properties": {
+                "type": { "const": "clip" },
+                "use": { "const": "SMOKE_ONLY" }
               }
             }
           }

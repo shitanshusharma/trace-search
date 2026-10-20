@@ -34,6 +34,7 @@ This is investigative tooling with human review, not automated surveillance.
 This project maintains **strict license hygiene** for commercial use:
 
 - **Banned licenses:** AGPL, GPL, NC (Non-Commercial), unknown/unrecognized
+- **GCC Runtime Library Exception:** The single GPL-family exception is GCC runtime libraries (`libgfortran`, `libquadmath`, `libgcc_s`, `libstdc++`) with the GCC Runtime Library Exception (`GPL-3.0 WITH GCC-exception-3.1`), which are required runtime components
 - **Banned components:** Ultralytics (AGPL), boxmot (AGPL), InsightFace/ArcFace, OpenGait
 - **Banned datasets:** Market-1501, MSMT17, DukeMTMC, CUHK03, CASIA-B, GREW, Gait3D, Objects365-trained weights
 

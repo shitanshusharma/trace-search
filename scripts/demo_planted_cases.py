@@ -29,7 +29,7 @@ def run_checker(manifest_data: dict, name: str) -> tuple[int, str]:
             cwd=Path.cwd(),
             capture_output=True,
             text=True,
-            env={'NO_FFMPEG_CHECK': '1', **dict(os.environ)}
+            env={**os.environ}
         )
         return result.returncode, result.stdout
     finally:

@@ -7,6 +7,7 @@ Validates the license manifest and scans installed packages for:
 - Banned component names (Ultralytics, boxmot, model zoos, etc.)
 - Missing manifest entries for installed packages
 - Schema compliance
+- OpenCV-bundled FFmpeg (libavcodec) license/configuration
 
 Exit codes:
   0 - All checks passed
@@ -47,6 +48,30 @@ BANNED_LICENSE_PATTERNS = [
     r'^UNKNOWN$',
     r'^NOASSERTION$',
 ]
+
+# Single GPL-family exception (PRD rev 3a / AC-01 / §3).
+# Rationale: GCC runtime libraries ship under GPL-3.0 WITH GCC-exception-3.1
+# (the GCC Runtime Library Exception). That exception explicitly permits
+# redistribution of the runtime with independent programs. This is a named
+# allowlist of (package, expression) pairs — GPL matching itself is unchanged.
+# Allowed packages only: libgfortran, libquadmath, libgcc_s, libstdc++.
+# Allowed expressions only: GPL-3.0 / GPL-3.0-only / GPL-3.0-or-later
+# WITH GCC-exception-3.1, plus the "GCC Runtime Library Exception" wording.
+# Plain GPL-3.0, GPL-2.0, any other WITH exception, or a non-GCC package
+# claiming this exception all fail.
+GCC_RUNTIME_EXCEPTION_LIBRARIES = {
+    'libgfortran',
+    'libquadmath',
+    'libgcc-s',  # normalized form of libgcc_s
+    'libstdc++',
+}
+
+GCC_RUNTIME_EXCEPTION_LICENSES = {
+    'GPL-3.0 WITH GCC-exception-3.1',
+    'GPL-3.0-only WITH GCC-exception-3.1',
+    'GPL-3.0-or-later WITH GCC-exception-3.1',
+    'GCC Runtime Library Exception',
+}
 
 # Exact allowed SPDX identifiers (case-sensitive for SPDX compliance)
 ALLOWED_SPDX = {
@@ -129,6 +154,11 @@ BANNED_COMPONENTS = [
 ]
 
 
+def normalize_package_name(name: str) -> str:
+    """Normalize a package/component name for comparisons."""
+    return name.lower().replace('_', '-').replace('.', '-')
+
+
 def load_manifest(manifest_path: Path) -> dict:
     """Load and parse the license manifest JSON."""
     try:
@@ -136,10 +166,10 @@ def load_manifest(manifest_path: Path) -> dict:
             return json.load(f)
     except FileNotFoundError:
         print(f"ERROR: Manifest not found: {manifest_path}", file=sys.stderr)
-        sys.exit(1)
+        raise
     except json.JSONDecodeError as e:
         print(f"ERROR: Invalid JSON in manifest: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise
 
 
 def validate_schema(manifest: dict, schema_path: Path) -> list[str]:
@@ -182,23 +212,36 @@ def validate_schema(manifest: dict, schema_path: Path) -> list[str]:
         return [f"Schema validation error: {e}"]
 
 
-def is_license_banned(license_str: str) -> tuple[bool, str]:
+def is_gcc_runtime_exception(license_str: str, component_name: str) -> bool:
+    """True only for the named GCC runtime + GCC-exception-3.1 pairing."""
+    if not component_name:
+        return False
+    return (
+        normalize_package_name(component_name) in GCC_RUNTIME_EXCEPTION_LIBRARIES
+        and license_str.strip() in GCC_RUNTIME_EXCEPTION_LICENSES
+    )
+
+
+def is_license_banned(license_str: str, component_name: str = '') -> tuple[bool, str]:
     """
     Check if a license string is banned.
 
     Splits on '; ' (pip-licenses format), SPDX OR/AND/WITH, and checks each component.
+    Allows GCC Runtime Library Exception for specific GCC runtime libraries only.
     Returns (is_banned, reason).
     """
     if not license_str or not license_str.strip():
         return True, "empty license"
 
+    # Named GCC exception: check the full expression BEFORE splitting on WITH.
+    if is_gcc_runtime_exception(license_str, component_name):
+        return False, ""
+
     # Split on '; ' (pip-licenses format) and SPDX operators
-    # First split on ';', then on SPDX operators within each part
     all_components = []
     for part in license_str.split(';'):
         part = part.strip()
         if part:
-            # Split SPDX expression (OR, AND, WITH)
             spdx_components = re.split(r'\s+(?:OR|AND|WITH)\s+', part)
             all_components.extend(spdx_components)
 
@@ -207,7 +250,6 @@ def is_license_banned(license_str: str) -> tuple[bool, str]:
         if not comp:
             continue
 
-        # Check banned patterns
         for pattern in BANNED_LICENSE_PATTERNS:
             if re.search(pattern, comp, re.IGNORECASE):
                 return True, f"banned pattern '{pattern}' in '{comp}'"
@@ -215,23 +257,27 @@ def is_license_banned(license_str: str) -> tuple[bool, str]:
     return False, ""
 
 
-def is_license_allowed(license_str: str) -> bool:
+def is_license_allowed(license_str: str, component_name: str = '') -> bool:
     """
     Check if a license is in the allowed list.
 
     Handles '; ' (pip-licenses format) and SPDX expressions.
     For AND/';' expressions: ALL components must be allowed.
     For OR expressions: at least one component must be allowed.
+    Allows GCC Runtime Library Exception for specific GCC runtime libraries.
     """
     license_str = license_str.strip()
     if not license_str:
         return False
 
+    if is_gcc_runtime_exception(license_str, component_name):
+        return True
+
     # Handle '; ' separated licenses (pip-licenses format)
     # Treat as AND - all must be allowed
     if '; ' in license_str:
         parts = [p.strip() for p in license_str.split('; ')]
-        return all(is_license_allowed(p) for p in parts if p)
+        return all(is_license_allowed(p, component_name) for p in parts if p)
 
     # Check SPDX identifiers (case-sensitive)
     if license_str in ALLOWED_SPDX:
@@ -246,12 +292,12 @@ def is_license_allowed(license_str: str) -> bool:
     # Handle SPDX OR expression - at least one must be allowed
     if ' OR ' in license_str:
         components = [c.strip() for c in license_str.split(' OR ')]
-        return any(is_license_allowed(c) for c in components if c)
+        return any(is_license_allowed(c, component_name) for c in components if c)
 
     # Handle SPDX AND expression - all must be allowed
     if ' AND ' in license_str:
         components = [c.strip() for c in license_str.split(' AND ')]
-        return all(is_license_allowed(c) for c in components if c)
+        return all(is_license_allowed(c, component_name) for c in components if c)
 
     return False
 
@@ -265,35 +311,34 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
         name = entry.get('name', 'unknown')
         entry_type = entry.get('type', '')
 
-        is_banned, reason = is_license_banned(license_str)
+        is_banned, reason = is_license_banned(license_str, name)
         if is_banned:
             violations.append(f"{name}: banned license '{license_str}' ({reason})")
-        elif not is_license_allowed(license_str):
+        elif not is_license_allowed(license_str, name):
             violations.append(
                 f"{name}: license '{license_str}' not in allowed list "
                 "(must be exact SPDX or approved non-SPDX)"
             )
 
-        # Check generator_license on synthetic_clip entries (PRD §3: 0 GPL entries)
+        # generator_license uses the same allowlist / SPDX parser as packages.
+        # Empty, NC, Proprietary, GPL, UNKNOWN, and free-text all fail closed.
         if entry_type == 'synthetic_clip':
-            generator_license = entry.get('generator_license', '').strip()
+            raw_gen = entry.get('generator_license', '')
+            generator_license = raw_gen.strip() if isinstance(raw_gen, str) else ''
             if not generator_license:
                 violations.append(
                     f"{name}: synthetic_clip missing required generator_license field"
                 )
             else:
-                # Generator license must not be GPL-family (PRD §3)
                 gen_is_banned, gen_reason = is_license_banned(generator_license)
-                if gen_is_banned and 'GPL' in gen_reason.upper():
+                if gen_is_banned:
                     violations.append(
-                        f"{name}: synthetic_clip generator has GPL-family license "
-                        f"'{generator_license}' (PRD §3 requires 0 GPL entries)"
+                        f"{name}: generator_license '{generator_license}' is banned "
+                        f"({gen_reason})"
                     )
-                # Unknown generator license also fails closed
-                if generator_license.upper() in ['UNKNOWN', 'UNLICENSED', 'NOASSERTION']:
+                elif not is_license_allowed(generator_license):
                     violations.append(
-                        f"{name}: synthetic_clip generator has "
-                        f"unknown license '{generator_license}'"
+                        f"{name}: generator_license '{generator_license}' not in allowed list"
                     )
 
     return violations
@@ -308,7 +353,6 @@ def check_banned_components(manifest: dict) -> list[str]:
         source_url = entry.get('source_url', '')
         notes = entry.get('notes', '')
 
-        # Normalize: lowercase, replace _ and . with -
         def normalize(s):
             return s.lower().replace('_', '-').replace('.', '-')
 
@@ -325,12 +369,7 @@ def check_banned_components(manifest: dict) -> list[str]:
 
 
 def get_direct_dependencies(requirements_files: list[Path]) -> set[str]:
-    """
-    Parse requirements files and return set of direct dependencies.
-
-    Only these packages will be checked against manifest.
-    Transitive dependencies are the responsibility of direct dependencies.
-    """
+    """Parse requirements files and return set of direct dependencies."""
     direct_deps = set()
 
     for req_file in requirements_files:
@@ -340,16 +379,12 @@ def get_direct_dependencies(requirements_files: list[Path]) -> set[str]:
         with req_file.open('r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                # Skip comments and empty lines
                 if not line or line.startswith('#'):
                     continue
-                # Skip -e editable installs
                 if line.startswith('-e'):
                     continue
-                # Extract package name (before ==, >=, etc.)
                 pkg_name = re.split(r'[<>=!]', line)[0].strip()
                 if pkg_name:
-                    # Normalize name (PyPI convention)
                     direct_deps.add(pkg_name.lower().replace('_', '-'))
 
     return direct_deps
@@ -391,7 +426,6 @@ def get_installed_packages(include_system: bool = False) -> list[dict]:
         raise RuntimeError("pip-licenses not installed")
     except json.JSONDecodeError as e:
         print(f"ERROR: Failed to parse pip-licenses JSON output: {e}", file=sys.stderr)
-        print(f"stdout: {result.stdout[:500]}", file=sys.stderr)
         raise RuntimeError("pip-licenses returned invalid JSON")
     except Exception as e:
         print(f"ERROR: Unexpected error getting installed packages: {e}", file=sys.stderr)
@@ -401,7 +435,7 @@ def get_installed_packages(include_system: bool = False) -> list[dict]:
 def check_installed_packages(
     installed: list[dict],
     manifest: dict,
-    direct_deps: set[str] = None
+    direct_deps: set[str] | None = None
 ) -> tuple[list[str], list[str]]:
     """
     Check installed packages against manifest and for banned licenses.
@@ -411,6 +445,7 @@ def check_installed_packages(
 
     Exempts the project's own package (trace-search) explicitly.
     """
+    del direct_deps  # unused; full-closure scan
     violations = []
     missing = []
 
@@ -426,20 +461,18 @@ def check_installed_packages(
         license_str = pkg['license']
         norm_name = name.lower().replace('_', '-')
 
-        # Explicitly exempt the project's own package
         if norm_name == 'trace-search':
             continue
 
-        # Check ALL installed packages (full closure for AC-01)
         if norm_name not in manifest_packages:
             missing.append(f"{name} ({version}): installed but not in manifest")
 
-        is_banned, reason = is_license_banned(license_str)
+        is_banned, reason = is_license_banned(license_str, name)
         if is_banned:
             violations.append(
                 f"{name} ({version}): banned license '{license_str}' ({reason})"
             )
-        elif not is_license_allowed(license_str):
+        elif not is_license_allowed(license_str, name):
             violations.append(
                 f"{name} ({version}): license '{license_str}' not in allowed list"
             )
@@ -447,113 +480,137 @@ def check_installed_packages(
     return violations, missing
 
 
+def inspect_opencv_libavcodec() -> tuple[str, str]:
+    """
+    Load opencv-headless bundled libavcodec via ctypes and read its licence
+    and configure flags.
+
+    cv2.getBuildInformation() does not expose --enable-gpl / --enable-nonfree,
+    so this inspects the wheel's bundled libavcodec directly.
+
+    Returns (avcodec_license, avcodec_configuration).
+    Raises on a missing library or a failed call (fail-closed).
+    """
+    import ctypes
+    import site
+
+    search_dirs: list[Path] = []
+    try:
+        import cv2
+        cv2_dir = Path(cv2.__file__).resolve().parent
+        search_dirs.extend([
+            cv2_dir.parent / 'opencv_python_headless.libs',
+            cv2_dir.parent / 'opencv_python.libs',
+            cv2_dir / 'opencv_python_headless.libs',
+        ])
+    except ImportError:
+        pass
+
+    for site_dir in list(site.getsitepackages()) + [site.getusersitepackages()]:
+        search_dirs.append(Path(site_dir) / 'opencv_python_headless.libs')
+        search_dirs.append(Path(site_dir) / 'opencv_python.libs')
+
+    lib_path = None
+    for directory in search_dirs:
+        if not directory.is_dir():
+            continue
+        matches = sorted(directory.glob('libavcodec*')) + sorted(directory.glob('*avcodec*'))
+        if matches:
+            lib_path = matches[0]
+            break
+
+    if lib_path is None:
+        raise FileNotFoundError(
+            "opencv bundled libavcodec not found under opencv_python_headless.libs"
+        )
+
+    lib = ctypes.CDLL(str(lib_path))
+    lib.avcodec_license.restype = ctypes.c_char_p
+    lib.avcodec_configuration.restype = ctypes.c_char_p
+    license_raw = lib.avcodec_license()
+    config_raw = lib.avcodec_configuration()
+    if license_raw is None or config_raw is None:
+        raise RuntimeError("avcodec_license() or avcodec_configuration() returned NULL")
+    return (
+        license_raw.decode('utf-8', errors='replace'),
+        config_raw.decode('utf-8', errors='replace'),
+    )
+
+
 def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
     """
-    Check FFmpeg build configuration based on manifest declarations.
+    Check FFmpeg via opencv-python-headless's bundled libavcodec.
+
+    System ffmpeg is not a project dependency. When opencv is not declared
+    the status is NOT_A_DEPENDENCY.
 
     Returns:
         (violations, status) where status is one of:
-        - 'LGPL_OK': FFmpeg is LGPL-only (bundled or system)
-        - 'NOT_A_DEPENDENCY': No FFmpeg dependency declared
-        - 'GPL_VIOLATION': FFmpeg has GPL/nonfree flags
-        - 'MISSING': Declared system FFmpeg not found
+        - 'LGPL_OK': bundled libavcodec is LGPL and has no GPL/nonfree flags
+        - 'NOT_A_DEPENDENCY': no opencv FFmpeg dependency declared
+        - 'GPL_VIOLATION': bundled FFmpeg is GPL or nonfree
+        - 'MISSING': libavcodec could not be loaded (fail-closed)
     """
-    violations = []
+    opencv_names = {'opencv-python', 'opencv-python-headless'}
+    opencv_declared = any(
+        e.get('name', '').lower().replace('_', '-') in opencv_names
+        for e in manifest.get('entries', [])
+    )
 
-    # Check if opencv-python or opencv-python-headless is in manifest
-    opencv_entries = [
-        e for e in manifest.get('entries', [])
-        if e.get('name', '').lower().replace('_', '-') in
-        ['opencv-python', 'opencv-python-headless']
-    ]
-
-    # Check if system ffmpeg is declared
-    ffmpeg_entries = [
-        e for e in manifest.get('entries', [])
-        if e.get('name', '').lower() == 'ffmpeg' and e.get('type') == 'tool'
-    ]
-
-    if opencv_entries:
-        # Check opencv's bundled FFmpeg via cv2.getBuildInformation()
-        try:
-            import cv2
-            build_info = cv2.getBuildInformation()
-
-            if '--enable-gpl' in build_info:
-                violations.append(
-                    "opencv-python's bundled FFmpeg built with --enable-gpl (must be LGPL-only)"
-                )
-                return violations, 'GPL_VIOLATION'
-            if '--enable-nonfree' in build_info:
-                violations.append(
-                    "opencv-python's bundled FFmpeg built with --enable-nonfree (must be LGPL-only)"
-                )
-                return violations, 'GPL_VIOLATION'
-
-            return [], 'LGPL_OK'
-        except ImportError:
-            violations.append("opencv-python declared in manifest but not installed")
-            return violations, 'MISSING'
-        except Exception as e:
-            violations.append(f"Failed to check opencv FFmpeg: {e}")
-            return violations, 'MISSING'
-
-    elif ffmpeg_entries:
-        # System FFmpeg declared - check it exists and is LGPL
-        try:
-            result = subprocess.run(
-                ['ffmpeg', '-buildconf'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            buildconf = result.stdout + result.stderr
-
-            if '--enable-gpl' in buildconf:
-                violations.append("System FFmpeg built with --enable-gpl (must be LGPL-only)")
-                return violations, 'GPL_VIOLATION'
-            if '--enable-nonfree' in buildconf:
-                violations.append("System FFmpeg built with --enable-nonfree (must be LGPL-only)")
-                return violations, 'GPL_VIOLATION'
-
-            return [], 'LGPL_OK'
-        except FileNotFoundError:
-            violations.append("System FFmpeg declared in manifest but not found")
-            return violations, 'MISSING'
-        except Exception as e:
-            violations.append(f"Failed to check system FFmpeg: {e}")
-            return violations, 'MISSING'
-
-    else:
-        # No FFmpeg dependency
+    if not opencv_declared:
         return [], 'NOT_A_DEPENDENCY'
+
+    try:
+        license_str, config_str = inspect_opencv_libavcodec()
+    except Exception as e:
+        return [f"Failed to inspect opencv bundled libavcodec: {e}"], 'MISSING'
+
+    if '--enable-gpl' in config_str:
+        return (
+            ["opencv bundled FFmpeg built with --enable-gpl (must be LGPL-only)"],
+            'GPL_VIOLATION',
+        )
+    if '--enable-nonfree' in config_str:
+        return (
+            ["opencv bundled FFmpeg built with --enable-nonfree (must be LGPL-only)"],
+            'GPL_VIOLATION',
+        )
+    if 'LGPL' not in license_str.upper():
+        return (
+            [f"opencv bundled libavcodec license is not LGPL: {license_str}"],
+            'GPL_VIOLATION',
+        )
+
+    return [], 'LGPL_OK'
 
 
 def generate_report(
     manifest: dict,
     installed: list[dict],
     all_violations: list[str],
-    manifest_path: Path
+    manifest_path: Path,
+    ffmpeg_status: str
 ) -> dict:
     """Generate machine-readable scanner report."""
-    import subprocess
     from datetime import datetime, timezone
 
-    # Get git commit SHA
     try:
         git_sha = subprocess.run(
             ['git', 'rev-parse', 'HEAD'],
             capture_output=True,
             text=True,
             timeout=5
-        ).stdout.strip()
+        ).stdout.strip() or "unknown"
     except Exception:
         git_sha = "unknown"
 
+    verdict = "FAIL" if all_violations else "PASS"
     return {
         "version": "1.0",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_sha,
+        "ffmpeg_status": ffmpeg_status,
+        "verdict": verdict,
         "manifest": {
             "path": str(manifest_path),
             "entries_count": len(manifest.get('entries', [])),
@@ -566,11 +623,12 @@ def generate_report(
             ]
         },
         "violations": all_violations,
-        "status": "FAIL" if all_violations else "PASS"
+        "status": verdict,
     }
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
+    """Main entry point. Returns exit code (0 for pass, 1 for fail)."""
     parser = argparse.ArgumentParser(
         description='Validate license manifest and scan installed packages.'
     )
@@ -615,7 +673,6 @@ def main():
         help='Requirements file (can be specified multiple times). '
              'If provided, only check direct dependencies from these files.'
     )
-
     parser.add_argument(
         '--check-ffmpeg',
         action='store_true',
@@ -623,16 +680,19 @@ def main():
         help='Check FFmpeg build configuration (default: True)'
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     print(f"Checking license manifest: {args.manifest}")
     print()
 
-    manifest = load_manifest(args.manifest)
-    all_violations = []
-    installed = []
+    try:
+        manifest = load_manifest(args.manifest)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return 1
 
-    # Schema validation
+    all_violations: list[str] = []
+    installed: list[dict] = []
+
     print("=== Validating manifest schema ===")
     schema_errors = validate_schema(manifest, args.schema)
     if schema_errors:
@@ -643,7 +703,6 @@ def main():
         print("✓ Schema is valid")
     print()
 
-    # Manifest license checks
     print("=== Checking manifest licenses ===")
     manifest_violations = check_manifest_licenses(manifest)
     if manifest_violations:
@@ -654,7 +713,6 @@ def main():
         print("✓ No banned licenses in manifest")
     print()
 
-    # Component name checks
     print("=== Checking for banned components ===")
     component_violations = check_banned_components(manifest)
     if component_violations:
@@ -665,7 +723,6 @@ def main():
         print("✓ No banned components found")
     print()
 
-    # Scan installed packages
     if args.scan_installed:
         print("=== Scanning installed packages ===")
         try:
@@ -696,7 +753,6 @@ def main():
             all_violations.append(f"Package scan failed: {e}")
         print()
 
-    # FFmpeg check
     ffmpeg_status = 'NOT_A_DEPENDENCY'
     if args.check_ffmpeg:
         print("=== Checking FFmpeg build configuration ===")
@@ -704,14 +760,9 @@ def main():
         for violation in ffmpeg_violations:
             print(f"ERROR: {violation}")
             all_violations.append(violation)
-        if not ffmpeg_violations:
-            if ffmpeg_status == 'LGPL_OK':
-                print("✓ FFmpeg build is LGPL-only")
-            elif ffmpeg_status == 'NOT_A_DEPENDENCY':
-                print("ℹ FFmpeg: NOT_A_DEPENDENCY")
+        print(f"FFMPEG: {ffmpeg_status}")
         print()
 
-    # Generate report
     if args.report:
         report = generate_report(
             manifest, installed, all_violations, args.manifest, ffmpeg_status
@@ -722,17 +773,16 @@ def main():
         print(f"Report written to: {args.report}")
         print()
 
-    # Summary
     total_entries = len(manifest.get('entries', []))
     print(f"Summary: Checked {total_entries} manifest entries")
 
     if all_violations:
         print("\n❌ License fence check FAILED")
-        sys.exit(1)
-    else:
-        print("\n✅ License fence check PASSED")
-        sys.exit(0)
+        return 1
+
+    print("\n✅ License fence check PASSED")
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

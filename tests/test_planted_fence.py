@@ -1,0 +1,460 @@
+"""In-process planted tests for T0b Engineering Lead blockers."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from tests.conftest import invoke_main, library_entry, make_manifest
+
+SCHEMA = Path("licenses/manifest_schema.json")
+
+
+def _clip_fields(**overrides):
+    base = {
+        "name": "stock.mp4",
+        "version": "1.0",
+        "type": "clip",
+        "license": "Pexels License",
+        "license_version": "2024-01-01",
+        "date_checked_ist": "2026-10-20",
+        "source_url": "https://example.com/clip",
+        "sha256": "a" * 64,
+        "phash": [f"{i:016x}" for i in range(10)],
+        "use": "SMOKE_ONLY",
+        "fixture_id": "FX-SMOKE-001",
+    }
+    base.update(overrides)
+    return base
+
+
+def _synthetic_fields(**overrides):
+    base = {
+        "name": "synthetic.mp4",
+        "version": "1.0",
+        "type": "synthetic_clip",
+        "license": "CC0-1.0",
+        "license_version": "1.0",
+        "date_checked_ist": "2026-10-20",
+        "source_url": "https://example.com/synthetic",
+        "sha256": "a" * 64,
+        "phash": [f"{i:016x}" for i in range(10)],
+        "use": "SMOKE_ONLY",
+        "fixture_id": "FX-SMOKE-SYN-001",
+        "generator": "blender",
+        "generator_version": "3.6.0",
+        "generator_license": "Apache-2.0",
+        "seed": "12345",
+    }
+    base.update(overrides)
+    return base
+
+
+def _code_fixture(**overrides):
+    base = {
+        "name": "code-sample.py",
+        "version": "1.0",
+        "type": "code_fixture",
+        "license": "MIT",
+        "source_url": "https://example.com/code",
+        "sha256": "a" * 64,
+        "use": "CODE_TEST",
+        "fixture_id": "FX-CODE-001",
+    }
+    base.update(overrides)
+    return base
+
+
+# ----- 1. generate_report end-to-end -----
+
+
+def test_report_end_to_end_includes_ffmpeg_commit_verdict(tmp_path):
+    """main(['--report', tmp]) writes JSON with ffmpeg_status, git_commit, verdict."""
+    report_path = tmp_path / "license-report.json"
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry()]),
+        extra_args=["--report", str(report_path)],
+        tmp_dir=tmp_path,
+    )
+    assert code == 0, stdout
+    assert report_path.exists()
+    report = json.loads(report_path.read_text())
+    assert report["ffmpeg_status"] == "NOT_A_DEPENDENCY"
+    assert report["git_commit"]
+    assert report["verdict"] == "PASS"
+    assert "FFMPEG: NOT_A_DEPENDENCY" in stdout
+
+
+# ----- 6. GCC runtime exception -----
+
+
+def test_gcc_runtime_exception_libgfortran_passes():
+    manifest = make_manifest([
+        library_entry(
+            name="libgfortran",
+            license_id="GPL-3.0 WITH GCC-exception-3.1",
+        )
+    ])
+    code, stdout, _ = invoke_main(manifest)
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_plain_gpl3_still_fails():
+    code, stdout, _ = invoke_main(make_manifest([library_entry(license_id="GPL-3.0")]))
+    assert code == 1, stdout
+    assert "banned license 'GPL-3.0'" in stdout
+    assert "banned pattern '^GPL-[123]' in 'GPL-3.0'" in stdout
+
+
+def test_plain_gpl2_still_fails():
+    code, stdout, _ = invoke_main(make_manifest([library_entry(license_id="GPL-2.0")]))
+    assert code == 1, stdout
+    assert "banned license 'GPL-2.0'" in stdout
+    assert "banned pattern '^GPL-[123]' in 'GPL-2.0'" in stdout
+
+
+def test_gpl3_with_classpath_exception_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="GPL-3.0 WITH Classpath-exception-2.0")])
+    )
+    assert code == 1, stdout
+    assert "GPL-3.0 WITH Classpath-exception-2.0" in stdout
+    assert "banned pattern '^GPL-[123]' in 'GPL-3.0'" in stdout
+
+
+def test_non_gcc_package_claiming_gcc_exception_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="fake-lib", license_id="GPL-3.0 WITH GCC-exception-3.1")
+        ])
+    )
+    assert code == 1, stdout
+    assert "fake-lib: banned license 'GPL-3.0 WITH GCC-exception-3.1'" in stdout
+
+
+# ----- 4. generator_license allowlist -----
+
+
+def test_generator_license_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_synthetic_fields(generator_license="GPL-3.0")])
+    )
+    assert code == 1, stdout
+    assert "generator_license 'GPL-3.0' is banned" in stdout
+
+
+def test_generator_license_nc_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_synthetic_fields(generator_license="CC-BY-NC-4.0")])
+    )
+    assert code == 1, stdout
+    assert "generator_license 'CC-BY-NC-4.0' is banned" in stdout
+
+
+def test_generator_license_proprietary_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_synthetic_fields(generator_license="Proprietary")])
+    )
+    assert code == 1, stdout
+    assert "generator_license 'Proprietary' is banned" in stdout
+
+
+def test_generator_license_free_text_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_synthetic_fields(generator_license="custom blender terms")])
+    )
+    assert code == 1, stdout
+    assert "generator_license 'custom blender terms' not in allowed list" in stdout
+
+
+def test_generator_license_empty_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_synthetic_fields(generator_license="")])
+    )
+    assert code == 1, stdout
+    assert "synthetic_clip missing required generator_license field" in stdout
+
+
+def test_generator_license_apache_passes():
+    code, stdout, _ = invoke_main(make_manifest([_synthetic_fields()]))
+    assert code == 0, stdout
+
+
+# ----- 5. schema fixture_id / type / use -----
+
+
+def _schema_errors(manifest):
+    from scripts.check_licenses import validate_schema
+
+    return validate_schema(manifest, SCHEMA)
+
+
+def test_schema_fx_smoke_syn_with_code_test_fails_at_use():
+    errors = _schema_errors(make_manifest([_synthetic_fields(use="CODE_TEST")]))
+    assert any("SMOKE_ONLY" in e and "at entries.0.use" in e for e in errors), errors
+
+
+def test_schema_fx_code_with_smoke_only_fails_at_use():
+    errors = _schema_errors(make_manifest([_code_fixture(use="SMOKE_ONLY")]))
+    assert any("CODE_TEST" in e and "at entries.0.use" in e for e in errors), errors
+
+
+def test_schema_clip_train_fails_at_use():
+    errors = _schema_errors(make_manifest([_clip_fields(use="TRAIN")]))
+    assert any("at entries.0.use" in e for e in errors), errors
+
+
+def test_schema_fx_code_as_clip_fails_at_type():
+    errors = _schema_errors(
+        make_manifest([_clip_fields(fixture_id="FX-CODE-001", use="CODE_TEST")])
+    )
+    assert any("at entries.0.type" in e or "at entries.0.use" in e for e in errors), errors
+
+
+def test_schema_fx_smoke_syn_as_clip_fails_at_type():
+    errors = _schema_errors(
+        make_manifest([_clip_fields(fixture_id="FX-SMOKE-SYN-001")])
+    )
+    assert any("at entries.0.type" in e or "at entries.0.fixture_id" in e for e in errors), errors
+
+
+def test_schema_valid_code_fixture_passes():
+    code, stdout, _ = invoke_main(make_manifest([_code_fixture()]))
+    assert code == 0, stdout
+
+
+def test_schema_valid_stock_clip_passes():
+    code, stdout, _ = invoke_main(make_manifest([_clip_fields()]))
+    assert code == 0, stdout
+
+
+# ----- 3. FFmpeg ctypes / fail-closed -----
+
+
+@pytest.mark.ffmpeg_real
+def test_ffmpeg_not_a_dependency_when_no_opencv():
+    from scripts.check_licenses import check_ffmpeg_build
+
+    violations, status = check_ffmpeg_build(make_manifest([library_entry()]))
+    assert violations == []
+    assert status == "NOT_A_DEPENDENCY"
+
+
+@pytest.mark.ffmpeg_real
+def test_opencv_libavcodec_lgpl_passes(monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "inspect_opencv_libavcodec",
+        lambda: ("LGPL version 2.1 or later", "--enable-shared"),
+    )
+    violations, status = cl.check_ffmpeg_build(
+        make_manifest([library_entry(name="opencv-python-headless")])
+    )
+    assert violations == []
+    assert status == "LGPL_OK"
+
+
+@pytest.mark.ffmpeg_real
+def test_opencv_libavcodec_gpl_fails(monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl, "inspect_opencv_libavcodec",
+        lambda: ("GPL version 2 or later", "--enable-gpl --enable-shared"),
+    )
+    violations, status = cl.check_ffmpeg_build(
+        make_manifest([library_entry(name="opencv-python-headless")])
+    )
+    assert status == "GPL_VIOLATION"
+    assert any("--enable-gpl" in v for v in violations)
+
+
+@pytest.mark.ffmpeg_real
+def test_opencv_libavcodec_nonfree_fails(monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl, "inspect_opencv_libavcodec",
+        lambda: ("LGPL version 2.1 or later", "--enable-nonfree"),
+    )
+    violations, status = cl.check_ffmpeg_build(
+        make_manifest([library_entry(name="opencv-python-headless")])
+    )
+    assert status == "GPL_VIOLATION"
+    assert any("--enable-nonfree" in v for v in violations)
+
+
+@pytest.mark.ffmpeg_real
+def test_opencv_libavcodec_missing_fails_closed(monkeypatch):
+    import scripts.check_licenses as cl
+
+    def boom():
+        raise FileNotFoundError("opencv bundled libavcodec not found")
+
+    monkeypatch.setattr(cl, "inspect_opencv_libavcodec", boom)
+    violations, status = cl.check_ffmpeg_build(
+        make_manifest([library_entry(name="opencv-python-headless")])
+    )
+    assert status == "MISSING"
+    assert any("libavcodec" in v for v in violations)
+
+
+# ----- 7. allowlist planted tests -----
+
+
+@pytest.mark.parametrize(
+    "pkg,lic",
+    [
+        ("Pillow", "HPND"),
+        ("Pillow", "MIT-CMU"),
+        ("zlib", "Zlib"),
+        ("libpng", "Libpng"),
+        ("libtiff", "libtiff"),
+    ],
+)
+def test_allowlisted_opencv_pillow_licenses_pass(pkg, lic):
+    code, stdout, _ = invoke_main(make_manifest([library_entry(name=pkg, license_id=lic)]))
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_gpl_still_fails_when_allowlist_includes_hpnd():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="Pillow", license_id="HPND"),
+            library_entry(name="gpl-package", license_id="GPL-3.0"),
+        ])
+    )
+    assert code == 1, stdout
+    assert "gpl-package: banned license 'GPL-3.0'" in stdout
+
+
+# ----- 8. installed closure planted tests -----
+
+
+def test_installed_gpl_package_fails_with_specific_message(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{"name": "gpl-pkg", "version": "1.0.0", "license": "GPL-3.0"}],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry()]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "gpl-pkg (1.0.0): banned license 'GPL-3.0'" in stdout
+
+
+def test_installed_unlisted_requirements_package_fails(tmp_path, monkeypatch):
+    """An installed runtime package with no manifest row fails closed."""
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{"name": "mystery-runtime", "version": "2.0.0", "license": "MIT"}],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry()]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "mystery-runtime (2.0.0): installed but not in manifest" in stdout
+
+
+def test_metadata_gpl_manifest_mit_fails(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{"name": "bad-package", "version": "1.0.0", "license": "GPL-3.0"}],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="bad-package", license_id="MIT")]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "bad-package (1.0.0): banned license 'GPL-3.0'" in stdout
+
+
+def test_ultralytics_installed_fails(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{"name": "ultralytics", "version": "8.3.0", "license": "AGPL-3.0"}],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="pytest")]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "ultralytics (8.3.0): banned license 'AGPL-3.0'" in stdout
+
+
+def test_pip_licenses_raising_fails(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    def boom(**kw):
+        raise RuntimeError("pip-licenses command failed")
+
+    monkeypatch.setattr(cl, "get_installed_packages", boom)
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry()]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "Failed to scan installed packages: pip-licenses command failed" in stdout
+
+
+def test_pip_licenses_empty_fails(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    def boom(**kw):
+        raise RuntimeError("pip-licenses returned empty package list")
+
+    monkeypatch.setattr(cl, "get_installed_packages", boom)
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry()]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "Failed to scan installed packages: pip-licenses returned empty package list" in stdout
+
+
+def test_semicolon_joined_gpl_on_installed_path(tmp_path, monkeypatch):
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "python-dateutil",
+            "version": "2.9.0",
+            "license": "Apache-2.0; GPL-2.0",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="python-dateutil", license_id="Apache-2.0")]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "banned license 'Apache-2.0; GPL-2.0'" in stdout
+    assert "GPL-2.0" in stdout
