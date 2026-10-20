@@ -11,6 +11,8 @@ Covers:
 - Negative coordinates and out-of-frame boxes
 """
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -53,11 +55,10 @@ class TestColorPalette:
         assert attrs.upper_confidence > 0.5
 
     def test_dark_blue_denim(self, extractor):
-        """Denim/navy detected as dark_blue or blue."""
+        """Denim/navy detected as dark_blue."""
         frame = self.create_color_patch((90, 50, 60), size=(100, 50))
         attrs = extractor.extract(frame, (0, 0, 50, 100))
-        # Dark blue has lower value than bright blue
-        assert attrs.upper_clothing_color in [Color.DARK_BLUE, Color.BLUE]
+        assert attrs.upper_clothing_color == Color.DARK_BLUE
         assert attrs.upper_confidence > 0.3
 
     def test_green_patch(self, extractor):
@@ -152,10 +153,10 @@ class TestSyntheticPerson:
         - Bottom 10%: feet (gray)
         """
         crop = np.zeros((height, width, 3), dtype=np.uint8)
-        crop[:int(0.25 * height), :] = (100, 100, 100)  # head
-        crop[int(0.25 * height):int(0.55 * height), :] = upper_bgr  # torso
-        crop[int(0.55 * height):int(0.90 * height), :] = lower_bgr  # legs
-        crop[int(0.90 * height):, :] = (100, 100, 100)  # feet
+        crop[: int(0.25 * height), :] = (100, 100, 100)  # head
+        crop[int(0.25 * height) : int(0.55 * height), :] = upper_bgr  # torso
+        crop[int(0.55 * height) : int(0.90 * height), :] = lower_bgr  # legs
+        crop[int(0.90 * height) :, :] = (100, 100, 100)  # feet
         return crop
 
     def test_red_shirt_blue_pants(self, extractor):
@@ -183,18 +184,18 @@ class TestInvalidBox:
         return AttributeExtractor()
 
     def test_negative_coordinates(self, extractor):
-        """Negative coordinates clipped, then processed."""
+        """Negative coordinates clipped, then the visible blue pixels are read."""
         frame = np.full((100, 100, 3), (220, 0, 0), dtype=np.uint8)
         attrs = extractor.extract(frame, (-10, -10, 50, 50))
-        # Box clipped to (0,0,50,50), should still work
-        assert attrs.upper_clothing_color != Color.INVALID_BOX
+        # Box clipped to (0,0,50,50) on a solid-blue frame
+        assert attrs.upper_clothing_color == Color.BLUE
 
     def test_out_of_frame_box(self, extractor):
-        """Box extending past frame is clipped."""
+        """Box extending past frame is clipped and the visible green is read."""
         frame = np.full((100, 100, 3), (0, 200, 0), dtype=np.uint8)
         attrs = extractor.extract(frame, (50, 50, 150, 150))
-        # Box clipped to (50,50,100,100), should still work
-        assert attrs.upper_clothing_color != Color.INVALID_BOX
+        # Box clipped to (50,50,100,100) on a solid-green frame
+        assert attrs.upper_clothing_color == Color.GREEN
 
     def test_zero_area_box(self, extractor):
         """Zero-area box returns INVALID_BOX."""
@@ -248,20 +249,49 @@ class TestBagDetection:
         attrs = extractor.extract(frame, person_box, bag_boxes)
         assert attrs.bag_on_track is False
 
-    def test_crowd_two_people_one_bag_inside_A(self, extractor):
-        """Two overlapping people, one bag clearly inside person A."""
+    def test_crowd_two_people_one_bag_inside_a(self, extractor):
+        """Bag overlaps both people, mostly inside A; only A gets it."""
         frame = np.zeros((100, 200, 3), dtype=np.uint8)
-        person_a_box = (10, 20, 90, 80)  # Left person
-        person_b_box = (70, 20, 150, 80)  # Right person (overlaps)
-        bag_box = (30, 35, 50, 55)  # Clearly inside person A
+        person_a_box = (10, 20, 90, 80)
+        person_b_box = (70, 20, 150, 80)
+        # Overlaps both: containment A = 0.875, B = 0.625 (both > 0.5)
+        bag_box = (55, 30, 95, 60)
 
-        # Bag is fully inside person A
-        attrs_a = extractor.extract(frame, person_a_box, [bag_box])
-        assert attrs_a.bag_on_track is True
+        assert AttributeExtractor._containment_ratio(person_a_box, bag_box) > 0.5
+        assert AttributeExtractor._containment_ratio(person_b_box, bag_box) > 0.5
+        assert AttributeExtractor._containment_ratio(
+            person_a_box, bag_box
+        ) > AttributeExtractor._containment_ratio(person_b_box, bag_box)
 
-        # Bag has low containment in person B (only partial overlap)
-        attrs_b = extractor.extract(frame, person_b_box, [bag_box])
-        assert attrs_b.bag_on_track is False
+        assigned = AttributeExtractor.assign_bags([person_a_box, person_b_box], [bag_box])
+        assert assigned == [True, False]
+
+        attrs = extractor.extract_frame(frame, [person_a_box, person_b_box], [bag_box])
+        assert attrs[0].bag_on_track is True
+        assert attrs[1].bag_on_track is False
+
+    def test_equal_straddle_tie_break(self, extractor):
+        """Equal containment: earlier person in the list wins."""
+        frame = np.zeros((100, 200, 3), dtype=np.uint8)
+        person_a_box = (10, 20, 90, 80)
+        person_b_box = (70, 20, 150, 80)
+        # Review repro: containment is 0.833 for both people
+        bag_box = (65, 30, 95, 60)
+
+        containment_a = AttributeExtractor._containment_ratio(person_a_box, bag_box)
+        containment_b = AttributeExtractor._containment_ratio(person_b_box, bag_box)
+        assert containment_a == pytest.approx(containment_b)
+        assert containment_a > 0.5
+
+        assigned = AttributeExtractor.assign_bags([person_a_box, person_b_box], [bag_box])
+        assert assigned == [True, False]
+
+        assigned_reversed = AttributeExtractor.assign_bags([person_b_box, person_a_box], [bag_box])
+        assert assigned_reversed == [True, False]
+
+        attrs = extractor.extract_frame(frame, [person_a_box, person_b_box], [bag_box])
+        assert attrs[0].bag_on_track is True
+        assert attrs[1].bag_on_track is False
 
     def test_float_box_coordinates(self, extractor):
         """Float detector boxes are clipped and rounded."""
@@ -269,10 +299,9 @@ class TestBagDetection:
         person_box = (20.7, 20.3, 80.9, 80.1)  # Float coords
         bag_boxes = [(30.5, 30.5, 60.8, 60.2)]  # Float coords
 
-        # Should clip, round to int, then process
+        # Floor origin / ceil opposite corner, then associate
         attrs = extractor.extract(frame, person_box, bag_boxes)
-        # After rounding: person=(21,20,81,80), bag=(31,31,61,60)
-        # Bag mostly inside, should be assigned
+        # After floor/ceil: person=(20,20,81,81), bag=(30,30,61,61)
         assert attrs.bag_on_track is True
 
 
@@ -280,11 +309,25 @@ class TestDimLight:
     """Test low-light robustness."""
 
     def test_dim_red_shirt(self):
-        """Dim red detected with reduced confidence."""
+        """Dim red detected as red with reduced confidence."""
         extractor = AttributeExtractor(low_light_threshold=100)
         frame = np.full((200, 80, 3), (0, 0, 80), dtype=np.uint8)
         attrs = extractor.extract(frame, (0, 0, 80, 200))
-        assert attrs.upper_clothing_color in [Color.RED, Color.UNKNOWN, Color.DARK_BLUE]
+        assert attrs.upper_clothing_color == Color.RED
+        assert 0.3 < attrs.upper_confidence < 1.0
+
+
+class TestHsvConversion:
+    """HSV conversion must not warn on black or greyscale pixels."""
+
+    def test_black_pixels_no_runtime_warning(self):
+        """All-black frame must not emit divide-by-zero or invalid warnings."""
+        frame = np.zeros((16, 16, 3), dtype=np.uint8)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            hsv = AttributeExtractor.bgr_to_hsv(frame)
+        assert hsv.shape == frame.shape
+        assert np.all(hsv[:, :, 2] == 0)
 
 
 class TestSchemaValidation:
@@ -297,13 +340,26 @@ class TestSchemaValidation:
         field_names = {f.name for f in fields(PersonAttributes)}
 
         banned = {
-            "gender", "sex", "is_male", "is_female",
-            "age", "age_group",
-            "ethnicity", "race", "skin_color",
-            "face", "face_embedding", "face_crop",
-            "height", "height_cm",
-            "pose", "keypoints",
-            "name", "identity", "person_id", "id",
+            "gender",
+            "sex",
+            "is_male",
+            "is_female",
+            "age",
+            "age_group",
+            "ethnicity",
+            "race",
+            "skin_color",
+            "face",
+            "face_embedding",
+            "face_crop",
+            "height",
+            "height_cm",
+            "pose",
+            "keypoints",
+            "name",
+            "identity",
+            "person_id",
+            "id",
         }
 
         overlap = field_names & banned

@@ -117,9 +117,7 @@ class TestAC08Harness:
 
     def test_ten_query_floor(self, harness_with_records):
         """Refuse to evaluate fewer than 10 queries."""
-        queries = [
-            AttributeSearchQuery("q1", {"upper_color": "red"}, ["t001"])
-        ] * 9  # Only 9
+        queries = [AttributeSearchQuery("q1", {"upper_color": "red"}, ["t001"])] * 9  # Only 9
 
         with pytest.raises(ValueError, match="requires ≥10 queries"):
             harness_with_records.evaluate(queries)
@@ -142,9 +140,7 @@ class TestAC08Harness:
 
     def test_json_output(self, harness_with_records):
         """JSON output is valid."""
-        queries = [
-            AttributeSearchQuery("q1", {"upper_color": "red"}, ["t001", "t002"])
-        ] * 10
+        queries = [AttributeSearchQuery("q1", {"upper_color": "red"}, ["t001", "t002"])] * 10
 
         json_str = harness_with_records.evaluate_to_json(queries)
         result = json.loads(json_str)

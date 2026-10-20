@@ -10,6 +10,9 @@ from enum import Enum
 
 import numpy as np
 
+# Detector boxes are (x1, y1, x2, y2). Ints or floats from YOLOX-style detectors.
+Box = tuple[float, float, float, float]
+
 
 class Color(str, Enum):
     """Named color palette for clothing."""
@@ -64,11 +67,12 @@ class AttributeExtractor:
     Deterministic attribute extractor using HSV color binning.
 
     Strategy:
-    - Divide person box into torso (upper 40%) and legs (lower 40%)
-    - Skip head region (top 20%) and feet region (bottom 20%)
+    - Torso: 25-55% of person height; legs: 60-90% (skip head band and feet)
+    - Trim 10% horizontal and 5% vertical margins to drop background
     - Convert to HSV and bin dominant hue/saturation/value
     - Return 'unknown' when confidence is low
     - Handle low-light via value channel thresholding
+    - Assign bags frame-wide: each bag goes to at most one track
     """
 
     # HSV color boundaries (H: 0-180, S: 0-255, V: 0-255, same scale as OpenCV)
@@ -84,7 +88,7 @@ class AttributeExtractor:
         Color.GREEN: [(36, 100, 50), (85, 255, 255)],
         Color.CYAN: [(86, 100, 50), (100, 255, 255)],
         Color.BLUE: [(101, 100, 130), (130, 255, 255)],  # Bright blue
-        Color.DARK_BLUE: [(101, 50, 50), (130, 255, 129)],  # Navy, denim (lower V than bright blue)
+        Color.DARK_BLUE: [(101, 50, 50), (130, 255, 129)],  # Navy / denim
         Color.PURPLE: [(131, 100, 50), (160, 255, 255)],
         Color.PINK: [(161, 100, 50), (169, 255, 255)],
     }
@@ -105,6 +109,7 @@ class AttributeExtractor:
     MIN_CONFIDENCE = 0.3
     LOW_LIGHT_VALUE = 80
     MIN_PIXELS_RATIO = 0.1  # Region must have at least 10% valid pixels
+    CONTAINMENT_THRESHOLD = 0.5  # intersection / bag_area to associate a bag
 
     def __init__(
         self,
@@ -133,29 +138,30 @@ class AttributeExtractor:
             - V: [0, 255]
         """
         bgr_normalized = bgr.astype(np.float32) / 255.0
-        b, g, r = bgr_normalized[:, :, 0], bgr_normalized[:, :, 1], bgr_normalized[:, :, 2]
+        b = bgr_normalized[:, :, 0]
+        g = bgr_normalized[:, :, 1]
+        r = bgr_normalized[:, :, 2]
 
         v = np.maximum(np.maximum(r, g), b)
-        c_max_min_diff = v - np.minimum(np.minimum(r, g), b)
+        chroma = v - np.minimum(np.minimum(r, g), b)
 
-        # Saturation (avoid divide by zero)
-        s = np.where(v > 0, c_max_min_diff / v, 0.0)
+        # Never evaluate a 0/0 or x/0; where= leaves those outputs at 0.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            s = np.zeros_like(v)
+            np.divide(chroma, v, out=s, where=v > 0)
 
-        # Hue
-        h = np.zeros_like(v)
-        mask = c_max_min_diff != 0
-
-        # Red is max
-        r_max = (r == v) & mask
-        h[r_max] = 60 * (((g[r_max] - b[r_max]) / c_max_min_diff[r_max]) % 6)
-
-        # Green is max
-        g_max = (g == v) & mask
-        h[g_max] = 60 * (((b[g_max] - r[g_max]) / c_max_min_diff[g_max]) + 2)
-
-        # Blue is max
-        b_max = (b == v) & mask
-        h[b_max] = 60 * (((r[b_max] - g[b_max]) / c_max_min_diff[b_max]) + 4)
+            h = np.zeros_like(v)
+            r_max = (r == v) & (chroma > 0)
+            g_max = (g == v) & (chroma > 0)
+            b_max = (b == v) & (chroma > 0)
+            np.divide(g - b, chroma, out=h, where=r_max)
+            h[r_max] = 60 * (h[r_max] % 6)
+            hue_g = np.zeros_like(v)
+            np.divide(b - r, chroma, out=hue_g, where=g_max)
+            h[g_max] = 60 * (hue_g[g_max] + 2)
+            hue_b = np.zeros_like(v)
+            np.divide(r - g, chroma, out=hue_b, where=b_max)
+            h[b_max] = 60 * (hue_b[b_max] + 4)
 
         # Scale to OpenCV range: H [0,180], S [0,255], V [0,255]
         h = (h / 2).astype(np.uint8)
@@ -167,16 +173,20 @@ class AttributeExtractor:
     def extract(
         self,
         frame: np.ndarray,
-        person_box: tuple[int, int, int, int] | tuple[float, float, float, float],
-        bag_boxes: list[tuple[int, int, int, int] | tuple[float, float, float, float]] | None = None,
+        person_box: Box,
+        bag_boxes: list[Box] | None = None,
     ) -> PersonAttributes:
         """
-        Extract attributes from a person bounding box.
+        Extract attributes from a single person bounding box.
+
+        For one person this is equivalent to extract_frame with a one-track
+        list. Multi-track frames must use extract_frame / assign_bags so each
+        bag is given to at most one track.
 
         Args:
             frame: BGR image (H, W, 3), dtype uint8
             person_box: (x1, y1, x2, y2) in pixel coordinates (int or float)
-            bag_boxes: Optional list of (x1, y1, x2, y2) backpack/handbag boxes (int or float)
+            bag_boxes: Optional list of (x1, y1, x2, y2) backpack/handbag boxes
 
         Returns:
             PersonAttributes with color and bag information
@@ -184,78 +194,160 @@ class AttributeExtractor:
         Raises:
             ValueError: If frame is invalid format
         """
+        return self.extract_frame(frame, [person_box], bag_boxes)[0]
+
+    def extract_frame(
+        self,
+        frame: np.ndarray,
+        person_boxes: list[Box],
+        bag_boxes: list[Box] | None = None,
+    ) -> list[PersonAttributes]:
+        """
+        Extract attributes for every person box on one frame.
+
+        Bags are assigned once across the whole frame (see assign_bags).
+        """
         if frame.ndim != 3 or frame.shape[2] != 3:
             raise ValueError(f"frame must be (H,W,3), got shape {frame.shape}")
         if frame.dtype != np.uint8:
             raise ValueError(f"frame must be uint8, got {frame.dtype}")
 
-        # Clip box to frame boundaries and round floats to int
-        h, w = frame.shape[:2]
-        x1, y1, x2, y2 = person_box
-        x1_clipped = int(round(max(0, min(x1, w))))
-        y1_clipped = int(round(max(0, min(y1, h))))
-        x2_clipped = int(round(max(0, min(x2, w))))
-        y2_clipped = int(round(max(0, min(y2, h))))
+        height, width = frame.shape[:2]
+        clipped_people = [self._to_int_box(box, width, height) for box in person_boxes]
+        clipped_bags = self._clip_boxes(bag_boxes, width, height) if bag_boxes else []
+        bag_flags = self.assign_bags(clipped_people, clipped_bags)
 
-        # Check for degenerate box (zero area or invalid coordinates)
-        if x1_clipped >= x2_clipped or y1_clipped >= y2_clipped:
-            return PersonAttributes(
-                upper_clothing_color=Color.INVALID_BOX,
-                lower_clothing_color=Color.INVALID_BOX,
-                bag_on_track=False,
-                upper_confidence=0.0,
-                lower_confidence=0.0,
+        results: list[PersonAttributes] = []
+        for person_box, bag_on_track in zip(clipped_people, bag_flags, strict=True):
+            x1, y1, x2, y2 = person_box
+            if x1 >= x2 or y1 >= y2:
+                results.append(
+                    PersonAttributes(
+                        upper_clothing_color=Color.INVALID_BOX,
+                        lower_clothing_color=Color.INVALID_BOX,
+                        bag_on_track=False,
+                        upper_confidence=0.0,
+                        lower_confidence=0.0,
+                    )
+                )
+                continue
+
+            person_crop = frame[y1:y2, x1:x2]
+            if person_crop.size == 0:
+                results.append(
+                    PersonAttributes(
+                        upper_clothing_color=Color.INVALID_BOX,
+                        lower_clothing_color=Color.INVALID_BOX,
+                        bag_on_track=False,
+                        upper_confidence=0.0,
+                        lower_confidence=0.0,
+                    )
+                )
+                continue
+
+            upper_color, upper_conf = self._extract_region_color(person_crop, region="upper")
+            lower_color, lower_conf = self._extract_region_color(person_crop, region="lower")
+            results.append(
+                PersonAttributes(
+                    upper_clothing_color=upper_color,
+                    lower_clothing_color=lower_color,
+                    bag_on_track=bag_on_track,
+                    upper_confidence=upper_conf,
+                    lower_confidence=lower_conf,
+                )
             )
-
-        person_crop = frame[y1_clipped:y2_clipped, x1_clipped:x2_clipped]
-
-        if person_crop.size == 0:
-            return PersonAttributes(
-                upper_clothing_color=Color.INVALID_BOX,
-                lower_clothing_color=Color.INVALID_BOX,
-                bag_on_track=False,
-                upper_confidence=0.0,
-                lower_confidence=0.0,
-            )
-
-        # Extract color from torso and leg regions
-        upper_color, upper_conf = self._extract_region_color(
-            person_crop, region="upper"
-        )
-        lower_color, lower_conf = self._extract_region_color(
-            person_crop, region="lower"
-        )
-
-        # Clip bag boxes and determine bag presence
-        clipped_bag_boxes = self._clip_boxes(bag_boxes, w, h) if bag_boxes else None
-        bag_on_track = self._bag_on_track(
-            (x1_clipped, y1_clipped, x2_clipped, y2_clipped), clipped_bag_boxes
-        )
-
-        return PersonAttributes(
-            upper_clothing_color=upper_color,
-            lower_clothing_color=lower_color,
-            bag_on_track=bag_on_track,
-            upper_confidence=upper_conf,
-            lower_confidence=lower_conf,
-        )
+        return results
 
     @staticmethod
+    def _to_int_box(box: Box, width: int, height: int) -> tuple[int, int, int, int]:
+        """Clip to the frame, floor the origin, and ceil the opposite corner.
+
+        Flooring x1/y1 and ceiling x2/y2 covers every pixel the float box
+        touches. This replaces banker's rounding (round-half-to-even), which
+        can shrink a box by a pixel on .5 boundaries.
+        """
+        x1, y1, x2, y2 = box
+        x1_c = int(np.floor(max(0.0, min(float(x1), float(width)))))
+        y1_c = int(np.floor(max(0.0, min(float(y1), float(height)))))
+        x2_c = int(np.ceil(max(0.0, min(float(x2), float(width)))))
+        y2_c = int(np.ceil(max(0.0, min(float(y2), float(height)))))
+        return x1_c, y1_c, x2_c, y2_c
+
+    @classmethod
     def _clip_boxes(
-        boxes: list[tuple[int, int, int, int] | tuple[float, float, float, float]],
+        cls,
+        boxes: list[Box],
         width: int,
         height: int,
     ) -> list[tuple[int, int, int, int]]:
-        """Clip boxes to frame boundaries, round floats, and remove degenerate boxes."""
+        """Clip boxes to the frame and drop degenerate results."""
         clipped = []
-        for x1, y1, x2, y2 in boxes:
-            x1_c = int(round(max(0, min(x1, width))))
-            y1_c = int(round(max(0, min(y1, height))))
-            x2_c = int(round(max(0, min(x2, width))))
-            y2_c = int(round(max(0, min(y2, height))))
-            if x1_c < x2_c and y1_c < y2_c:  # Valid box
+        for box in boxes:
+            x1_c, y1_c, x2_c, y2_c = cls._to_int_box(box, width, height)
+            if x1_c < x2_c and y1_c < y2_c:
                 clipped.append((x1_c, y1_c, x2_c, y2_c))
         return clipped
+
+    @staticmethod
+    def _containment_ratio(person_box: Box, bag_box: Box) -> float:
+        """Intersection area divided by bag area (0 if either box is empty)."""
+        px1, py1, px2, py2 = person_box
+        bx1, by1, bx2, by2 = bag_box
+        bag_area = max(0.0, float(bx2 - bx1)) * max(0.0, float(by2 - by1))
+        if bag_area == 0.0:
+            return 0.0
+        ix1 = max(px1, bx1)
+        iy1 = max(py1, by1)
+        ix2 = min(px2, bx2)
+        iy2 = min(py2, by2)
+        if ix2 <= ix1 or iy2 <= iy1:
+            return 0.0
+        return ((ix2 - ix1) * (iy2 - iy1)) / bag_area
+
+    @classmethod
+    def assign_bags(
+        cls,
+        person_boxes: list[Box],
+        bag_boxes: list[Box] | None,
+        threshold: float = CONTAINMENT_THRESHOLD,
+    ) -> list[bool]:
+        """
+        Frame-level greedy one-to-one bag assignment.
+
+        Collect every (bag, person) pair whose containment (intersection /
+        bag area) is above ``threshold``. Sort by containment descending,
+        then bag index ascending, then person index ascending. Greedily
+        assign so each bag and each person is used at most once.
+
+        Tie-break: if two people contain a bag equally, the earlier person
+        in ``person_boxes`` wins (lower index).
+
+        Returns one bool per person box.
+        """
+        n_people = len(person_boxes)
+        assigned = [False] * n_people
+        if not bag_boxes or n_people == 0:
+            return assigned
+
+        pairs: list[tuple[float, int, int]] = []
+        for bag_i, bag in enumerate(bag_boxes):
+            for person_j, person in enumerate(person_boxes):
+                containment = cls._containment_ratio(person, bag)
+                if containment > threshold:
+                    pairs.append((containment, bag_i, person_j))
+
+        # Higher containment first; ties: lower bag index, then lower person index
+        pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
+
+        used_bags: set[int] = set()
+        used_people: set[int] = set()
+        for _containment, bag_i, person_j in pairs:
+            if bag_i in used_bags or person_j in used_people:
+                continue
+            used_bags.add(bag_i)
+            used_people.add(person_j)
+            assigned[person_j] = True
+        return assigned
 
     def _extract_region_color(
         self,
@@ -430,63 +522,6 @@ class AttributeExtractor:
         confidence = color_counts[dominant_color] / total_pixels
 
         return dominant_color, confidence
-
-    def _bag_on_track(
-        self,
-        person_box: tuple[int, int, int, int],
-        bag_boxes: list[tuple[int, int, int, int]] | None,
-    ) -> bool:
-        """
-        Determine if track has a bag based on detector boxes.
-
-        Uses intersection over BAG area (containment ratio).
-        Frame-level one-to-one assignment: each bag goes to at most one track.
-
-        Args:
-            person_box: (x1, y1, x2, y2)
-            bag_boxes: List of (x1, y1, x2, y2) backpack/handbag boxes
-
-        Returns:
-            True if any bag is assigned to this track via greedy containment
-        """
-        if not bag_boxes:
-            return False
-
-        px1, py1, px2, py2 = person_box
-        person_area = (px2 - px1) * (py2 - py1)
-
-        if person_area == 0:
-            return False
-
-        # Compute containment ratio for each bag (intersection / bag_area)
-        containments = []
-        for bx1, by1, bx2, by2 in bag_boxes:
-            # Compute intersection
-            ix1 = max(px1, bx1)
-            iy1 = max(py1, by1)
-            ix2 = min(px2, bx2)
-            iy2 = min(py2, by2)
-
-            if ix2 <= ix1 or iy2 <= iy1:
-                containments.append(0.0)
-                continue
-
-            intersection = (ix2 - ix1) * (iy2 - iy1)
-            bag_area = (bx2 - bx1) * (by2 - by1)
-
-            if bag_area == 0:
-                containments.append(0.0)
-                continue
-
-            # Containment = intersection / bag_area (how much of bag is inside person)
-            containment = intersection / bag_area
-            containments.append(containment)
-
-        # Find best bag for this person (greedy one-to-one assignment)
-        best_containment = max(containments) if containments else 0.0
-
-        # Assign bag if containment > threshold (0.5 = at least half the bag inside)
-        return best_containment > 0.5
 
 
 class AttributeQuery:

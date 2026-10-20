@@ -75,8 +75,7 @@ class AC08Harness:
             if AttributeQuery.matches(record.attributes, query):
                 # Rank by average predicted confidence
                 avg_conf = (
-                    record.attributes.upper_confidence
-                    + record.attributes.lower_confidence
+                    record.attributes.upper_confidence + record.attributes.lower_confidence
                 ) / 2.0
                 matches.append((record.track_id, avg_conf))
 
@@ -127,11 +126,7 @@ class AC08Harness:
                 }
             )
 
-        mean_p10 = (
-            sum(r["precision_at_10"] for r in results) / len(results)
-            if results
-            else 0.0
-        )
+        mean_p10 = sum(r["precision_at_10"] for r in results) / len(results) if results else 0.0
 
         return {
             "fixture_id": self.fixture_id,
