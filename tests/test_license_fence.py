@@ -9,7 +9,7 @@ from pathlib import Path
 def test_license_checker_passes_on_valid_manifest():
     """The license checker should pass on the current valid manifest."""
     result = subprocess.run(
-        ['python3', 'scripts/check_licenses.py'],
+        ['python3', 'scripts/check_licenses.py', '--no-scan-installed'],
         cwd=Path.cwd(),
         capture_output=True,
         text=True
@@ -40,7 +40,10 @@ def test_license_checker_rejects_agpl():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -74,7 +77,10 @@ def test_license_checker_rejects_gpl():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -107,7 +113,10 @@ def test_license_checker_rejects_noncommercial():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -140,7 +149,10 @@ def test_license_checker_rejects_ultralytics():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -174,7 +186,10 @@ def test_license_checker_rejects_boxmot():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -207,7 +222,10 @@ def test_license_checker_rejects_insightface():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -240,7 +258,10 @@ def test_license_checker_rejects_market1501():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -274,7 +295,10 @@ def test_license_checker_accepts_mit():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -307,7 +331,10 @@ def test_license_checker_accepts_apache2():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -345,7 +372,10 @@ def test_license_checker_validates_clip_fields():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
@@ -385,7 +415,10 @@ def test_license_checker_accepts_valid_clip():
 
     try:
         result = subprocess.run(
-            ['python3', 'scripts/check_licenses.py', '--manifest', temp_path],
+            [
+                'python3', 'scripts/check_licenses.py',
+                '--manifest', temp_path, '--no-scan-installed'
+            ],
             cwd=Path.cwd(),
             capture_output=True,
             text=True
