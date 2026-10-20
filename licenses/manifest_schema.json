@@ -86,11 +86,13 @@
           },
           "generator": {
             "type": "string",
-            "description": "For synthetic clips: generator name"
+            "minLength": 1,
+            "description": "For synthetic clips, FX-CODE rows, and generators: generator name"
           },
           "generator_version": {
             "type": "string",
-            "description": "For synthetic clips: generator version"
+            "minLength": 1,
+            "description": "Generator version or commit"
           },
           "generator_license": {
             "type": "string",
@@ -98,7 +100,8 @@
           },
           "seed": {
             "type": "string",
-            "description": "For synthetic clips: random seed or generation parameters"
+            "minLength": 1,
+            "description": "Seed or prompt used to generate the clip or fixture"
           },
           "notes": {
             "type": "string",

@@ -29,6 +29,11 @@ try:
 except ImportError:
     HAVE_JSONSCHEMA = False
 
+from trace_search.ingest.ffmpeg_check import (  # noqa: E402
+    inspect_opencv_libavcodec,
+    is_opencv_ffmpeg_distribution,
+)
+
 # Banned license patterns (case-insensitive, checked against each SPDX component)
 BANNED_LICENSE_PATTERNS = [
     r'^AGPL',  # AGPL-3.0, AGPL-3.0-only, etc.
@@ -322,13 +327,15 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
             )
 
         # generator_license uses the same allowlist / SPDX parser as packages.
+        # Applies to every row that carries a generator: synthetic_clip,
+        # code_fixture (FX-CODE), and type generator.
         # Empty, NC, Proprietary, GPL, UNKNOWN, and free-text all fail closed.
-        if entry_type == 'synthetic_clip':
+        if entry_type in {'synthetic_clip', 'code_fixture', 'generator'}:
             raw_gen = entry.get('generator_license', '')
             generator_license = raw_gen.strip() if isinstance(raw_gen, str) else ''
             if not generator_license:
                 violations.append(
-                    f"{name}: synthetic_clip missing required generator_license field"
+                    f"{name}: {entry_type} missing required generator_license field"
                 )
             else:
                 gen_is_banned, gen_reason = is_license_banned(generator_license)
@@ -353,11 +360,15 @@ def check_banned_components(manifest: dict) -> list[str]:
         name = entry.get('name', '')
         source_url = entry.get('source_url', '')
         notes = entry.get('notes', '')
+        generator = entry.get('generator', '')
 
         def normalize(s):
             return s.lower().replace('_', '-').replace('.', '-')
 
-        combined = f"{normalize(name)} {normalize(source_url)} {normalize(notes)}"
+        combined = (
+            f"{normalize(name)} {normalize(source_url)} "
+            f"{normalize(notes)} {normalize(generator)}"
+        )
 
         for pattern, desc in BANNED_COMPONENTS:
             if re.search(pattern, combined, re.IGNORECASE):
@@ -511,69 +522,13 @@ def check_installed_packages(
     return violations, missing
 
 
-def inspect_opencv_libavcodec() -> tuple[str, str]:
-    """
-    Load opencv-headless bundled libavcodec via ctypes and read its licence
-    and configure flags.
-
-    cv2.getBuildInformation() does not expose --enable-gpl / --enable-nonfree,
-    so this inspects the wheel's bundled libavcodec directly.
-
-    Returns (avcodec_license, avcodec_configuration).
-    Raises on a missing library or a failed call (fail-closed).
-    """
-    import ctypes
-    import site
-
-    search_dirs: list[Path] = []
-    try:
-        import cv2
-        cv2_dir = Path(cv2.__file__).resolve().parent
-        search_dirs.extend([
-            cv2_dir.parent / 'opencv_python_headless.libs',
-            cv2_dir.parent / 'opencv_python.libs',
-            cv2_dir / 'opencv_python_headless.libs',
-        ])
-    except ImportError:
-        pass
-
-    for site_dir in list(site.getsitepackages()) + [site.getusersitepackages()]:
-        search_dirs.append(Path(site_dir) / 'opencv_python_headless.libs')
-        search_dirs.append(Path(site_dir) / 'opencv_python.libs')
-
-    lib_path = None
-    for directory in search_dirs:
-        if not directory.is_dir():
-            continue
-        matches = sorted(directory.glob('libavcodec*')) + sorted(directory.glob('*avcodec*'))
-        if matches:
-            lib_path = matches[0]
-            break
-
-    if lib_path is None:
-        raise FileNotFoundError(
-            "opencv bundled libavcodec not found under opencv_python_headless.libs"
-        )
-
-    lib = ctypes.CDLL(str(lib_path))
-    lib.avcodec_license.restype = ctypes.c_char_p
-    lib.avcodec_configuration.restype = ctypes.c_char_p
-    license_raw = lib.avcodec_license()
-    config_raw = lib.avcodec_configuration()
-    if license_raw is None or config_raw is None:
-        raise RuntimeError("avcodec_license() or avcodec_configuration() returned NULL")
-    return (
-        license_raw.decode('utf-8', errors='replace'),
-        config_raw.decode('utf-8', errors='replace'),
-    )
-
-
 def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
     """
-    Check FFmpeg via opencv-python-headless's bundled libavcodec.
+    Check FFmpeg via the opencv wheel's bundled libavcodec.
 
-    System ffmpeg is not a project dependency. When opencv is not declared
-    the status is NOT_A_DEPENDENCY.
+    Distribution names come from ffmpeg_check.OPENCV_FFMPEG_DISTRIBUTIONS.
+    System ffmpeg is not a project dependency. When none of those wheels
+    is declared, the status is NOT_A_DEPENDENCY.
 
     Returns:
         (violations, status) where status is one of:
@@ -582,9 +537,8 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
         - 'GPL_VIOLATION': bundled FFmpeg is GPL or nonfree
         - 'MISSING': libavcodec could not be loaded (fail-closed)
     """
-    opencv_names = {'opencv-python', 'opencv-python-headless'}
     opencv_declared = any(
-        e.get('name', '').lower().replace('_', '-') in opencv_names
+        is_opencv_ffmpeg_distribution(e.get('name', ''))
         for e in manifest.get('entries', [])
     )
 

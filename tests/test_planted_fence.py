@@ -187,6 +187,49 @@ def test_generator_license_apache_passes():
     assert code == 0, stdout
 
 
+def test_code_fixture_gpl_generator_license_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_code_fixture(generator_license="GPL-3.0")])
+    )
+    assert code == 1, stdout
+    assert "generator_license 'GPL-3.0' is banned" in stdout
+
+
+def test_generator_row_nc_license_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_generator_row(generator_license="CC-BY-NC-4.0")])
+    )
+    assert code == 1, stdout
+    assert "generator_license 'CC-BY-NC-4.0' is banned" in stdout
+
+
+def test_generator_row_free_text_license_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_generator_row(generator_license="see the internal wiki")])
+    )
+    assert code == 1, stdout
+    assert "generator_license 'see the internal wiki' not in allowed list" in stdout
+
+
+def test_banned_generator_name_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([_code_fixture(generator="ultralytics")])
+    )
+    assert code == 1, stdout
+    assert "banned component" in stdout
+    assert "ultralytics" in stdout
+
+
+@pytest.mark.parametrize("field", ["generator", "generator_version", "seed"])
+def test_empty_generator_field_fails(field):
+    row = _synthetic_fields(**{field: ""})
+    errors = _schema_errors(make_manifest([row]))
+    assert any(
+        f"at entries.0.{field}" in err and "non-empty" in err
+        for err in errors
+    ), errors
+
+
 # ----- 5. schema fixture_id / type / use -----
 
 
@@ -308,7 +351,40 @@ def test_opencv_libavcodec_missing_fails_closed(monkeypatch):
     assert any("libavcodec" in v for v in violations)
 
 
-# ----- 7. allowlist planted tests -----
+@pytest.mark.ffmpeg_real
+def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
+    """A contrib-named wheel with an LGPL libavcodec passes, any case."""
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "inspect_opencv_libavcodec",
+        lambda: ("LGPL version 2.1 or later", "--enable-shared"),
+    )
+    violations, status = cl.check_ffmpeg_build(
+        make_manifest([library_entry(name="OpenCV_Contrib_Python")])
+    )
+    assert violations == []
+    assert status == "LGPL_OK"
+
+
+@pytest.mark.ffmpeg_real
+def test_opencv_contrib_gpl_configuration_fails_fence(tmp_path, monkeypatch):
+    """A contrib wheel whose libavcodec reports --enable-gpl fails the fence."""
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(
+        cl,
+        "inspect_opencv_libavcodec",
+        lambda: ("LGPL version 2.1 or later", "--enable-gpl --enable-shared"),
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="opencv-contrib-python-headless")]),
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "GPL_VIOLATION" in stdout
+    assert "--enable-gpl" in stdout
 
 
 @pytest.mark.parametrize(
