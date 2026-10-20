@@ -16,7 +16,6 @@ Exit codes:
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -67,6 +66,7 @@ ALLOWED_SPDX = {
     'Unlicense',
     '0BSD',
     'HPND',
+    'MIT-CMU',
 }
 
 # Also allow common non-SPDX forms
@@ -80,8 +80,12 @@ ALLOWED_NON_SPDX = {
     'Python Software Foundation License',
     'Public Domain',
     'Historical Permission Notice and Disclaimer (HPND)',
+    'MIT CMU License (MIT-CMU)',
     'Pexels License',  # For stock footage (§2a)
     'Pixabay Content License',
+    'Zlib',  # opencv-python-headless bundled libs
+    'Libpng',  # opencv-python-headless bundled libs
+    'libtiff',  # opencv-python-headless bundled libs
 }
 
 # Banned component patterns (name, source_url, notes) - normalize before matching
@@ -269,7 +273,7 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
                 f"{name}: license '{license_str}' not in allowed list "
                 "(must be exact SPDX or approved non-SPDX)"
             )
-        
+
         # Check generator_license on synthetic_clip entries (PRD §3: 0 GPL entries)
         if entry_type == 'synthetic_clip':
             generator_license = entry.get('generator_license', '').strip()
@@ -288,7 +292,8 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
                 # Unknown generator license also fails closed
                 if generator_license.upper() in ['UNKNOWN', 'UNLICENSED', 'NOASSERTION']:
                     violations.append(
-                        f"{name}: synthetic_clip generator has unknown license '{generator_license}'"
+                        f"{name}: synthetic_clip generator has "
+                        f"unknown license '{generator_license}'"
                     )
 
     return violations
@@ -445,7 +450,7 @@ def check_installed_packages(
 def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
     """
     Check FFmpeg build configuration based on manifest declarations.
-    
+
     Returns:
         (violations, status) where status is one of:
         - 'LGPL_OK': FFmpeg is LGPL-only (bundled or system)
@@ -454,26 +459,26 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
         - 'MISSING': Declared system FFmpeg not found
     """
     violations = []
-    
+
     # Check if opencv-python or opencv-python-headless is in manifest
     opencv_entries = [
         e for e in manifest.get('entries', [])
-        if e.get('name', '').lower().replace('_', '-') in 
+        if e.get('name', '').lower().replace('_', '-') in
         ['opencv-python', 'opencv-python-headless']
     ]
-    
+
     # Check if system ffmpeg is declared
     ffmpeg_entries = [
         e for e in manifest.get('entries', [])
         if e.get('name', '').lower() == 'ffmpeg' and e.get('type') == 'tool'
     ]
-    
+
     if opencv_entries:
         # Check opencv's bundled FFmpeg via cv2.getBuildInformation()
         try:
             import cv2
             build_info = cv2.getBuildInformation()
-            
+
             if '--enable-gpl' in build_info:
                 violations.append(
                     "opencv-python's bundled FFmpeg built with --enable-gpl (must be LGPL-only)"
@@ -484,7 +489,7 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
                     "opencv-python's bundled FFmpeg built with --enable-nonfree (must be LGPL-only)"
                 )
                 return violations, 'GPL_VIOLATION'
-            
+
             return [], 'LGPL_OK'
         except ImportError:
             violations.append("opencv-python declared in manifest but not installed")
@@ -492,7 +497,7 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
         except Exception as e:
             violations.append(f"Failed to check opencv FFmpeg: {e}")
             return violations, 'MISSING'
-    
+
     elif ffmpeg_entries:
         # System FFmpeg declared - check it exists and is LGPL
         try:
@@ -503,14 +508,14 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
                 timeout=5
             )
             buildconf = result.stdout + result.stderr
-            
+
             if '--enable-gpl' in buildconf:
                 violations.append("System FFmpeg built with --enable-gpl (must be LGPL-only)")
                 return violations, 'GPL_VIOLATION'
             if '--enable-nonfree' in buildconf:
                 violations.append("System FFmpeg built with --enable-nonfree (must be LGPL-only)")
                 return violations, 'GPL_VIOLATION'
-            
+
             return [], 'LGPL_OK'
         except FileNotFoundError:
             violations.append("System FFmpeg declared in manifest but not found")
@@ -518,7 +523,7 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
         except Exception as e:
             violations.append(f"Failed to check system FFmpeg: {e}")
             return violations, 'MISSING'
-    
+
     else:
         # No FFmpeg dependency
         return [], 'NOT_A_DEPENDENCY'

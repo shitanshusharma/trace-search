@@ -76,13 +76,12 @@
           },
           "use": {
             "type": "string",
-            "enum": ["SMOKE_ONLY", "CODE_TEST", "TRAIN", "DEV", "HOLD"],
-            "description": "For clips/fixtures only: usage tag. Stock clips must use SMOKE_ONLY."
+            "description": "For clips/fixtures only: usage tag. Clips and synthetic_clips must use SMOKE_ONLY."
           },
           "fixture_id": {
             "type": "string",
-            "pattern": "^FX-[A-Z]+-([A-Z]+-)?[0-9]+$",
-            "description": "Fixture identifier (e.g., FX-SMOKE-001, FX-SMOKE-SYN-001, FX-DEV-023)"
+            "pattern": "^FX-(SMOKE|CODE)(-SYN)?-[0-9]+$",
+            "description": "Fixture identifier matching PRD prefixes: FX-SMOKE-###, FX-CODE-###, FX-SMOKE-SYN-###"
           },
           "generator": {
             "type": "string",
@@ -105,16 +104,25 @@
             "description": "Optional notes about provenance or special handling"
           }
         },
-        "if": {
-          "properties": {
-            "type": {
-              "enum": ["clip", "synthetic_clip"]
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "enum": ["clip", "synthetic_clip"]
+                }
+              }
+            },
+            "then": {
+              "required": ["license_version", "date_checked_ist", "phash", "use"],
+              "properties": {
+                "use": {
+                  "const": "SMOKE_ONLY"
+                }
+              }
             }
           }
-        },
-        "then": {
-          "required": ["license_version", "date_checked_ist", "phash", "use"]
-        }
+        ]
       }
     }
   }
