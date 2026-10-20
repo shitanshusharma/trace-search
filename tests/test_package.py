@@ -5,7 +5,7 @@ import trace_search
 
 def test_version():
     """Package should have a version."""
-    assert hasattr(trace_search, "__version__")
+    assert hasattr(trace_search, '__version__')
     assert trace_search.__version__ == "0.1.0"
 
 
