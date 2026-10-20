@@ -40,7 +40,7 @@ This project maintains **strict license hygiene** for commercial use:
 
 Every dependency, model, weight, dataset, and test clip is tracked in [`licenses/manifest.json`](licenses/manifest.json) with:
 - Name, version, license, source URL, SHA-256
-- For video clips: repo-relative `path`, license version, date checked (IST), perceptual hashes, usage tag
+- For video clips: license version, date checked (IST), perceptual hashes, usage tag
 
 CI verifies the full installed closure (direct + transitive dependencies) against the manifest and bans GPL/AGPL/SSPL/BUSL/NC/proprietary licenses and problematic components.
 
@@ -57,13 +57,17 @@ trace-search/
 │   ├── matching/           # Route reconstruction with topology constraints
 │   ├── api/                # Search and query API
 │   ├── ui/                 # Web UI (site map, route view, clips)
+│   ├── fixtures/           # Synthetic fixture generation + separation guards (T1)
 │   └── common/             # Shared utilities
 ├── tests/                  # Unit and integration tests
 ├── scripts/                # Build and maintenance scripts
-│   └── check_licenses.py   # License fence validator
+│   ├── check_licenses.py   # License fence validator
+│   ├── generate_smoke_fixtures.py  # Synthetic video generator (T1)
+│   └── check_separation.py         # Fixture separation checker (T1)
 ├── licenses/               # License manifest and schema
 │   ├── manifest.json       # Machine-readable license manifest
 │   └── manifest_schema.json
+├── smoke/                  # Synthetic smoke test fixtures (generated, not committed)
 └── .github/workflows/      # CI/CD
 ```
 
@@ -71,7 +75,7 @@ trace-search/
 
 ### Requirements
 
-- Python 3.10+
+- Python 3.11 or 3.12 (Pillow 13 requires 3.11+)
 - Ubuntu 20.04+ or similar Linux (on-prem deployment)
 - GPU: NVIDIA RTX 4070-class (12 GB) or equivalent for production
 - CPU: 8+ cores
@@ -110,25 +114,31 @@ pytest --cov=src/trace_search --cov-report=html
 # Run only license fence tests
 pytest tests/test_license_fence.py -v
 
+# Run T1 smoke fixture tests
+pytest tests/test_generator.py tests/test_guards_comprehensive.py tests/test_separation_comprehensive.py tests/test_t1_integration.py tests/test_manifest_pins.py -v
+
 # Test the license checker directly
 python3 scripts/check_licenses.py
+
+# Generate smoke fixtures
+python3 scripts/generate_smoke_fixtures.py --update-manifest
+
+# Check separation (smoke vs train/dev/hold)
+python3 scripts/check_separation.py --json
 ```
 
 ## CI Status
 
-The CI pipeline runs on every push and PR:
-1. **Lint** with ruff
-2. **Unit tests** with pytest
-3. **License fence check** - fails on any AGPL/GPL/NC/unknown license or banned component
+The pipeline is lint, unit tests, the licence fence, and a separate fixture-separation job. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-See [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for details.
+The licence fence is expected to fail on two rows this PR does not own: ImageHash's installed string `2-clause BSD License`, and numpy 2.2.0 missing from the manifest (PR #6 owns that row). The PR body records the CI run for the current head.
 
 ## Development Workflow
 
 This is a **multi-task build** (T0–T10). Each task = one cloud agent / one PR. Current status:
 
-- ✅ **T0 (this PR):** Scaffold + license fence
-- ⏳ **T1:** Synthetic smoke fixtures + SMOKE_ONLY store
+- ✅ **T0:** Scaffold + license fence
+- **T1:** Synthetic smoke fixtures and separation checks are in this branch. The licence fence still fails on the ImageHash string and the numpy row owned elsewhere.
 - ⏳ **T2:** Ingest (video file + optional RTSP)
 - ⏳ **T3:** Detection + tracking (YOLOX + OC-SORT)
 - ⏳ **T4:** Attributes (color + bag)

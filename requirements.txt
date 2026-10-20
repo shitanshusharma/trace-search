@@ -1,2 +1,13 @@
-# Core dependencies will be added by later tasks (T2-T7)
-# This file is maintained by the license fence process
+# T1 runtime pins. SHA-256 values are the digests.sha256 fields from the PyPI JSON API
+# for the wheels pip selects on CPython 3.11 / manylinux x86_64.
+Pillow==13.0.0 \
+    --hash=sha256:a625df9a2a5597fa5e5266e01aefc82604bb85d291e3547981e863560d75da6c
+imagehash==4.3.2 \
+    --hash=sha256:02b0f965f8c77cd813f61d7d39031ea27d4780e7ebcad56c6cd6a709acc06e5f
+PyWavelets==1.9.0 \
+    --hash=sha256:d76b7fa8fc500b09201d689b4f15bf5887e30ffbe2e1f338eb8470590eb4521a
+scipy==1.17.1 \
+    --hash=sha256:43af8d1f3bea642559019edfe64e9b11192a8978efbd1539d7bc2aaa23d92de4
+opencv-python-headless==5.0.0.93 \
+    --hash=sha256:ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37
+-r requirements-numpy.txt

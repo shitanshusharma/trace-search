@@ -1,0 +1,5 @@
+# numpy is installed because opencv-python-headless 5 requires numpy>=2.
+# The manifest row is owned by PR #6, so this file is separate from the
+# library rows this PR adds. The closure scan still sees the installed wheel.
+numpy==2.2.0 \
+    --hash=sha256:c2aed8fcf8abc3020d6a9ccb31dbc9e7d7819c56a348cc88fd44be269b37427e
