@@ -1,8 +1,8 @@
 """
-Hash-chained audit log implementation.
+Append-only audit log with an HMAC-SHA256 chain and a signed head anchor.
 
-Each entry records operator actions with tamper-proof HMAC-SHA256 chaining.
-Entries are append-only and stored in a location exempt from derived-data purge.
+The key comes from TRACE_AUDIT_HMAC_KEY or from an explicit key file outside
+audit_logs/. Nothing in this module generates a key except init_hmac_key().
 """
 
 import fcntl
@@ -10,28 +10,57 @@ import hashlib
 import hmac
 import json
 import os
-import zoneinfo
+import tempfile
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-# IST timezone for all timestamps
-IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+# IST for every stored timestamp (Asia/Kolkata, UTC+05:30).
+IST = ZoneInfo("Asia/Kolkata")
 
-# Audit log directory - single source of truth for retention purge exemption
+# Single source of truth for the directory the retention purge must skip.
 AUDIT_LOG_DIR = "audit_logs"
 
-# Key file location (gitignored, never committed)
-AUDIT_KEY_FILE = f"{AUDIT_LOG_DIR}/.audit_key"
+# Env var that holds the hex-encoded HMAC key. There is no default key.
+TRACE_AUDIT_HMAC_KEY_ENV = "TRACE_AUDIT_HMAC_KEY"
 
-# Head anchor file (stores last HMAC and entry count for verification)
-AUDIT_HEAD_FILE = f"{AUDIT_LOG_DIR}/.audit_head"
+_KEY_BYTES = 32
+
+_CASE_ACTIONS = frozenset({"search", "view", "export"})
+
+_ENTRY_FIELDS = (
+    "timestamp",
+    "operator_username",
+    "action",
+    "query",
+    "case_id",
+    "purpose",
+    "result_ids",
+    "prev_hmac",
+    "entry_hmac",
+)
+
+_REQUIRED_ENTRY_TYPES = {
+    "timestamp": str,
+    "operator_username": str,
+    "action": str,
+    "result_ids": list,
+    "prev_hmac": str,
+    "entry_hmac": str,
+}
+
+_OPTIONAL_ENTRY_TYPES = {
+    "query": str,
+    "case_id": str,
+    "purpose": str,
+}
 
 
 class AuditAction(Enum):
-    """Valid audit log actions."""
+    """Operator actions that may be written to the audit log."""
 
     LOGIN = "login"
     SEARCH = "search"
@@ -43,48 +72,106 @@ class AuditAction(Enum):
 
 def is_audit_path(path: Path | str) -> bool:
     """
-    Check if a path is inside the audit log directory.
+    Return True when `path` is the audit directory or anything inside it.
 
-    This is the single source of truth for the T9 retention purge to decide
-    what to exclude from derived-data cleanup.
-
-    Args:
-        path: Path to check (relative or absolute)
-
-    Returns:
-        True if the path is inside AUDIT_LOG_DIR, False otherwise
+    A path matches when any component is AUDIT_LOG_DIR (so
+    `/data/audit_logs/system.jsonl` matches from any working directory) or
+    when it resolves inside the cwd-relative AUDIT_LOG_DIR.
     """
-    path = Path(path).resolve()
-    audit_dir = Path(AUDIT_LOG_DIR).resolve()
-
-    # Check if path is audit_dir itself or a child of it
-    try:
-        path.relative_to(audit_dir)
+    candidate = Path(path)
+    if AUDIT_LOG_DIR in candidate.parts:
         return True
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return False
+    if AUDIT_LOG_DIR in resolved.parts:
+        return True
+    try:
+        resolved.relative_to(Path(AUDIT_LOG_DIR).resolve())
     except ValueError:
         return False
+    return True
+
+
+def default_log_path() -> Path:
+    """Default audit log path. Built only from AUDIT_LOG_DIR."""
+    return Path(AUDIT_LOG_DIR) / "audit.jsonl"
+
+
+def head_anchor_path(log_path: Path | str) -> Path:
+    """Anchor path derived from the log path: `<log_path>.head`."""
+    return Path(f"{log_path}.head")
+
+
+def _lock_path(log_path: Path) -> Path:
+    return Path(f"{log_path}.auditlock")
+
+
+def _canonical(payload: dict) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _hmac_hex(key: bytes, payload: dict) -> str:
+    digest = hmac.new(key, _canonical(payload).encode("utf-8"), hashlib.sha256)
+    return digest.hexdigest()
+
+
+def _mac_equal(left: object, right: object) -> bool:
+    """Constant-time compare that does not raise on length or type mismatch."""
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    if len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
+
+
+def _decode_key(key_hex: str, source: str) -> bytes:
+    try:
+        key = bytes.fromhex(key_hex.strip())
+    except ValueError as exc:
+        raise RuntimeError(f"{source} must be a hex-encoded HMAC key") from exc
+    if len(key) != _KEY_BYTES:
+        raise RuntimeError(
+            f"{source} must be exactly {_KEY_BYTES} bytes "
+            f"({_KEY_BYTES * 2} hex characters)"
+        )
+    return key
+
+
+def init_hmac_key(key_path: Path | str) -> Path:
+    """
+    Create a new HMAC key file. This is the only key-generation path.
+
+    Refuses to write a key inside AUDIT_LOG_DIR. Does not overwrite an
+    existing file. verify() and append() never call this.
+    """
+    path = Path(key_path)
+    if is_audit_path(path):
+        raise RuntimeError(
+            f"Refusing to create an HMAC key inside {AUDIT_LOG_DIR}: {path}"
+        )
+    if path.exists():
+        raise FileExistsError(f"HMAC key file already exists: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = os.urandom(_KEY_BYTES)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.write(fd, (key.hex() + "\n").encode("ascii"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return path
 
 
 @dataclass
 class AuditEntry:
-    """
-    A single audit log entry.
-
-    Fields:
-        timestamp: ISO 8601 timestamp in IST timezone (Asia/Kolkata)
-        operator_username: Username of the operator performing the action
-        action: Type of action (AuditAction enum value)
-        query: Optional query details (for search actions)
-        case_id: Case identifier (required for search, view, export)
-        purpose: Purpose/reason for the action (required for search, view, export)
-        result_ids: List of result identifiers returned by the action
-        prev_hmac: HMAC-SHA256 of the previous entry (empty for first entry)
-        entry_hmac: HMAC-SHA256 of this entry (excluding this field itself)
-    """
+    """One audit log line. `entry_hmac` covers every other field."""
 
     timestamp: str
     operator_username: str
-    action: str  # Stored as string, validated against AuditAction
+    action: str
     query: str | None = None
     case_id: str | None = None
     purpose: str | None = None
@@ -92,39 +179,19 @@ class AuditEntry:
     prev_hmac: str = ""
     entry_hmac: str = ""
 
+    def hmac_payload(self) -> dict:
+        payload = asdict(self)
+        payload.pop("entry_hmac", None)
+        return payload
+
     def compute_hmac(self, key: bytes) -> str:
-        """
-        Compute HMAC-SHA256 of this entry using the secret key.
-
-        The HMAC includes all fields except entry_hmac itself.
-        This prevents tampering even if an attacker can edit and rehash entries.
-
-        Args:
-            key: Secret key for HMAC
-
-        Returns:
-            Hex-encoded HMAC-SHA256 digest
-        """
-        # Create a copy of the entry dict without entry_hmac
-        entry_dict = asdict(self)
-        entry_dict.pop("entry_hmac", None)
-
-        # Canonical JSON: sorted keys, no whitespace
-        canonical = json.dumps(entry_dict, sort_keys=True, separators=(",", ":"))
-        return hmac.new(key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+        """HMAC-SHA256 over canonical JSON of every field except entry_hmac."""
+        return _hmac_hex(key, self.hmac_payload())
 
 
 @dataclass
 class VerificationResult:
-    """
-    Result of audit log verification.
-
-    Fields:
-        valid: True if the entire chain is valid, False otherwise
-        total_entries: Total number of entries checked
-        broken_index: Index of the first broken entry (None if all valid)
-        error_message: Description of the verification failure
-    """
+    """Outcome of verify(). verify() returns this and does not raise."""
 
     valid: bool
     total_entries: int
@@ -132,150 +199,230 @@ class VerificationResult:
     error_message: str | None = None
 
 
+@dataclass
+class _Anchor:
+    last_hmac: str
+    entry_count: int
+
+
+def _require_nonempty_str(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} is required and must be a non-empty string")
+    return value
+
+
+def _normalize_action(action: str | AuditAction) -> AuditAction:
+    if isinstance(action, AuditAction):
+        return action
+    if not isinstance(action, str):
+        raise ValueError(
+            "Invalid action type. Must be an AuditAction or one of: "
+            + ", ".join(item.value for item in AuditAction)
+        )
+    try:
+        return AuditAction(action)
+    except ValueError as exc:
+        valid = ", ".join(item.value for item in AuditAction)
+        raise ValueError(f"Invalid action '{action}'. Must be one of: {valid}") from exc
+
+
 class AuditLog:
-    """
-    HMAC-chained audit log with tamper detection and head anchor.
-
-    The audit log is stored in a dedicated location separate from derived data
-    to ensure it survives retention purges. Entries are kept for 1 year.
-
-    Security:
-    - HMAC-SHA256 chain with secret key prevents tail tampering and rehashing attacks
-    - Head anchor file stores last HMAC and entry count for verification
-    - File lock on append prevents race conditions
-
-    Storage format: JSON Lines (one JSON object per line) for append-only writes.
-    Location: audit_logs/ directory (exempt from derived-data purge)
-    """
+    """HMAC-chained audit log with a mandatory signed head anchor."""
 
     def __init__(
         self,
-        log_path: Path | None = None,
-        key_path: Path | None = None,
+        log_path: Path | str | None = None,
+        key_path: Path | str | None = None,
         clock: Callable[[], datetime] | None = None,
     ):
         """
-        Initialize audit log.
+        Open an audit log. Does not create a key, an anchor, or the log file.
 
         Args:
-            log_path: Path to the audit log file. Defaults to audit_logs/audit.jsonl
-            key_path: Path to the HMAC key file. Defaults to audit_logs/.audit_key
-            clock: Callable that returns current datetime (for testing). Defaults to
-                  datetime.now(IST)
+            log_path: Log file. Defaults to `<AUDIT_LOG_DIR>/audit.jsonl`.
+            key_path: Explicit key file outside AUDIT_LOG_DIR. When omitted,
+                the key is read from TRACE_AUDIT_HMAC_KEY.
+            clock: Returns a timezone-aware datetime. Defaults to now in IST.
         """
-        if log_path is None:
-            log_path = Path(AUDIT_LOG_DIR) / "audit.jsonl"
-
-        if key_path is None:
-            key_path = Path(AUDIT_KEY_FILE)
-
-        self.log_path = Path(log_path)
-        self.key_path = Path(key_path)
-        self.head_path = Path(AUDIT_HEAD_FILE)
+        self.log_path = Path(log_path) if log_path is not None else default_log_path()
+        self.key_path = Path(key_path) if key_path is not None else None
+        self.head_path = head_anchor_path(self.log_path)
+        self.lock_path = _lock_path(self.log_path)
         self.clock = clock or (lambda: datetime.now(IST))
 
-        # Ensure directory exists
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Touch the file if it doesn't exist
-        if not self.log_path.exists():
-            self.log_path.touch()
-
-    def _load_or_generate_key(self) -> bytes:
-        """
-        Load the HMAC key from the key file, or generate a new one.
-
-        The key is a 32-byte random value, stored as hex in the key file.
-        The key file is gitignored and never committed.
-
-        Returns:
-            32-byte HMAC key
-
-        Raises:
-            RuntimeError: If key file doesn't exist and AUDIT_KEY env var is not set
-        """
-        # Try environment variable first
-        env_key = os.environ.get("AUDIT_KEY")
-        if env_key:
-            try:
-                return bytes.fromhex(env_key)
-            except ValueError as e:
-                raise RuntimeError(
-                    "AUDIT_KEY environment variable must be a hex-encoded key"
-                ) from e
-
-        # Try key file
-        if self.key_path.exists():
-            key_hex = self.key_path.read_text().strip()
-            return bytes.fromhex(key_hex)
-
-        # Generate new key
-        key = os.urandom(32)
-        self.key_path.parent.mkdir(parents=True, exist_ok=True)
-        self.key_path.write_text(key.hex())
-        self.key_path.chmod(0o600)  # Owner read/write only
-        return key
+    def _timestamp(self) -> str:
+        now = self.clock()
+        if not isinstance(now, datetime):
+            raise ValueError("clock must return a datetime")
+        if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        return now.astimezone(IST).isoformat()
 
     def _get_key(self) -> bytes:
-        """Get the HMAC key, failing loudly if not available."""
-        try:
-            return self._load_or_generate_key()
-        except Exception as e:
-            raise RuntimeError(f"Failed to load audit key: {e}") from e
-
-    def _read_head_anchor(self) -> tuple[str, int] | None:
         """
-        Read the head anchor file.
+        Load the HMAC key. Never creates one.
 
-        Returns:
-            Tuple of (last_hmac, entry_count) or None if file doesn't exist
+        An explicit key_path wins over TRACE_AUDIT_HMAC_KEY. The key file
+        must not sit inside AUDIT_LOG_DIR.
         """
-        if not self.head_path.exists():
-            return None
+        if self.key_path is not None:
+            if is_audit_path(self.key_path):
+                raise RuntimeError(
+                    f"HMAC key file must be outside {AUDIT_LOG_DIR}. "
+                    f"Got: {self.key_path}"
+                )
+            if not self.key_path.is_file():
+                raise RuntimeError(
+                    f"HMAC key file not found: {self.key_path}. "
+                    "Create one with init_hmac_key()."
+                )
+            return _decode_key(
+                self.key_path.read_text(encoding="utf-8"),
+                f"Key file {self.key_path}",
+            )
 
+        if TRACE_AUDIT_HMAC_KEY_ENV not in os.environ:
+            raise RuntimeError(
+                "No HMAC key configured. Set "
+                f"{TRACE_AUDIT_HMAC_KEY_ENV} or pass key_path to AuditLog(). "
+                "verify() does not create a key."
+            )
+        raw = os.environ[TRACE_AUDIT_HMAC_KEY_ENV].strip()
+        if not raw:
+            raise RuntimeError(f"{TRACE_AUDIT_HMAC_KEY_ENV} is empty")
+        return _decode_key(raw, TRACE_AUDIT_HMAC_KEY_ENV)
+
+    def _read_anchor(self, key: bytes) -> _Anchor | VerificationResult:
+        if not self.head_path.is_file():
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message="Missing head anchor",
+            )
         try:
-            data = json.loads(self.head_path.read_text())
-            return data["last_hmac"], data["entry_count"]
+            raw = self.head_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message=f"Head anchor is malformed: {exc}",
+            )
+        if not isinstance(data, dict):
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message="Head anchor is malformed: expected a JSON object",
+            )
+        if "anchor_hmac" not in data or not isinstance(data.get("anchor_hmac"), str):
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message="Head anchor is unsigned (missing anchor_hmac)",
+            )
+        if data["anchor_hmac"] == "":
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message="Head anchor is unsigned (missing anchor_hmac)",
+            )
+        for name in ("last_hmac", "entry_count"):
+            if name not in data:
+                return VerificationResult(
+                    valid=False,
+                    total_entries=0,
+                    error_message=f"Head anchor is missing {name}",
+                )
+        if not isinstance(data["last_hmac"], str) or isinstance(data["entry_count"], bool):
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message="Head anchor field has the wrong type",
+            )
+        if not isinstance(data["entry_count"], int):
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message="Head anchor field has the wrong type",
+            )
+        extra = set(data) - {"anchor_hmac", "entry_count", "last_hmac"}
+        if extra:
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message=f"Head anchor has extra fields: {sorted(extra)}",
+            )
+        expected = _hmac_hex(
+            key,
+            {"entry_count": data["entry_count"], "last_hmac": data["last_hmac"]},
+        )
+        if not _mac_equal(data["anchor_hmac"], expected):
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message=(
+                    "Head anchor signature mismatch (unsigned or wrong key)"
+                ),
+            )
+        return _Anchor(last_hmac=data["last_hmac"], entry_count=data["entry_count"])
+
+    def _write_anchor(self, key: bytes, last_hmac: str, entry_count: int) -> None:
+        """Atomically write `<log>.head` (temp file, fsync, os.replace)."""
+        body = {
+            "entry_count": entry_count,
+            "last_hmac": last_hmac,
+        }
+        signed = {
+            "anchor_hmac": _hmac_hex(key, body),
+            "entry_count": entry_count,
+            "last_hmac": last_hmac,
+        }
+        raw = _canonical(signed)
+        parent = self.head_path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{self.head_path.name}.",
+            suffix=".tmp",
+            dir=parent,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, self.head_path)
         except Exception:
-            return None
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
 
-    def _write_head_anchor(self, last_hmac: str, entry_count: int):
+    def _log_lines(self) -> list[str]:
+        if not self.log_path.exists():
+            return []
+        if self.log_path.stat().st_size == 0:
+            return []
+        return self.log_path.read_text(encoding="utf-8").splitlines()
+
+    def _last_entry_and_count(self) -> tuple[AuditEntry | None, int]:
         """
-        Write the head anchor file.
+        Return the last entry and the non-empty line count.
 
-        Args:
-            last_hmac: HMAC of the last entry
-            entry_count: Total number of entries
+        A malformed last line raises RuntimeError so append cannot fork
+        the chain by treating the log as empty.
         """
-        self.head_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"last_hmac": last_hmac, "entry_count": entry_count}
-        self.head_path.write_text(json.dumps(data, separators=(",", ":")))
-
-    def _get_last_entry(self) -> AuditEntry | None:
-        """
-        Read the last entry from the log file.
-
-        Returns:
-            The last AuditEntry, or None if the log is empty
-        """
-        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
-            return None
-
-        # Read last line
+        lines = self._log_lines()
+        nonempty = [line.strip() for line in lines if line.strip()]
+        if not nonempty:
+            return None, 0
+        last = nonempty[-1]
         try:
-            with open(self.log_path, encoding="utf-8") as f:
-                lines = f.readlines()
-                if not lines:
-                    return None
-
-                last_line = lines[-1].strip()
-                if not last_line:
-                    return None
-
-                entry_dict = json.loads(last_line)
-                return AuditEntry(**entry_dict)
-        except Exception:
-            return None
+            data = json.loads(last)
+            entry = AuditEntry(**data)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Cannot append: last line in the log is malformed: {exc}"
+            ) from exc
+        return entry, len(nonempty)
 
     def append(
         self,
@@ -287,338 +434,358 @@ class AuditLog:
         result_ids: list[str] | None = None,
     ) -> AuditEntry:
         """
-        Append a new entry to the audit log.
+        Append one entry and update the signed head anchor.
 
-        Args:
-            operator_username: Username of the operator
-            action: Type of action (AuditAction enum or string)
-            query: Optional query details
-            case_id: Case identifier (required for search, view, export)
-            purpose: Purpose/reason (required for search, view, export)
-            result_ids: Optional list of result identifiers
-
-        Returns:
-            The created AuditEntry with computed HMAC and chain link
-
-        Raises:
-            ValueError: If action is invalid or case_id/purpose missing for required actions
-            RuntimeError: If HMAC key is not available
+        Holds one exclusive fcntl lock across the read of the last entry,
+        the append, and the anchor write.
         """
-        # Validate and normalize action
-        if isinstance(action, AuditAction):
-            action_str = action.value
-            action_enum = action
-        else:
-            try:
-                action_enum = AuditAction(action)
-                action_str = action
-            except ValueError as e:
-                valid_actions = ", ".join(a.value for a in AuditAction)
-                raise ValueError(
-                    f"Invalid action '{action}'. Must be one of: {valid_actions}"
-                ) from e
-
-        # Validate case_id and purpose for required actions
-        requires_case_id = action_enum in {
-            AuditAction.SEARCH,
-            AuditAction.VIEW,
-            AuditAction.EXPORT,
-        }
-        if requires_case_id:
-            if not case_id or not case_id.strip():
-                raise ValueError(
-                    f"case_id is required for action '{action_str}' (PRD §8)"
-                )
-            if not purpose or not purpose.strip():
-                raise ValueError(
-                    f"purpose is required for action '{action_str}' (PRD §8)"
-                )
-
-        # Get HMAC key
-        key = self._get_key()
-
-        # Get timestamp
-        now = self.clock()
-        timestamp = now.isoformat()
-
-        # Get previous entry's HMAC
-        last_entry = self._get_last_entry()
-        prev_hmac = last_entry.entry_hmac if last_entry else ""
-
-        # Create entry
-        entry = AuditEntry(
-            timestamp=timestamp,
-            operator_username=operator_username,
-            action=action_str,
-            query=query,
-            case_id=case_id,
-            purpose=purpose,
-            result_ids=result_ids or [],
-            prev_hmac=prev_hmac,
+        operator_username = _require_nonempty_str(
+            operator_username, "operator_username"
         )
+        action_enum = _normalize_action(action)
+        if query is not None and not isinstance(query, str):
+            raise ValueError("query must be a string when provided")
+        if action_enum.value in _CASE_ACTIONS:
+            if not isinstance(case_id, str) or not case_id.strip():
+                raise ValueError(
+                    f"case_id is required for action '{action_enum.value}'"
+                )
+            if not isinstance(purpose, str) or not purpose.strip():
+                raise ValueError(
+                    f"purpose is required for action '{action_enum.value}'"
+                )
+        else:
+            if case_id is not None and (
+                not isinstance(case_id, str) or not case_id.strip()
+            ):
+                raise ValueError("case_id must be a non-empty string")
+            if purpose is not None and (
+                not isinstance(purpose, str) or not purpose.strip()
+            ):
+                raise ValueError("purpose must be a non-empty string")
+        if result_ids is None:
+            result_ids = []
+        if not isinstance(result_ids, list) or not all(
+            isinstance(item, str) for item in result_ids
+        ):
+            raise ValueError("result_ids must be a list of strings")
 
-        # Compute HMAC
-        entry.entry_hmac = entry.compute_hmac(key)
+        key = self._get_key()
+        timestamp = self._timestamp()
 
-        # Append to file with lock
-        with open(self.log_path, "a", encoding="utf-8") as f:
-            # Acquire exclusive lock
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            try:
-                f.write(json.dumps(asdict(entry), separators=(",", ":")) + "\n")
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-        # Update head anchor - count the current entries
-        current_count = len([1 for line in self.log_path.read_text().splitlines() if line.strip()])
-        self._write_head_anchor(entry.entry_hmac, current_count)
-
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            last_entry, count = self._last_entry_and_count()
+            prev_hmac = last_entry.entry_hmac if last_entry else ""
+            entry = AuditEntry(
+                timestamp=timestamp,
+                operator_username=operator_username,
+                action=action_enum.value,
+                query=query,
+                case_id=case_id,
+                purpose=purpose,
+                result_ids=list(result_ids),
+                prev_hmac=prev_hmac,
+            )
+            entry.entry_hmac = entry.compute_hmac(key)
+            line = _canonical(asdict(entry)) + "\n"
+            with open(self.log_path, "a", encoding="utf-8") as handle:
+                handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._write_anchor(key, entry.entry_hmac, count + 1)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
         return entry
 
     def read_all(self) -> list[AuditEntry]:
-        """
-        Read all entries from the audit log.
+        """Read every entry. Raises RuntimeError if a line is malformed."""
+        entries: list[AuditEntry] = []
+        for line in self._log_lines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                data = json.loads(stripped)
+                entries.append(AuditEntry(**data))
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Malformed audit entry at index {len(entries)}: {exc}"
+                ) from exc
+        return entries
 
-        Returns:
-            List of all AuditEntry objects in chronological order.
-            Returns empty list if file doesn't exist or is empty.
-        """
-        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
-            return []
+    def count(self) -> int:
+        """Count non-empty lines. Does not parse them."""
+        return sum(1 for line in self._log_lines() if line.strip())
 
-        entries = []
+    def _parse_entry(self, raw: str, index: int) -> AuditEntry | VerificationResult:
         try:
-            with open(self.log_path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        entry_dict = json.loads(line)
-                        entries.append(AuditEntry(**entry_dict))
-        except Exception:
-            # If read fails, return what we have so far
-            pass
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return VerificationResult(
+                valid=False,
+                total_entries=index,
+                broken_index=index,
+                error_message=f"Malformed JSON at entry {index}: {exc}",
+            )
+        if not isinstance(data, dict):
+            got = type(data).__name__
+            return VerificationResult(
+                valid=False,
+                total_entries=index,
+                broken_index=index,
+                error_message=(
+                    f"Entry {index} has the wrong type: expected object, got {got}"
+                ),
+            )
+        for name, expected in _REQUIRED_ENTRY_TYPES.items():
+            if name not in data:
+                return VerificationResult(
+                    valid=False,
+                    total_entries=index,
+                    broken_index=index,
+                    error_message=(
+                        f"Missing required field '{name}' at entry {index}"
+                    ),
+                )
+            if not isinstance(data[name], expected):
+                return VerificationResult(
+                    valid=False,
+                    total_entries=index,
+                    broken_index=index,
+                    error_message=(
+                        f"Field '{name}' has the wrong type at entry {index}: "
+                        f"expected {expected.__name__}, "
+                        f"got {type(data[name]).__name__}"
+                    ),
+                )
+        for name, expected in _OPTIONAL_ENTRY_TYPES.items():
+            if name not in data or data[name] is None:
+                continue
+            if not isinstance(data[name], expected):
+                return VerificationResult(
+                    valid=False,
+                    total_entries=index,
+                    broken_index=index,
+                    error_message=(
+                        f"Field '{name}' has the wrong type at entry {index}: "
+                        f"expected {expected.__name__}, "
+                        f"got {type(data[name]).__name__}"
+                    ),
+                )
+        extra = set(data) - set(_ENTRY_FIELDS)
+        if extra:
+            return VerificationResult(
+                valid=False,
+                total_entries=index,
+                broken_index=index,
+                error_message=f"Extra fields at entry {index}: {sorted(extra)}",
+            )
+        try:
+            action_enum = AuditAction(data["action"])
+        except ValueError:
+            return VerificationResult(
+                valid=False,
+                total_entries=index,
+                broken_index=index,
+                error_message=(
+                    f"Unknown action '{data['action']}' at entry {index}"
+                ),
+            )
+        if not data["operator_username"].strip():
+            return VerificationResult(
+                valid=False,
+                total_entries=index,
+                broken_index=index,
+                error_message=(
+                    f"operator_username is empty at entry {index}"
+                ),
+            )
+        if action_enum.value in _CASE_ACTIONS:
+            if not isinstance(data.get("case_id"), str) or not data["case_id"].strip():
+                return VerificationResult(
+                    valid=False,
+                    total_entries=index,
+                    broken_index=index,
+                    error_message=(
+                        f"case_id is required for action '{action_enum.value}' "
+                        f"at entry {index}"
+                    ),
+                )
+            if not isinstance(data.get("purpose"), str) or not data["purpose"].strip():
+                return VerificationResult(
+                    valid=False,
+                    total_entries=index,
+                    broken_index=index,
+                    error_message=(
+                        f"purpose is required for action '{action_enum.value}' "
+                        f"at entry {index}"
+                    ),
+                )
+        if not all(isinstance(item, str) for item in data["result_ids"]):
+            return VerificationResult(
+                valid=False,
+                total_entries=index,
+                broken_index=index,
+                error_message=(
+                    f"Field 'result_ids' has the wrong type at entry {index}: "
+                    "expected a list of strings"
+                ),
+            )
+        try:
+            return AuditEntry(**data)
+        except (TypeError, ValueError) as exc:
+            return VerificationResult(
+                valid=False,
+                total_entries=index,
+                broken_index=index,
+                error_message=f"Invalid entry at {index}: {exc}",
+            )
 
+    def _load_entries(self) -> list[AuditEntry] | VerificationResult:
+        try:
+            lines = self._log_lines()
+        except OSError as exc:
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message=f"Cannot read audit log: {exc}",
+            )
+        entries: list[AuditEntry] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parsed = self._parse_entry(stripped, len(entries))
+            if isinstance(parsed, VerificationResult):
+                return parsed
+            entries.append(parsed)
         return entries
 
     def verify(self) -> VerificationResult:
         """
-        Verify the integrity of the audit log chain.
+        Check the chain and the signed head anchor.
 
-        This method NEVER raises exceptions. All error conditions return
-        valid=False with a clear error message.
-
-        Checks:
-        1. HMAC key is available
-        2. Each entry can be parsed as valid JSON
-        3. Each entry has all required fields with correct types
-        4. Each entry's HMAC is correctly computed with the secret key
-        5. Each entry's prev_hmac matches the previous entry's entry_hmac
-        6. No entries are missing (chain is unbroken)
-        7. Head anchor (if present) matches the last entry
-
-        Returns:
-            VerificationResult with details of any integrity violations.
+        Never raises and never creates a key, a log, or an anchor. A missing
+        key, a missing anchor, an unsigned anchor, a bad signature, or a
+        count mismatch returns valid=False. An empty log with no anchor
+        fails. An empty or truncated log whose anchor count is above 0 fails.
         """
-        # Check if key is available
         try:
             key = self._get_key()
-        except Exception as e:
+        except Exception as exc:
             return VerificationResult(
                 valid=False,
                 total_entries=0,
-                error_message=f"HMAC key not available: {e}",
+                error_message=f"HMAC key not available: {exc}",
             )
 
-        # Read all entries with robust error handling
-        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
-            # Empty log is valid
-            return VerificationResult(
-                valid=True,
-                total_entries=0,
-                error_message="Empty log (valid)",
-            )
+        loaded = self._load_entries()
+        if isinstance(loaded, VerificationResult):
+            return loaded
+        entries = loaded
 
-        entries = []
-        try:
-            with open(self.log_path, encoding="utf-8") as f:
-                for i, line in enumerate(f):
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    # Try to parse JSON
-                    try:
-                        entry_dict = json.loads(line)
-                    except json.JSONDecodeError as e:
-                        return VerificationResult(
-                            valid=False,
-                            total_entries=len(entries),
-                            broken_index=i,
-                            error_message=f"Malformed JSON at line {i}: {e}",
-                        )
-
-                    # Check for required fields and correct types
-                    required_fields = {
-                        "timestamp": str,
-                        "operator_username": str,
-                        "action": str,
-                        "result_ids": list,
-                        "prev_hmac": str,
-                        "entry_hmac": str,
-                    }
-                    optional_fields = {"query": str, "case_id": str, "purpose": str}
-
-                    for field, expected_type in required_fields.items():
-                        if field not in entry_dict:
-                            return VerificationResult(
-                                valid=False,
-                                total_entries=len(entries),
-                                broken_index=i,
-                                error_message=f"Missing required field '{field}' at entry {i}",
-                            )
-                        if not isinstance(entry_dict[field], expected_type):
-                            return VerificationResult(
-                                valid=False,
-                                total_entries=len(entries),
-                                broken_index=i,
-                                error_message=(
-                                    f"Field '{field}' has wrong type at entry {i}: "
-                                    f"expected {expected_type.__name__}, "
-                                    f"got {type(entry_dict[field]).__name__}"
-                                ),
-                            )
-
-                    # Check for extra fields (potential tampering)
-                    all_valid_fields = set(required_fields.keys()) | set(
-                        optional_fields.keys()
+        if entries:
+            if entries[0].prev_hmac != "":
+                return VerificationResult(
+                    valid=False,
+                    total_entries=len(entries),
+                    broken_index=0,
+                    error_message="First entry has a non-empty prev_hmac",
+                )
+            for index, entry in enumerate(entries):
+                expected = entry.compute_hmac(key)
+                if not _mac_equal(entry.entry_hmac, expected):
+                    return VerificationResult(
+                        valid=False,
+                        total_entries=len(entries),
+                        broken_index=index,
+                        error_message=(
+                            f"Entry {index} HMAC mismatch: "
+                            f"stored={entry.entry_hmac[:16]}..., "
+                            f"computed={expected[:16]}..."
+                        ),
                     )
-                    extra_fields = set(entry_dict.keys()) - all_valid_fields
-                    if extra_fields:
-                        return VerificationResult(
-                            valid=False,
-                            total_entries=len(entries),
-                            broken_index=i,
-                            error_message=f"Extra fields at entry {i}: {extra_fields}",
-                        )
+            for index in range(1, len(entries)):
+                expected_prev = entries[index - 1].entry_hmac
+                actual_prev = entries[index].prev_hmac
+                if not _mac_equal(actual_prev, expected_prev):
+                    return VerificationResult(
+                        valid=False,
+                        total_entries=len(entries),
+                        broken_index=index,
+                        error_message=(
+                            f"Chain break at entry {index}: "
+                            f"prev_hmac={actual_prev[:16]}... != "
+                            f"expected={expected_prev[:16]}..."
+                        ),
+                    )
 
-                    # Try to create AuditEntry
-                    try:
-                        entry = AuditEntry(**entry_dict)
-                    except Exception as e:
-                        return VerificationResult(
-                            valid=False,
-                            total_entries=len(entries),
-                            broken_index=i,
-                            error_message=f"Invalid entry at {i}: {e}",
-                        )
-
-                    entries.append(entry)
-
-        except Exception as e:
-            return VerificationResult(
-                valid=False,
-                total_entries=len(entries),
-                error_message=f"Error reading log file: {e}",
-            )
+        anchor = self._read_anchor(key)
+        if isinstance(anchor, VerificationResult):
+            anchor.total_entries = len(entries)
+            if entries:
+                anchor.broken_index = len(entries) - 1
+            return anchor
 
         if not entries:
+            if anchor.entry_count > 0:
+                return VerificationResult(
+                    valid=False,
+                    total_entries=0,
+                    broken_index=0,
+                    error_message=(
+                        "Audit log is empty or truncated but head anchor "
+                        f"count is {anchor.entry_count}"
+                    ),
+                )
+            if anchor.entry_count != 0 or anchor.last_hmac != "":
+                return VerificationResult(
+                    valid=False,
+                    total_entries=0,
+                    broken_index=0,
+                    error_message=(
+                        "Head anchor does not describe an empty log "
+                        f"(count={anchor.entry_count})"
+                    ),
+                )
             return VerificationResult(
                 valid=True,
                 total_entries=0,
-                error_message="Empty log (valid)",
+                error_message="Empty log with a signed count of 0",
             )
 
-        # Check first entry has empty prev_hmac
-        if entries[0].prev_hmac != "":
+        if anchor.entry_count != len(entries):
             return VerificationResult(
                 valid=False,
                 total_entries=len(entries),
-                broken_index=0,
-                error_message=f"First entry has non-empty prev_hmac: {entries[0].prev_hmac}",
+                broken_index=len(entries) - 1,
+                error_message=(
+                    "Head anchor count mismatch: "
+                    f"anchor={anchor.entry_count}, actual={len(entries)}"
+                ),
             )
-
-        # Verify each entry's HMAC
-        for i, entry in enumerate(entries):
-            expected_hmac = entry.compute_hmac(key)
-            if entry.entry_hmac != expected_hmac:
-                return VerificationResult(
-                    valid=False,
-                    total_entries=len(entries),
-                    broken_index=i,
-                    error_message=(
-                        f"Entry {i} HMAC mismatch: "
-                        f"stored={entry.entry_hmac[:16]}..., "
-                        f"computed={expected_hmac[:16]}..."
-                    ),
-                )
-
-        # Verify chain links
-        for i in range(1, len(entries)):
-            expected_prev_hmac = entries[i - 1].entry_hmac
-            actual_prev_hmac = entries[i].prev_hmac
-
-            if actual_prev_hmac != expected_prev_hmac:
-                return VerificationResult(
-                    valid=False,
-                    total_entries=len(entries),
-                    broken_index=i,
-                    error_message=(
-                        f"Chain break at entry {i}: "
-                        f"prev_hmac={actual_prev_hmac[:16]}... != "
-                        f"expected={expected_prev_hmac[:16]}..."
-                    ),
-                )
-
-        # Verify head anchor if present
-        head_anchor = self._read_head_anchor()
-        if head_anchor:
-            last_hmac, entry_count = head_anchor
-            if last_hmac != entries[-1].entry_hmac:
-                return VerificationResult(
-                    valid=False,
-                    total_entries=len(entries),
-                    broken_index=len(entries) - 1,
-                    error_message=(
-                        f"Head anchor HMAC mismatch: "
-                        f"anchor={last_hmac[:16]}..., "
-                        f"last_entry={entries[-1].entry_hmac[:16]}..."
-                    ),
-                )
-            if entry_count != len(entries):
-                return VerificationResult(
-                    valid=False,
-                    total_entries=len(entries),
-                    error_message=(
-                        f"Head anchor count mismatch: "
-                        f"anchor={entry_count}, actual={len(entries)}"
-                    ),
-                )
-
+        if not _mac_equal(anchor.last_hmac, entries[-1].entry_hmac):
+            return VerificationResult(
+                valid=False,
+                total_entries=len(entries),
+                broken_index=len(entries) - 1,
+                error_message=(
+                    "Head anchor HMAC mismatch: "
+                    f"anchor={anchor.last_hmac[:16]}..., "
+                    f"last_entry={entries[-1].entry_hmac[:16]}..."
+                ),
+            )
         return VerificationResult(
             valid=True,
             total_entries=len(entries),
             error_message="All entries verified successfully",
         )
 
-    def count(self) -> int:
-        """
-        Count the number of entries in the audit log.
-
-        Returns:
-            Total number of entries.
-        """
-        return len(self.read_all())
-
     def query_by_operator(self, operator_username: str) -> list[AuditEntry]:
-        """
-        Query entries by operator username.
-
-        Args:
-            operator_username: Username to filter by
-
-        Returns:
-            List of matching AuditEntry objects.
-        """
         return [
             entry
             for entry in self.read_all()
@@ -626,26 +793,8 @@ class AuditLog:
         ]
 
     def query_by_action(self, action: str | AuditAction) -> list[AuditEntry]:
-        """
-        Query entries by action type.
-
-        Args:
-            action: Action type to filter by (string or AuditAction enum)
-
-        Returns:
-            List of matching AuditEntry objects.
-        """
         action_str = action.value if isinstance(action, AuditAction) else action
         return [entry for entry in self.read_all() if entry.action == action_str]
 
     def query_by_case_id(self, case_id: str) -> list[AuditEntry]:
-        """
-        Query entries by case ID.
-
-        Args:
-            case_id: Case ID to filter by
-
-        Returns:
-            List of matching AuditEntry objects.
-        """
         return [entry for entry in self.read_all() if entry.case_id == case_id]
