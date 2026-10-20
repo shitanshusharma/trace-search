@@ -253,12 +253,13 @@ def is_license_allowed(license_str: str) -> bool:
 
 
 def check_manifest_licenses(manifest: dict) -> list[str]:
-    """Check manifest entries for banned or unrecognized licenses."""
+    """Check manifest entries for banned or unrecognized licenses and generator licenses."""
     violations = []
 
     for entry in manifest.get('entries', []):
         license_str = entry.get('license', '').strip()
         name = entry.get('name', 'unknown')
+        entry_type = entry.get('type', '')
 
         is_banned, reason = is_license_banned(license_str)
         if is_banned:
@@ -268,6 +269,27 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
                 f"{name}: license '{license_str}' not in allowed list "
                 "(must be exact SPDX or approved non-SPDX)"
             )
+        
+        # Check generator_license on synthetic_clip entries (PRD §3: 0 GPL entries)
+        if entry_type == 'synthetic_clip':
+            generator_license = entry.get('generator_license', '').strip()
+            if not generator_license:
+                violations.append(
+                    f"{name}: synthetic_clip missing required generator_license field"
+                )
+            else:
+                # Generator license must not be GPL-family (PRD §3)
+                gen_is_banned, gen_reason = is_license_banned(generator_license)
+                if gen_is_banned and 'GPL' in gen_reason.upper():
+                    violations.append(
+                        f"{name}: synthetic_clip generator has GPL-family license "
+                        f"'{generator_license}' (PRD §3 requires 0 GPL entries)"
+                    )
+                # Unknown generator license also fails closed
+                if generator_license.upper() in ['UNKNOWN', 'UNLICENSED', 'NOASSERTION']:
+                    violations.append(
+                        f"{name}: synthetic_clip generator has unknown license '{generator_license}'"
+                    )
 
     return violations
 
@@ -420,28 +442,86 @@ def check_installed_packages(
     return violations, missing
 
 
-def check_ffmpeg_build() -> list[str]:
-    """Check if FFmpeg build is LGPL-only (not GPL/nonfree)."""
-    try:
-        result = subprocess.run(
-            ['ffmpeg', '-buildconf'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        buildconf = result.stdout + result.stderr
-
-        violations = []
-        if '--enable-gpl' in buildconf:
-            violations.append("FFmpeg built with --enable-gpl (must be LGPL-only)")
-        if '--enable-nonfree' in buildconf:
-            violations.append("FFmpeg built with --enable-nonfree (must be LGPL-only)")
-
-        return violations
-    except FileNotFoundError:
-        return ["FFmpeg not found (required for T2+)"]
-    except Exception as e:
-        return [f"Failed to check FFmpeg: {e}"]
+def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
+    """
+    Check FFmpeg build configuration based on manifest declarations.
+    
+    Returns:
+        (violations, status) where status is one of:
+        - 'LGPL_OK': FFmpeg is LGPL-only (bundled or system)
+        - 'NOT_A_DEPENDENCY': No FFmpeg dependency declared
+        - 'GPL_VIOLATION': FFmpeg has GPL/nonfree flags
+        - 'MISSING': Declared system FFmpeg not found
+    """
+    violations = []
+    
+    # Check if opencv-python or opencv-python-headless is in manifest
+    opencv_entries = [
+        e for e in manifest.get('entries', [])
+        if e.get('name', '').lower().replace('_', '-') in 
+        ['opencv-python', 'opencv-python-headless']
+    ]
+    
+    # Check if system ffmpeg is declared
+    ffmpeg_entries = [
+        e for e in manifest.get('entries', [])
+        if e.get('name', '').lower() == 'ffmpeg' and e.get('type') == 'tool'
+    ]
+    
+    if opencv_entries:
+        # Check opencv's bundled FFmpeg via cv2.getBuildInformation()
+        try:
+            import cv2
+            build_info = cv2.getBuildInformation()
+            
+            if '--enable-gpl' in build_info:
+                violations.append(
+                    "opencv-python's bundled FFmpeg built with --enable-gpl (must be LGPL-only)"
+                )
+                return violations, 'GPL_VIOLATION'
+            if '--enable-nonfree' in build_info:
+                violations.append(
+                    "opencv-python's bundled FFmpeg built with --enable-nonfree (must be LGPL-only)"
+                )
+                return violations, 'GPL_VIOLATION'
+            
+            return [], 'LGPL_OK'
+        except ImportError:
+            violations.append("opencv-python declared in manifest but not installed")
+            return violations, 'MISSING'
+        except Exception as e:
+            violations.append(f"Failed to check opencv FFmpeg: {e}")
+            return violations, 'MISSING'
+    
+    elif ffmpeg_entries:
+        # System FFmpeg declared - check it exists and is LGPL
+        try:
+            result = subprocess.run(
+                ['ffmpeg', '-buildconf'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            buildconf = result.stdout + result.stderr
+            
+            if '--enable-gpl' in buildconf:
+                violations.append("System FFmpeg built with --enable-gpl (must be LGPL-only)")
+                return violations, 'GPL_VIOLATION'
+            if '--enable-nonfree' in buildconf:
+                violations.append("System FFmpeg built with --enable-nonfree (must be LGPL-only)")
+                return violations, 'GPL_VIOLATION'
+            
+            return [], 'LGPL_OK'
+        except FileNotFoundError:
+            violations.append("System FFmpeg declared in manifest but not found")
+            return violations, 'MISSING'
+        except Exception as e:
+            violations.append(f"Failed to check system FFmpeg: {e}")
+            return violations, 'MISSING'
+    
+    else:
+        # No FFmpeg dependency
+        return [], 'NOT_A_DEPENDENCY'
 
 
 def generate_report(
@@ -535,7 +615,7 @@ def main():
         '--check-ffmpeg',
         action='store_true',
         default=True,
-        help='Check FFmpeg build configuration (default: True, set NO_FFMPEG_CHECK=1 to disable)'
+        help='Check FFmpeg build configuration (default: True)'
     )
 
     args = parser.parse_args()
@@ -564,7 +644,7 @@ def main():
     if manifest_violations:
         for violation in manifest_violations:
             print(f"ERROR: {violation}")
-            all_violations.extend(manifest_violations)
+        all_violations.extend(manifest_violations)
     else:
         print("✓ No banned licenses in manifest")
     print()
@@ -575,7 +655,7 @@ def main():
     if component_violations:
         for violation in component_violations:
             print(f"ERROR: {violation}")
-            all_violations.extend(component_violations)
+        all_violations.extend(component_violations)
     else:
         print("✓ No banned components found")
     print()
@@ -612,19 +692,25 @@ def main():
         print()
 
     # FFmpeg check
-    if args.check_ffmpeg and 'NO_FFMPEG_CHECK' not in os.environ:
+    ffmpeg_status = 'NOT_A_DEPENDENCY'
+    if args.check_ffmpeg:
         print("=== Checking FFmpeg build configuration ===")
-        ffmpeg_violations = check_ffmpeg_build()
+        ffmpeg_violations, ffmpeg_status = check_ffmpeg_build(manifest)
         for violation in ffmpeg_violations:
             print(f"ERROR: {violation}")
             all_violations.append(violation)
         if not ffmpeg_violations:
-            print("✓ FFmpeg build is LGPL-only")
+            if ffmpeg_status == 'LGPL_OK':
+                print("✓ FFmpeg build is LGPL-only")
+            elif ffmpeg_status == 'NOT_A_DEPENDENCY':
+                print("ℹ FFmpeg: NOT_A_DEPENDENCY")
         print()
 
     # Generate report
     if args.report:
-        report = generate_report(manifest, installed, all_violations, args.manifest)
+        report = generate_report(
+            manifest, installed, all_violations, args.manifest, ffmpeg_status
+        )
         args.report.parent.mkdir(parents=True, exist_ok=True)
         with args.report.open('w') as f:
             json.dump(report, f, indent=2)

@@ -169,7 +169,7 @@ def test_facenet_pytorch_fails():
 
 
 def test_schema_synthetic_clip_fixture_id():
-    """Test that FX-SMOKE-SYN-001 format is accepted."""
+    """Test that FX-SMOKE-SYN-001 format and non-GPL generator are accepted."""
     manifest = make_manifest(entries=[
         {
             "name": "synthetic_walk_01.mp4",
@@ -185,17 +185,14 @@ def test_schema_synthetic_clip_fixture_id():
             "fixture_id": "FX-SMOKE-SYN-001",
             "generator": "blender",
             "generator_version": "3.6.0",
-            "generator_license": "GPL-3.0",
+            "generator_license": "Apache-2.0",
             "seed": "12345"
         }
     ])
 
     returncode, stdout, stderr = run_checker_with_manifest(manifest)
-    # Generator has GPL but that's OK for tools, the clip itself is CC0
-    # Schema should accept FX-SMOKE-SYN-001 format
-    assert (
-        returncode == 0 or "fixture_id" not in stdout
-    ), f"FX-SMOKE-SYN-001 format should be accepted: {stdout}"
+    assert returncode == 0, f"FX-SMOKE-SYN-001 with non-GPL generator should pass: {stdout}"
+    assert "PASSED" in stdout or "✅" in stdout
 
 
 def test_clean_real_closure_passes():
@@ -205,7 +202,7 @@ def test_clean_real_closure_passes():
         capture_output=True,
         text=True,
         cwd=Path.cwd(),
-        env={**os.environ, 'NO_FFMPEG_CHECK': '1'}
+        env={**os.environ}
     )
 
     assert result.returncode == 0, f"Real clean manifest should pass: {result.stdout}"
@@ -219,7 +216,7 @@ def test_installed_package_scan_with_system_packages():
         capture_output=True,
         text=True,
         cwd=Path.cwd(),
-        env={**os.environ, 'NO_FFMPEG_CHECK': '1'}
+        env={**os.environ}
     )
 
     # With system packages present, scanning should catch unlisted/GPL packages

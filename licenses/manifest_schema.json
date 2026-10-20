@@ -77,7 +77,7 @@
           "use": {
             "type": "string",
             "enum": ["SMOKE_ONLY", "CODE_TEST", "TRAIN", "DEV", "HOLD"],
-            "description": "For clips/fixtures only: usage tag"
+            "description": "For clips/fixtures only: usage tag. Stock clips must use SMOKE_ONLY."
           },
           "fixture_id": {
             "type": "string",
