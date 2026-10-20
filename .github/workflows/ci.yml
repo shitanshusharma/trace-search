@@ -46,7 +46,9 @@ jobs:
     
     - name: License fence check
       run: |
-        python scripts/check_licenses.py --report=license-report.json
+        python scripts/check_licenses.py \
+          --requirements=requirements-dev.txt \
+          --report=license-report.json
       env:
         NO_FFMPEG_CHECK: '1'
     

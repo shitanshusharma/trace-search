@@ -259,6 +259,37 @@ def check_banned_components(manifest: dict) -> list[str]:
     return violations
 
 
+def get_direct_dependencies(requirements_files: list[Path]) -> set[str]:
+    """
+    Parse requirements files and return set of direct dependencies.
+
+    Only these packages will be checked against manifest.
+    Transitive dependencies are the responsibility of direct dependencies.
+    """
+    direct_deps = set()
+
+    for req_file in requirements_files:
+        if not req_file.exists():
+            continue
+
+        with req_file.open('r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+                # Skip -e editable installs
+                if line.startswith('-e'):
+                    continue
+                # Extract package name (before ==, >=, etc.)
+                pkg_name = re.split(r'[<>=!]', line)[0].strip()
+                if pkg_name:
+                    # Normalize name (PyPI convention)
+                    direct_deps.add(pkg_name.lower().replace('_', '-'))
+
+    return direct_deps
+
+
 def get_installed_packages(include_system: bool = False) -> list[dict]:
     """Get list of installed packages with licenses using pip-licenses."""
     try:
@@ -282,9 +313,14 @@ def get_installed_packages(include_system: bool = False) -> list[dict]:
 
 def check_installed_packages(
     installed: list[dict],
-    manifest: dict
+    manifest: dict,
+    direct_deps: set[str] = None
 ) -> tuple[list[str], list[str]]:
-    """Check installed packages against manifest and for banned licenses."""
+    """
+    Check installed packages against manifest and for banned licenses.
+
+    If direct_deps is provided, only check those packages.
+    """
     violations = []
     missing = []
 
@@ -299,6 +335,10 @@ def check_installed_packages(
         version = pkg['version']
         license_str = pkg['license']
         norm_name = name.lower().replace('_', '-')
+
+        # Skip if we're only checking direct dependencies and this isn't one
+        if direct_deps is not None and norm_name not in direct_deps:
+            continue
 
         if norm_name not in manifest_packages:
             missing.append(f"{name} ({version}): installed but not in manifest")
@@ -404,6 +444,14 @@ def main():
         help='Write JSON report to file'
     )
     parser.add_argument(
+        '--requirements',
+        type=Path,
+        action='append',
+        help='Requirements file (can be specified multiple times). '
+             'If provided, only check direct dependencies from these files.'
+    )
+
+    parser.add_argument(
         '--check-ffmpeg',
         action='store_true',
         default='NO_FFMPEG_CHECK' not in os.environ,
@@ -458,7 +506,15 @@ def main():
         installed = get_installed_packages(include_system=args.include_system)
         print(f"Found {len(installed)} installed packages")
 
-        install_violations, missing = check_installed_packages(installed, manifest)
+        # Get direct dependencies from requirements files
+        direct_deps = None
+        if args.requirements:
+            direct_deps = get_direct_dependencies(args.requirements)
+            print(f"Checking {len(direct_deps)} direct dependencies from requirements")
+
+        install_violations, missing = check_installed_packages(
+            installed, manifest, direct_deps
+        )
 
         if install_violations:
             print()
