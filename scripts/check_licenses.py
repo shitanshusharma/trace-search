@@ -30,8 +30,8 @@ except ImportError:
     HAVE_JSONSCHEMA = False
 
 from trace_search.ingest.ffmpeg_check import (  # noqa: E402
+    OPENCV_FFMPEG_DISTRIBUTIONS,
     inspect_opencv_libavcodec,
-    is_opencv_ffmpeg_distribution,
 )
 
 # Banned license patterns (case-insensitive, checked against each SPDX component)
@@ -98,7 +98,11 @@ ALLOWED_SPDX = {
     '0BSD',
     'HPND',
     'MIT-CMU',
+    'IJG',  # Independent JPEG Group; libjpeg-turbo ships IJG AND BSD-3-Clause AND Zlib
 }
+
+# Intentionally absent pending an owner decision: OpenSSL,
+# LicenseRef-Intel-Simplified-Software-License.
 
 # Also allow common non-SPDX forms
 ALLOWED_NON_SPDX = {
@@ -229,84 +233,222 @@ def is_gcc_runtime_exception(license_str: str, component_name: str) -> bool:
     )
 
 
-def is_license_banned(license_str: str, component_name: str = '') -> tuple[bool, str]:
-    """
-    Check if a license string is banned.
+class SpdxParseError(Exception):
+    """An SPDX expression could not be parsed. Callers fail closed."""
 
-    Splits on '; ' (pip-licenses format), SPDX OR/AND/WITH, and checks each component.
-    Allows GCC Runtime Library Exception for specific GCC runtime libraries only.
-    Returns (is_banned, reason).
-    """
-    if not license_str or not license_str.strip():
-        return True, "empty license"
 
-    # Named GCC exception: check the full expression BEFORE splitting on WITH.
-    if is_gcc_runtime_exception(license_str, component_name):
-        return False, ""
+_TOKEN_RE = re.compile(r"\(|\)|[A-Za-z0-9][A-Za-z0-9.+-]*")
+_OPERATORS = {"AND", "OR", "WITH"}
 
-    # Split on '; ' (pip-licenses format) and SPDX operators
-    all_components = []
-    for part in license_str.split(';'):
-        part = part.strip()
-        if part:
-            spdx_components = re.split(r'\s+(?:OR|AND|WITH)\s+', part)
-            all_components.extend(spdx_components)
 
-    for comp in all_components:
-        comp = comp.strip().strip('()')
-        if not comp:
+def _tokenize_spdx(expr: str) -> list[str]:
+    tokens: list[str] = []
+    pos = 0
+    length = len(expr)
+    while pos < length:
+        if expr[pos].isspace():
+            pos += 1
             continue
+        match = _TOKEN_RE.match(expr, pos)
+        if not match:
+            raise SpdxParseError(f"unexpected character {expr[pos]!r}")
+        tokens.append(match.group(0))
+        pos = match.end()
+    if not tokens:
+        raise SpdxParseError("empty SPDX expression")
+    return tokens
 
-        for pattern in BANNED_LICENSE_PATTERNS:
-            if re.search(pattern, comp, re.IGNORECASE):
-                return True, f"banned pattern '{pattern}' in '{comp}'"
 
+class _SpdxParser:
+    """SPDX license expression: OR is loosest, then AND, then WITH, plus parentheses."""
+
+    def __init__(self, tokens: list[str]):
+        self.tokens = tokens
+        self.index = 0
+
+    def peek(self) -> str | None:
+        if self.index >= len(self.tokens):
+            return None
+        return self.tokens[self.index]
+
+    def eat(self, expected: str | None = None) -> str:
+        token = self.peek()
+        if token is None:
+            raise SpdxParseError("unexpected end of SPDX expression")
+        if expected is not None and token != expected:
+            raise SpdxParseError(f"expected {expected}")
+        self.index += 1
+        return token
+
+    def parse(self):
+        node = self._parse_or()
+        if self.peek() is not None:
+            raise SpdxParseError("trailing tokens in SPDX expression")
+        return node
+
+    def _parse_or(self):
+        node = self._parse_and()
+        parts = [node]
+        while self.peek() == "OR":
+            self.eat("OR")
+            parts.append(self._parse_and())
+        if len(parts) == 1:
+            return node
+        return ("OR", parts)
+
+    def _parse_and(self):
+        node = self._parse_with()
+        parts = [node]
+        while self.peek() == "AND":
+            self.eat("AND")
+            parts.append(self._parse_with())
+        if len(parts) == 1:
+            return node
+        return ("AND", parts)
+
+    def _parse_with(self):
+        node = self._parse_primary()
+        if self.peek() != "WITH":
+            return node
+        self.eat("WITH")
+        exception = self._parse_primary()
+        if not isinstance(node, str) or not isinstance(exception, str):
+            raise SpdxParseError("WITH applies only to a license id and an exception id")
+        return ("WITH", node, exception)
+
+    def _parse_primary(self):
+        token = self.peek()
+        if token is None:
+            raise SpdxParseError("unexpected end of SPDX expression")
+        if token == "(":
+            self.eat("(")
+            node = self._parse_or()
+            if self.peek() != ")":
+                raise SpdxParseError("unbalanced parenthesis")
+            self.eat(")")
+            return node
+        if token in _OPERATORS or token == ")":
+            raise SpdxParseError(f"unexpected token {token}")
+        return self.eat()
+
+
+def _parse_spdx(expr: str):
+    return _SpdxParser(_tokenize_spdx(expr)).parse()
+
+
+def _id_matches_banned(license_id: str) -> tuple[bool, str]:
+    for pattern in BANNED_LICENSE_PATTERNS:
+        if re.search(pattern, license_id, re.IGNORECASE):
+            return True, f"banned pattern '{pattern}' in '{license_id}'"
+    return False, ""
+
+
+def _id_is_allowed(license_id: str) -> bool:
+    if license_id in ALLOWED_SPDX:
+        return True
+    folded = license_id.upper()
+    return any(folded == allowed.upper() for allowed in ALLOWED_NON_SPDX)
+
+
+def _is_exact_non_spdx(license_str: str) -> bool:
+    folded = license_str.upper()
+    return any(folded == allowed.upper() for allowed in ALLOWED_NON_SPDX)
+
+
+def _eval_spdx(node, component_name: str) -> tuple[bool, bool, str]:
+    """Return (banned, allowed, reason). A WITH node is allowed only for the GCC exception."""
+    if isinstance(node, str):
+        banned, reason = _id_matches_banned(node)
+        if banned:
+            return True, False, reason
+        if _id_is_allowed(node):
+            return False, True, ""
+        return False, False, ""
+
+    kind = node[0]
+    if kind == "AND":
+        results = [_eval_spdx(child, component_name) for child in node[1]]
+        for banned, _allowed, reason in results:
+            if banned:
+                return True, False, reason
+        if all(allowed for _banned, allowed, _reason in results):
+            return False, True, ""
+        return False, False, ""
+
+    if kind == "OR":
+        results = [_eval_spdx(child, component_name) for child in node[1]]
+        if any(allowed for _banned, allowed, _reason in results):
+            return False, True, ""
+        for banned, _allowed, reason in results:
+            if banned:
+                return True, False, reason
+        return False, False, ""
+
+    if kind == "WITH":
+        license_id, exception_id = node[1], node[2]
+        expression = f"{license_id} WITH {exception_id}"
+        if is_gcc_runtime_exception(expression, component_name):
+            return False, True, ""
+        banned, reason = _id_matches_banned(license_id)
+        if banned:
+            return True, False, reason
+        return False, False, ""
+
+    raise SpdxParseError("unknown SPDX node")
+
+
+def _license_decision(license_str: str, component_name: str = '') -> tuple[bool, bool, str]:
+    """
+    Classify one license string.
+
+    Returns (banned, allowed, reason). Parse failures are banned (fail closed).
+    ';' is the pip-licenses conjunction: every part must be allowed.
+    SPDX AND requires every term. SPDX OR requires one allowed term.
+    WITH is allowed only for the named GCC runtime exception.
+    """
+    license_str = license_str.strip()
+    if not license_str:
+        return True, False, "empty license"
+
+    if is_gcc_runtime_exception(license_str, component_name):
+        return False, True, ""
+
+    if _is_exact_non_spdx(license_str):
+        return False, True, ""
+
+    if ";" in license_str:
+        parts = [part.strip() for part in license_str.split(";")]
+        decisions = [_license_decision(part, component_name) for part in parts]
+        for banned, _allowed, reason in decisions:
+            if banned:
+                return True, False, reason
+        if all(allowed for _banned, allowed, _reason in decisions):
+            return False, True, ""
+        return False, False, ""
+
+    try:
+        node = _parse_spdx(license_str)
+    except SpdxParseError:
+        banned, reason = _id_matches_banned(license_str)
+        if banned:
+            return True, False, reason
+        return True, False, "malformed SPDX expression"
+
+    return _eval_spdx(node, component_name)
+
+
+def is_license_banned(license_str: str, component_name: str = '') -> tuple[bool, str]:
+    """Return whether the license is banned, and why. Malformed expressions are banned."""
+    banned, _allowed, reason = _license_decision(license_str, component_name)
+    if banned:
+        return True, reason
     return False, ""
 
 
 def is_license_allowed(license_str: str, component_name: str = '') -> bool:
-    """
-    Check if a license is in the allowed list.
-
-    Handles '; ' (pip-licenses format) and SPDX expressions.
-    For AND/';' expressions: ALL components must be allowed.
-    For OR expressions: at least one component must be allowed.
-    Allows GCC Runtime Library Exception for specific GCC runtime libraries.
-    """
-    license_str = license_str.strip()
-    if not license_str:
-        return False
-
-    if is_gcc_runtime_exception(license_str, component_name):
-        return True
-
-    # Handle '; ' separated licenses (pip-licenses format)
-    # Treat as AND - all must be allowed
-    if '; ' in license_str:
-        parts = [p.strip() for p in license_str.split('; ')]
-        return all(is_license_allowed(p, component_name) for p in parts if p)
-
-    # Check SPDX identifiers (case-sensitive)
-    if license_str in ALLOWED_SPDX:
-        return True
-
-    # Check non-SPDX forms (case-insensitive)
-    license_upper = license_str.upper()
-    for allowed in ALLOWED_NON_SPDX:
-        if license_upper == allowed.upper():
-            return True
-
-    # Handle SPDX OR expression - at least one must be allowed
-    if ' OR ' in license_str:
-        components = [c.strip() for c in license_str.split(' OR ')]
-        return any(is_license_allowed(c, component_name) for c in components if c)
-
-    # Handle SPDX AND expression - all must be allowed
-    if ' AND ' in license_str:
-        components = [c.strip() for c in license_str.split(' AND ')]
-        return all(is_license_allowed(c, component_name) for c in components if c)
-
-    return False
+    """Return whether every required SPDX term is on the allowlist."""
+    _banned, allowed, _reason = _license_decision(license_str, component_name)
+    return allowed
 
 
 def check_manifest_licenses(manifest: dict) -> list[str]:
@@ -541,7 +683,7 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
         - 'MISSING': libavcodec could not be loaded (fail-closed)
     """
     opencv_declared = any(
-        is_opencv_ffmpeg_distribution(e.get('name', ''))
+        e.get('name', '').lower().replace('_', '-') in OPENCV_FFMPEG_DISTRIBUTIONS
         for e in manifest.get('entries', [])
     )
 

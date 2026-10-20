@@ -141,6 +141,92 @@ def test_non_gcc_package_claiming_gcc_exception_fails():
     assert "fake-lib: banned license 'GPL-3.0 WITH GCC-exception-3.1'" in stdout
 
 
+def test_mit_and_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="MIT AND GPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "MIT AND GPL-3.0-only" in stdout
+    assert "banned" in stdout.lower()
+
+
+def test_mit_or_gpl_passes():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="MIT OR GPL-3.0-only")])
+    )
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_or_of_only_banned_licenses_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="GPL-3.0-only OR AGPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "GPL-3.0-only OR AGPL-3.0-only" in stdout
+
+
+def test_malformed_spdx_expression_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="(MIT OR GPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "malformed SPDX expression" in stdout
+
+
+def test_spdx_parenthesized_or_and_passes():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(license_id="(MIT OR GPL-3.0-only) AND Apache-2.0")
+        ])
+    )
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_spdx_parentheses_scope_the_and():
+    """Parentheses bind the OR inside AND, so the GPL term is still required."""
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(license_id="GPL-3.0-only AND (MIT OR Apache-2.0)")
+        ])
+    )
+    assert code == 1, stdout
+    assert "GPL-3.0-only AND (MIT OR Apache-2.0)" in stdout
+
+
+def test_with_exception_other_than_gcc_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="Apache-2.0 WITH LLVM-exception")])
+    )
+    assert code == 1, stdout
+    assert "Apache-2.0 WITH LLVM-exception" in stdout
+    assert "PASSED" not in stdout
+
+
+def test_ijg_bsd_zlib_conjunction_passes():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="libjpeg-turbo",
+                license_id="IJG AND BSD-3-Clause AND Zlib",
+            )
+        ])
+    )
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_openssl_and_intel_licenseref_stay_unlisted():
+    for license_id in ("OpenSSL", "LicenseRef-Intel-Simplified-Software-License"):
+        code, stdout, _ = invoke_main(
+            make_manifest([library_entry(name="pending-lib", license_id=license_id)])
+        )
+        assert code == 1, stdout
+        assert license_id in stdout
+        assert "not in allowed list" in stdout
+
+
 # ----- 4. generator_license allowlist -----
 
 
@@ -173,7 +259,8 @@ def test_generator_license_free_text_fails():
         make_manifest([_synthetic_fields(generator_license="custom blender terms")])
     )
     assert code == 1, stdout
-    assert "generator_license 'custom blender terms' not in allowed list" in stdout
+    assert "generator_license 'custom blender terms' is banned" in stdout
+    assert "malformed SPDX expression" in stdout
 
 
 def test_generator_license_empty_fails():
@@ -210,7 +297,8 @@ def test_generator_row_free_text_license_fails():
         make_manifest([_generator_row(generator_license="see the internal wiki")])
     )
     assert code == 1, stdout
-    assert "generator_license 'see the internal wiki' not in allowed list" in stdout
+    assert "generator_license 'see the internal wiki' is banned" in stdout
+    assert "malformed SPDX expression" in stdout
 
 
 def test_banned_generator_name_fails():
@@ -422,6 +510,21 @@ def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
     )
     assert violations == []
     assert status == "LGPL_OK"
+
+
+def test_opencv_contrib_wheel_without_clean_libavcodec_fails(tmp_path):
+    """A contrib wheel is an FFmpeg distribution, so a missing libavcodec fails."""
+    import scripts.check_licenses as cl
+
+    assert "opencv-contrib-python" in cl.OPENCV_FFMPEG_DISTRIBUTIONS
+    assert "opencv-contrib-python-headless" in cl.OPENCV_FFMPEG_DISTRIBUTIONS
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="opencv-contrib-python")]),
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "MISSING" in stdout
+    assert "libavcodec" in stdout
 
 
 def test_opencv_contrib_gpl_configuration_fails_fence(tmp_path, monkeypatch):
