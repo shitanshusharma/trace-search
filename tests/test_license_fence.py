@@ -405,7 +405,7 @@ def test_license_checker_accepts_valid_clip():
                     "date_checked_ist": "2026-10-20",
                     "source_url": "https://www.pexels.com/video/test/",
                     "sha256": "c" * 64,
-                    "phash": ["0123456789abcdef", "fedcba9876543210"],
+                    "phash": [f"{i:016x}" for i in range(10)],
                     "use": "SMOKE_ONLY"
                 }
             ]

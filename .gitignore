@@ -50,7 +50,10 @@ Thumbs.db
 # Data (no real footage, no weights, no datasets in public repo)
 data/
 smoke/
-fixtures/
+fixtures/*.mp4
+fixtures/*.avi
+fixtures/*.mov
+fixtures/*.mkv
 weights/
 models/*.pt
 models/*.pth

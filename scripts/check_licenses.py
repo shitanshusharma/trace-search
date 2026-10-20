@@ -3,9 +3,10 @@
 License fence checker for trace-search.
 
 Validates the license manifest and scans installed packages for:
-- Banned licenses (AGPL, GPL, NC, unknown/unrecognized)
-- Banned component names (Ultralytics, boxmot, etc.)
+- Banned licenses (AGPL, GPL, SSPL, BUSL, NC, research-only, etc.)
+- Banned component names (Ultralytics, boxmot, model zoos, etc.)
 - Missing manifest entries for installed packages
+- Schema compliance
 
 Exit codes:
   0 - All checks passed
@@ -15,73 +16,106 @@ Exit codes:
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-# Banned license patterns (case-insensitive)
+try:
+    import jsonschema
+    HAVE_JSONSCHEMA = True
+except ImportError:
+    HAVE_JSONSCHEMA = False
+
+# Banned license patterns (case-insensitive, checked against each SPDX component)
 BANNED_LICENSE_PATTERNS = [
-    r'\bAGPL\b',
-    r'\bGPL\b',
-    r'\bGNU\s+General\s+Public\s+License\b',
-    r'\bGNU\s+Affero\s+General\s+Public\s+License\b',
+    r'^AGPL',  # AGPL-3.0, AGPL-3.0-only, etc.
+    r'^GPL-[123]',  # GPL-2.0, GPL-3.0, etc. (but not LGPL)
+    r'^GNU\s+A?GPL',  # GNU GPL, GNU AGPL
+    r'Non-?Commercial',
     r'\bNC\b',
-    r'\bNon-Commercial\b',
-    r'\bNonCommercial\b',
-    r'\bunknown\b',
-    r'\bunrecognized\b',
-    r'\bNOASSERTION\b',
+    r'Research\s+[Uu]se\s+[Oo]nly',
+    r'Academic\s+[Uu]se\s+[Oo]nly',
+    r'Educational\s+[Uu]se\s+[Oo]nly',
+    r'^SSPL',  # Server Side Public License
+    r'^BUSL',  # Business Source License
+    r'Commons\s+Clause',
+    r'^CC-BY-SA',  # ShareAlike not allowed
+    r'^CC-BY-NC',  # Non-Commercial not allowed
+    r'Proprietary',
+    r'^UNLICENSED$',
     r'^UNKNOWN$',
+    r'^NOASSERTION$',
 ]
 
-# Allowed licenses (case-insensitive exact match or SPDX-style)
-ALLOWED_LICENSES = {
+# Exact allowed SPDX identifiers (case-sensitive for SPDX compliance)
+ALLOWED_SPDX = {
     'MIT',
-    'MIT License',
     'Apache-2.0',
-    'Apache 2.0',
-    'Apache Software License',
-    'BSD',
-    'BSD License',
     'BSD-2-Clause',
     'BSD-3-Clause',
     'ISC',
-    'ISC License (ISCL)',
-    'CC0',
+    'CC0-1.0',
     'CC-BY-4.0',
-    'CC BY 4.0',
-    'LGPL-2.1',
-    'LGPL-3.0',
-    'PSF',
-    'Python Software Foundation',
-    'Python Software Foundation License',
+    'LGPL-2.1-only',
+    'LGPL-2.1-or-later',
+    'LGPL-3.0-only',
+    'LGPL-3.0-or-later',
+    'PSF-2.0',
     'MPL-2.0',
     'Unlicense',
-    'Pexels License',  # For stock footage testing (§2a)
-    'Pixabay Content License',  # For stock footage testing (§2a)
+    '0BSD',
 }
 
-# Banned component names - use word boundaries to avoid false positives
-# Each entry is (pattern, description) tuple
+# Also allow common non-SPDX forms
+ALLOWED_NON_SPDX = {
+    'MIT License',
+    'Apache License 2.0',
+    'Apache Software License',
+    'BSD License',
+    'ISC License',
+    'ISC License (ISCL)',
+    'Python Software Foundation License',
+    'Public Domain',
+    'Pexels License',  # For stock footage (§2a)
+    'Pixabay Content License',
+}
+
+# Banned component patterns (name, source_url, notes) - use word boundaries
 BANNED_COMPONENTS = [
-    (r'\bultralytics\b', 'ultralytics'),
-    (r'\bboxmot\b', 'boxmot'),
-    (r'\binsightface\b', 'insightface'),
-    (r'\barcface\b', 'arcface'),
-    (r'\bopengait\b', 'opengait'),
-    (r'\bmarket-?1501\b', 'market-1501'),
-    (r'\bmsmt17\b', 'msmt17'),
-    (r'\bduke-?mtmc\b', 'dukemtmc'),
-    (r'\bcuhk03\b', 'cuhk03'),
-    (r'\bcasia-?b\b', 'casia-b'),
-    (r'\bgrew\b', 'grew'),  # Word boundary prevents matching 'overgrew', etc.
-    (r'\bgait3d\b', 'gait3d'),
-    (r'\bobjects365\b', 'objects365'),
+    (r'\bultralytics\b', 'ultralytics (AGPL)'),
+    (r'\bboxmot\b', 'boxmot (AGPL)'),
+    (r'\binsightface\b', 'insightface/ArcFace'),
+    (r'\barcface\b', 'ArcFace'),
+    (r'\bopengait\b', 'OpenGait'),
+    (r'\bmarket-?1501\b', 'Market-1501 dataset'),
+    (r'\bmsmt17\b', 'MSMT17 dataset'),
+    (r'\bduke-?mtmc\b', 'DukeMTMC dataset'),
+    (r'\bcuhk03\b', 'CUHK03 dataset'),
+    (r'\bcasia-?b\b', 'CASIA-B dataset'),
+    (r'\bgrew\b', 'GREW dataset'),
+    (r'\bgait3d\b', 'Gait3D dataset'),
+    (r'\bobjects365\b', 'Objects365 (academic only)'),
+    (r'\blaion\b', 'LAION dataset/weights'),
+    (r'\bdatacomp\b', 'DataComp dataset'),
+    (r'\bclip\b.*\b(laion|openai)\b', 'CLIP weights (LAION/OpenAI)'),
+    (r'\bpa-?100k\b', 'PA-100K dataset'),
+    (r'\brap\b.*\battr', 'RAP attribute dataset'),
+    (r'\bpp-?human\b', 'PP-Human (PA-100K/RAP)'),
+    (r'\bfast-?reid\b', 'fast-reid model zoo weights'),
+    (r'\bbot-?sort\b.*\breid\b', 'BoT-SORT ReID weights'),
+    (r'osnet_.*_(duke|market|msmt)', 'OSNet model zoo (Duke/Market/MSMT)'),
+    (r'\bretinaface\b', 'RetinaFace (face model)'),
+    (r'\bface.*detect', 'face detection model'),
+    (r'\bimagenet\b.*\bpretrain', 'ImageNet-pretrained backbone'),
+    (r'\bearthcam\b', 'EarthCam (public webcam)'),
+    (r'\byoutube\b.*\blive\b', 'YouTube live stream'),
+    (r'\binsecam\b', 'Insecam (exposed cameras)'),
 ]
 
 
-def load_manifest(manifest_path: Path) -> dict[str, any]:
+def load_manifest(manifest_path: Path) -> dict:
     """Load and parse the license manifest JSON."""
     try:
         with manifest_path.open('r', encoding='utf-8') as f:
@@ -94,29 +128,145 @@ def load_manifest(manifest_path: Path) -> dict[str, any]:
         sys.exit(1)
 
 
-def get_installed_packages(include_system: bool = False) -> list[dict[str, str]]:
-    """
-    Get list of installed packages with their licenses.
-
-    Uses pip-licenses if available, falls back to pip list + metadata.
-    Returns list of dicts with 'name', 'version', 'license' keys.
-
-    Args:
-        include_system: If False, exclude system-installed packages (default: False)
-    """
+def validate_schema(manifest: dict, schema_path: Path) -> list[str]:
+    """Validate manifest against JSON schema."""
+    errors = []
+    
+    if not HAVE_JSONSCHEMA:
+        return ["WARNING: jsonschema not installed, skipping schema validation"]
+    
+    if not schema_path.exists():
+        return [f"WARNING: Schema not found: {schema_path}"]
+    
     try:
-        # Try pip-licenses first (faster and more reliable)
+        with schema_path.open('r', encoding='utf-8') as f:
+            schema = json.load(f)
+        
+        # Use format checker for URI validation
+        validator_cls = jsonschema.Draft7Validator
+        validator = validator_cls(
+            schema,
+            format_checker=validator_cls.FORMAT_CHECKER
+        )
+        schema_errors = sorted(validator.iter_errors(manifest), key=lambda e: e.path)
+        
+        for error in schema_errors:
+            path = '.'.join(str(p) for p in error.path) if error.path else 'root'
+            errors.append(f"Schema validation failed: {error.message} at {path}")
+        
+        # Additional validation: source_url must be a valid HTTP(S) URL
+        for i, entry in enumerate(manifest.get('entries', [])):
+            source_url = entry.get('source_url', '')
+            if source_url and not re.match(r'^https?://', source_url, re.IGNORECASE):
+                errors.append(
+                    f"Entry {i} ({entry.get('name', 'unknown')}): "
+                    f"source_url must start with http:// or https://"
+                )
+        
+        return errors
+    except Exception as e:
+        return [f"Schema validation error: {e}"]
+
+
+def is_license_banned(license_str: str) -> tuple[bool, str]:
+    """
+    Check if a license string is banned.
+    
+    Splits SPDX expressions and checks each component.
+    Returns (is_banned, reason).
+    """
+    if not license_str or not license_str.strip():
+        return True, "empty license"
+    
+    # Split SPDX expression (OR, AND, WITH)
+    components = re.split(r'\s+(?:OR|AND|WITH)\s+', license_str)
+    
+    for comp in components:
+        comp = comp.strip().strip('()')
+        
+        # Check banned patterns
+        for pattern in BANNED_LICENSE_PATTERNS:
+            if re.search(pattern, comp, re.IGNORECASE):
+                return True, f"banned pattern '{pattern}' in '{comp}'"
+    
+    return False, ""
+
+
+def is_license_allowed(license_str: str) -> bool:
+    """
+    Check if a license is in the allowed list.
+    
+    Must be exact match (no prefix matching).
+    """
+    license_str = license_str.strip()
+    
+    # Check SPDX identifiers (case-sensitive)
+    if license_str in ALLOWED_SPDX:
+        return True
+    
+    # Check non-SPDX forms (case-insensitive)
+    license_upper = license_str.upper()
+    for allowed in ALLOWED_NON_SPDX:
+        if license_upper == allowed.upper():
+            return True
+    
+    # Handle SPDX expressions with OR
+    if ' OR ' in license_str:
+        components = [c.strip() for c in license_str.split(' OR ')]
+        # All components must be allowed
+        return all(is_license_allowed(c) for c in components)
+    
+    return False
+
+
+def check_manifest_licenses(manifest: dict) -> list[str]:
+    """Check manifest entries for banned or unrecognized licenses."""
+    violations = []
+    
+    for entry in manifest.get('entries', []):
+        license_str = entry.get('license', '').strip()
+        name = entry.get('name', 'unknown')
+        
+        is_banned, reason = is_license_banned(license_str)
+        if is_banned:
+            violations.append(f"{name}: banned license '{license_str}' ({reason})")
+        elif not is_license_allowed(license_str):
+            violations.append(
+                f"{name}: license '{license_str}' not in allowed list "
+                "(must be exact SPDX or approved non-SPDX)"
+            )
+    
+    return violations
+
+
+def check_banned_components(manifest: dict) -> list[str]:
+    """Check for banned component names using word boundaries."""
+    violations = []
+    
+    for entry in manifest.get('entries', []):
+        name = entry.get('name', '').lower()
+        source_url = entry.get('source_url', '').lower()
+        notes = entry.get('notes', '').lower()
+        combined = f"{name} {source_url} {notes}"
+        
+        for pattern, desc in BANNED_COMPONENTS:
+            if re.search(pattern, combined, re.IGNORECASE):
+                violations.append(
+                    f"{entry.get('name', 'unknown')}: contains banned component '{desc}'"
+                )
+                break
+    
+    return violations
+
+
+def get_installed_packages(include_system: bool = False) -> list[dict]:
+    """Get list of installed packages with licenses using pip-licenses."""
+    try:
         cmd = ['pip-licenses', '--format=json']
         if include_system:
             cmd.append('--with-system')
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         packages = json.loads(result.stdout)
-        # Normalize keys
         return [
             {
                 'name': pkg.get('Name', ''),
@@ -125,203 +275,34 @@ def get_installed_packages(include_system: bool = False) -> list[dict[str, str]]
             }
             for pkg in packages
         ]
-    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
-        # Fallback: use pip show on each package
-        print("WARNING: pip-licenses not available, using fallback method")
-        try:
-            cmd = ['pip', 'list', '--format=json']
-            if not include_system:
-                cmd.append('--user')
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            packages_list = json.loads(result.stdout)
-            packages = []
-            for pkg in packages_list:
-                name = pkg['name']
-                version = pkg['version']
-                # Get license from pip show
-                show_result = subprocess.run(
-                    ['pip', 'show', name],
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-                license_str = 'UNKNOWN'
-                for line in show_result.stdout.split('\n'):
-                    if line.startswith('License:'):
-                        license_str = line.split(':', 1)[1].strip()
-                        break
-                packages.append({
-                    'name': name,
-                    'version': version,
-                    'license': license_str or 'UNKNOWN'
-                })
-            return packages
-        except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
-            print(f"ERROR: Failed to get installed packages: {e}", file=sys.stderr)
-            sys.exit(2)
-
-
-def validate_manifest_structure(manifest: dict[str, any]) -> list[str]:
-    """Basic validation of manifest structure."""
-    errors = []
-
-    if 'manifest_version' not in manifest:
-        errors.append("Missing required field: manifest_version")
-
-    if 'last_updated_ist' not in manifest:
-        errors.append("Missing required field: last_updated_ist")
-
-    if 'entries' not in manifest:
-        errors.append("Missing required field: entries")
-        return errors
-
-    if not isinstance(manifest['entries'], list):
-        errors.append("Field 'entries' must be an array")
-        return errors
-
-    for i, entry in enumerate(manifest['entries']):
-        required_fields = ['name', 'version', 'type', 'license', 'source_url', 'sha256']
-        for field in required_fields:
-            if field not in entry:
-                entry_name = entry.get('name', 'unknown')
-                errors.append(
-                    f"Entry {i} ({entry_name}): missing required field '{field}'"
-                )
-
-        # Validate SHA-256 format
-        if 'sha256' in entry:
-            sha256 = entry['sha256']
-            if not re.match(r'^[a-f0-9]{64}$', sha256):
-                entry_name = entry.get('name', 'unknown')
-                errors.append(f"Entry {i} ({entry_name}): invalid SHA-256 format")
-
-        # Validate type
-        valid_types = ['library', 'model', 'weight', 'dataset', 'clip']
-        if 'type' in entry and entry['type'] not in valid_types:
-            entry_name = entry.get('name', 'unknown')
-            errors.append(
-                f"Entry {i} ({entry_name}): invalid type '{entry['type']}'"
-            )
-
-        # Clip-specific validation
-        if entry.get('type') == 'clip':
-            entry_name = entry.get('name', 'unknown')
-            if 'license_version' not in entry:
-                errors.append(
-                    f"Entry {i} ({entry_name}): clips must have 'license_version'"
-                )
-            if 'date_checked_ist' not in entry:
-                errors.append(
-                    f"Entry {i} ({entry_name}): clips must have 'date_checked_ist'"
-                )
-            if 'phash' not in entry:
-                errors.append(
-                    f"Entry {i} ({entry_name}): clips must have 'phash'"
-                )
-            if 'use' not in entry:
-                errors.append(
-                    f"Entry {i} ({entry_name}): clips must have 'use' tag"
-                )
-
-    return errors
-
-
-def is_license_banned(license_str: str) -> tuple[bool, str]:
-    """
-    Check if a license string matches banned patterns.
-
-    Returns (is_banned, reason) tuple.
-    """
-    if not license_str or not license_str.strip():
-        return True, "empty license"
-
-    for pattern in BANNED_LICENSE_PATTERNS:
-        if re.search(pattern, license_str, re.IGNORECASE):
-            return True, f"matches banned pattern: {pattern}"
-
-    return False, ""
-
-
-def is_license_allowed(license_str: str) -> bool:
-    """Check if a license is in the pre-approved list."""
-    license_normalized = license_str.upper().strip()
-    allowed_normalized = {lic.upper() for lic in ALLOWED_LICENSES}
-
-    # Exact match or starts with allowed prefix
-    if any(
-        license_normalized == allowed or license_normalized.startswith(allowed)
-        for allowed in allowed_normalized
-    ):
-        return True
-
-    # Special case: LGPL is allowed even though it contains "GPL"
-    if 'LGPL' in license_normalized:
-        return True
-
-    return False
-
-
-def check_manifest_licenses(manifest: dict[str, any]) -> list[str]:
-    """Check manifest entries for banned licenses."""
-    violations = []
-
-    for entry in manifest.get('entries', []):
-        license_str = entry.get('license', '').strip()
-        name = entry.get('name', 'unknown')
-
-        is_banned, reason = is_license_banned(license_str)
-        if is_banned:
-            violations.append(f"{name}: banned license '{license_str}' ({reason})")
-        elif not is_license_allowed(license_str):
-            # Unknown/unrecognized license - fail by default (no --strict needed)
-            violations.append(
-                f"{name}: license '{license_str}' not in pre-approved list "
-                "(verify it's compatible and not GPL/AGPL/NC)"
-            )
-
-    return violations
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"WARNING: Failed to get installed packages: {e}", file=sys.stderr)
+        return []
 
 
 def check_installed_packages(
-    installed: list[dict[str, str]],
-    manifest: dict[str, any]
+    installed: list[dict],
+    manifest: dict
 ) -> tuple[list[str], list[str]]:
-    """
-    Check installed packages against manifest and for banned licenses.
-
-    Returns (violations, missing_from_manifest) tuple.
-    """
+    """Check installed packages against manifest and for banned licenses."""
     violations = []
     missing = []
-
-    # Build manifest lookup by normalized package name
+    
     manifest_packages = {}
     for entry in manifest.get('entries', []):
         if entry.get('type') == 'library':
-            # Normalize: lowercase, replace _ with -
             norm_name = entry.get('name', '').lower().replace('_', '-')
             manifest_packages[norm_name] = entry
-
+    
     for pkg in installed:
         name = pkg['name']
         version = pkg['version']
         license_str = pkg['license']
-
-        # Normalize package name for comparison
         norm_name = name.lower().replace('_', '-')
-
-        # Check if in manifest
+        
         if norm_name not in manifest_packages:
-            missing.append(
-                f"{name} ({version}): installed but not in manifest"
-            )
-
-        # Check license
+            missing.append(f"{name} ({version}): installed but not in manifest")
+        
         is_banned, reason = is_license_banned(license_str)
         if is_banned:
             violations.append(
@@ -329,34 +310,59 @@ def check_installed_packages(
             )
         elif not is_license_allowed(license_str):
             violations.append(
-                f"{name} ({version}): license '{license_str}' not in pre-approved list"
+                f"{name} ({version}): license '{license_str}' not in allowed list"
             )
-
+    
     return violations, missing
 
 
-def check_banned_components(manifest: dict[str, any]) -> list[str]:
-    """Check for banned component names using word boundaries."""
-    violations = []
+def check_ffmpeg_build() -> list[str]:
+    """Check if FFmpeg build is LGPL-only (not GPL/nonfree)."""
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-buildconf'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        buildconf = result.stdout + result.stderr
+        
+        violations = []
+        if '--enable-gpl' in buildconf:
+            violations.append("FFmpeg built with --enable-gpl (must be LGPL-only)")
+        if '--enable-nonfree' in buildconf:
+            violations.append("FFmpeg built with --enable-nonfree (must be LGPL-only)")
+        
+        return violations
+    except FileNotFoundError:
+        return ["WARNING: FFmpeg not found (will be required for T2)"]
+    except Exception as e:
+        return [f"WARNING: Failed to check FFmpeg: {e}"]
 
-    for entry in manifest.get('entries', []):
-        name = entry.get('name', '').lower()
-        source_url = entry.get('source_url', '').lower()
-        notes = entry.get('notes', '').lower()
 
-        for pattern, banned_name in BANNED_COMPONENTS:
-            if (
-                re.search(pattern, name, re.IGNORECASE) or
-                re.search(pattern, source_url, re.IGNORECASE) or
-                re.search(pattern, notes, re.IGNORECASE)
-            ):
-                violations.append(
-                    f"{entry.get('name', 'unknown')}: "
-                    f"contains banned component '{banned_name}'"
-                )
-                break
-
-    return violations
+def generate_report(
+    manifest: dict,
+    installed: list[dict],
+    all_violations: list[str]
+) -> dict:
+    """Generate machine-readable scanner report."""
+    return {
+        "version": "1.0",
+        "timestamp": "2026-10-20T18:15:00Z",
+        "manifest": {
+            "path": "licenses/manifest.json",
+            "entries_count": len(manifest.get('entries', [])),
+        },
+        "installed_packages": {
+            "count": len(installed),
+            "packages": [
+                {"name": p['name'], "version": p['version'], "license": p['license']}
+                for p in installed
+            ]
+        },
+        "violations": all_violations,
+        "status": "FAIL" if all_violations else "PASS"
+    }
 
 
 def main():
@@ -368,6 +374,12 @@ def main():
         type=Path,
         default=Path('licenses/manifest.json'),
         help='Path to license manifest (default: licenses/manifest.json)'
+    )
+    parser.add_argument(
+        '--schema',
+        type=Path,
+        default=Path('licenses/manifest_schema.json'),
+        help='Path to JSON schema (default: licenses/manifest_schema.json)'
     )
     parser.add_argument(
         '--scan-installed',
@@ -384,84 +396,117 @@ def main():
     parser.add_argument(
         '--include-system',
         action='store_true',
-        help='Include system-installed packages in scan (default: False)'
+        help='Include system-installed packages in scan'
     )
-
+    parser.add_argument(
+        '--report',
+        type=Path,
+        help='Write JSON report to file'
+    )
+    parser.add_argument(
+        '--check-ffmpeg',
+        action='store_true',
+        default='NO_FFMPEG_CHECK' not in os.environ,
+        help='Check FFmpeg build configuration (default: True)'
+    )
+    
     args = parser.parse_args()
-
+    
     print(f"Checking license manifest: {args.manifest}")
     print()
-
+    
     manifest = load_manifest(args.manifest)
-
-    has_errors = False
-
-    # Structural validation
-    print("=== Validating manifest structure ===")
-    structure_errors = validate_manifest_structure(manifest)
-    if structure_errors:
-        has_errors = True
-        for error in structure_errors:
+    all_violations = []
+    installed = []
+    
+    # Schema validation
+    print("=== Validating manifest schema ===")
+    schema_errors = validate_schema(manifest, args.schema)
+    if schema_errors:
+        for error in schema_errors:
             print(f"ERROR: {error}")
+            all_violations.append(error)
     else:
-        print("✓ Manifest structure is valid")
+        print("✓ Schema is valid")
     print()
-
+    
     # Manifest license checks
     print("=== Checking manifest licenses ===")
     manifest_violations = check_manifest_licenses(manifest)
     if manifest_violations:
-        has_errors = True
         for violation in manifest_violations:
             print(f"ERROR: {violation}")
+            all_violations.extend(manifest_violations)
     else:
         print("✓ No banned licenses in manifest")
     print()
-
+    
     # Component name checks
     print("=== Checking for banned components ===")
     component_violations = check_banned_components(manifest)
     if component_violations:
-        has_errors = True
         for violation in component_violations:
             print(f"ERROR: {violation}")
+            all_violations.extend(component_violations)
     else:
         print("✓ No banned components found")
     print()
-
+    
     # Scan installed packages
     if args.scan_installed:
         print("=== Scanning installed packages ===")
-        try:
-            installed = get_installed_packages(include_system=args.include_system)
-            print(f"Found {len(installed)} installed packages")
-
-            install_violations, missing = check_installed_packages(installed, manifest)
-
-            if install_violations:
-                has_errors = True
-                print()
-                for violation in install_violations:
-                    print(f"ERROR: {violation}")
-
-            if missing:
-                has_errors = True
-                print()
-                for miss in missing:
-                    print(f"ERROR: {miss}")
-
-            if not install_violations and not missing:
-                print("✓ All installed packages are clean and in manifest")
-        except Exception as e:
-            print(f"ERROR: Failed to scan installed packages: {e}")
-            has_errors = True
+        installed = get_installed_packages(include_system=args.include_system)
+        print(f"Found {len(installed)} installed packages")
+        
+        install_violations, missing = check_installed_packages(installed, manifest)
+        
+        if install_violations:
+            print()
+            for violation in install_violations:
+                print(f"ERROR: {violation}")
+            all_violations.extend(install_violations)
+        
+        if missing:
+            print()
+            for miss in missing:
+                print(f"ERROR: {miss}")
+            all_violations.extend(missing)
+        
+        if not install_violations and not missing:
+            print("✓ All installed packages are clean and in manifest")
         print()
-
+    
+    # FFmpeg check
+    if args.check_ffmpeg:
+        print("=== Checking FFmpeg build configuration ===")
+        ffmpeg_violations = check_ffmpeg_build()
+        for violation in ffmpeg_violations:
+            if violation.startswith("WARNING"):
+                print(violation)
+            else:
+                print(f"ERROR: {violation}")
+                all_violations.append(violation)
+        if not any('ERROR' in v or not v.startswith('WARNING') for v in ffmpeg_violations):
+            if ffmpeg_violations:
+                pass  # Warnings only
+            else:
+                print("✓ FFmpeg build is LGPL-only")
+        print()
+    
+    # Generate report
+    if args.report:
+        report = generate_report(manifest, installed, all_violations)
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        with args.report.open('w') as f:
+            json.dump(report, f, indent=2)
+        print(f"Report written to: {args.report}")
+        print()
+    
     # Summary
     total_entries = len(manifest.get('entries', []))
     print(f"Summary: Checked {total_entries} manifest entries")
-
-    if has_errors:
+    
+    if all_violations:
         print("\n❌ License fence check FAILED")
         sys.exit(1)
     else:

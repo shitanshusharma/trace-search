@@ -4,29 +4,29 @@
   "entries": [
     {
       "name": "pytest",
-      "version": "7.4.0",
+      "version": "9.1.1",
       "type": "library",
       "license": "MIT",
       "source_url": "https://pypi.org/project/pytest/",
-      "sha256": "de4bb8104e201939ccdc688b27a89a7be2079b22e2bd2b07f806b6ba71117977",
+      "sha256": "37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c",
       "notes": "Dev dependency for testing"
     },
     {
       "name": "pytest-cov",
-      "version": "4.1.0",
+      "version": "7.1.0",
       "type": "library",
       "license": "MIT",
       "source_url": "https://pypi.org/project/pytest-cov/",
-      "sha256": "3904b13dfbfec47f003b8e77fd5b589cd11904a21ddf1ab38a64f204d6a10ef6",
+      "sha256": "a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678",
       "notes": "Dev dependency for coverage"
     },
     {
       "name": "ruff",
-      "version": "0.1.0",
+      "version": "0.17.1",
       "type": "library",
       "license": "MIT",
       "source_url": "https://pypi.org/project/ruff/",
-      "sha256": "1b4f0ee1a0a6e4e7e8e0e0e7e8e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "sha256": "a6ef98e51de8ef38082f90653ceeb84944bd7673783eea13e1647c5b9b064189",
       "notes": "Dev dependency for linting"
     },
     {
@@ -55,6 +55,15 @@
       "source_url": "https://pypi.org/project/wcwidth/",
       "sha256": "9ab8bfee107e08de09e15f9f6afb9fe0f64c8d64fd296d0d8557bafe71ea3f93",
       "notes": "Dependency of prettytable"
+    },
+    {
+      "name": "jsonschema",
+      "version": "4.26.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/jsonschema/",
+      "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
+      "notes": "Schema validation for manifest"
     }
   ]
 }

@@ -14,7 +14,7 @@ trace-search is an on-premises, anonymous, same-day cross-camera person route re
 - Tracks one anonymous person's route across multiple cameras on the same day
 - Works with mixed Hikvision/CP Plus estates (2+ brands, 6+ cameras)
 - Ingests video files from NVR native exports (optional RTSP)
-- Person detection, single-camera tracking, cross-camera re-identification (ReID)
+- Person detection, single-camera tracking, cross-camera re-identification (ReID to be trained on consented data)
 - Attribute-based search: clothing color, bags/backpacks
 - Web UI with site map, route visualization, and clip playback
 - Audit logging and configurable retention
@@ -41,7 +41,7 @@ Every dependency, model, weight, dataset, and test clip is tracked in [`licenses
 - Name, version, license, source URL, SHA-256
 - For video clips: license version, date checked (IST), perceptual hashes, usage tag
 
-The CI runs automatic license checks. See [PRD Cut 01 §2, §3](docs/) for full details.
+The CI runs automatic license checks against installed packages and the manifest. See [PRD Cut 01 §2, §3](docs/) for full details.
 
 ## Project Structure
 
@@ -169,7 +169,7 @@ Internal contributors: follow the task plan. Each task gets one PR. Run tests an
 
 MIT License. See [LICENSE](LICENSE) for full text.
 
-All dependencies are tracked in [`licenses/manifest.json`](licenses/manifest.json) and are verified to be AGPL/GPL/NC-free.
+All dependencies are tracked in [`licenses/manifest.json`](licenses/manifest.json) and verified by CI to exclude AGPL/GPL/SSPL/BUSL/NC licenses and banned components.
 
 ## Contact
 

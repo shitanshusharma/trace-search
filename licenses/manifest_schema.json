@@ -18,31 +18,36 @@
     "entries": {
       "type": "array",
       "description": "List of all dependencies, models, weights, datasets, and clips",
+      "minItems": 1,
       "items": {
         "type": "object",
         "required": ["name", "version", "type", "license", "source_url", "sha256"],
         "properties": {
           "name": {
             "type": "string",
-            "description": "Name of the component"
+            "description": "Name of the component",
+            "minLength": 1
           },
           "version": {
             "type": "string",
-            "description": "Version string or git commit hash"
+            "description": "Version string or git commit hash",
+            "minLength": 1
           },
           "type": {
             "type": "string",
-            "enum": ["library", "model", "weight", "dataset", "clip"],
+            "enum": ["library", "model", "weight", "dataset", "clip", "synthetic_clip", "generator", "tool"],
             "description": "Type of component"
           },
           "license": {
             "type": "string",
-            "description": "License identifier (SPDX preferred) or full license name"
+            "description": "License identifier (SPDX preferred) or full license name",
+            "minLength": 1
           },
           "source_url": {
             "type": "string",
             "format": "uri",
-            "description": "Source URL (repo, download page, or PyPI)"
+            "description": "Source URL (repo, download page, or PyPI)",
+            "minLength": 1
           },
           "sha256": {
             "type": "string",
@@ -64,16 +69,51 @@
               "type": "string",
               "pattern": "^[a-f0-9]{16}$"
             },
-            "description": "For clips only: perceptual hashes of sampled frames (hex)"
+            "minItems": 10,
+            "maxItems": 10,
+            "uniqueItems": true,
+            "description": "For clips only: exactly 10 perceptual hashes of sampled frames (hex)"
           },
           "use": {
             "type": "string",
-            "description": "For clips only: usage tag (e.g., SMOKE_ONLY)"
+            "enum": ["SMOKE_ONLY", "CODE_TEST", "TRAIN", "DEV", "HOLD"],
+            "description": "For clips/fixtures only: usage tag"
+          },
+          "fixture_id": {
+            "type": "string",
+            "pattern": "^FX-[A-Z]+-[0-9]+$",
+            "description": "Fixture identifier (e.g., FX-SMOKE-001, FX-DEV-023)"
+          },
+          "generator": {
+            "type": "string",
+            "description": "For synthetic clips: generator name"
+          },
+          "generator_version": {
+            "type": "string",
+            "description": "For synthetic clips: generator version"
+          },
+          "generator_license": {
+            "type": "string",
+            "description": "For synthetic clips: generator license"
+          },
+          "seed": {
+            "type": "string",
+            "description": "For synthetic clips: random seed or generation parameters"
           },
           "notes": {
             "type": "string",
             "description": "Optional notes about provenance or special handling"
           }
+        },
+        "if": {
+          "properties": {
+            "type": {
+              "enum": ["clip", "synthetic_clip"]
+            }
+          }
+        },
+        "then": {
+          "required": ["license_version", "date_checked_ist", "phash", "use"]
         }
       }
     }
