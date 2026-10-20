@@ -127,5 +127,7 @@ jobs:
         edit-mode: replace
     
     - name: Create check summary
+      env:
+        SUMMARY: ${{ steps.aggregate.outputs.result }}
       run: |
-        echo "${{ steps.aggregate.outputs.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
