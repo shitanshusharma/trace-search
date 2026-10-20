@@ -131,17 +131,17 @@ def load_manifest(manifest_path: Path) -> dict:
 def validate_schema(manifest: dict, schema_path: Path) -> list[str]:
     """Validate manifest against JSON schema."""
     errors = []
-    
+
     if not HAVE_JSONSCHEMA:
         return ["WARNING: jsonschema not installed, skipping schema validation"]
-    
+
     if not schema_path.exists():
         return [f"WARNING: Schema not found: {schema_path}"]
-    
+
     try:
         with schema_path.open('r', encoding='utf-8') as f:
             schema = json.load(f)
-        
+
         # Use format checker for URI validation
         validator_cls = jsonschema.Draft7Validator
         validator = validator_cls(
@@ -149,11 +149,11 @@ def validate_schema(manifest: dict, schema_path: Path) -> list[str]:
             format_checker=validator_cls.FORMAT_CHECKER
         )
         schema_errors = sorted(validator.iter_errors(manifest), key=lambda e: e.path)
-        
+
         for error in schema_errors:
             path = '.'.join(str(p) for p in error.path) if error.path else 'root'
             errors.append(f"Schema validation failed: {error.message} at {path}")
-        
+
         # Additional validation: source_url must be a valid HTTP(S) URL
         for i, entry in enumerate(manifest.get('entries', [])):
             source_url = entry.get('source_url', '')
@@ -162,7 +162,7 @@ def validate_schema(manifest: dict, schema_path: Path) -> list[str]:
                     f"Entry {i} ({entry.get('name', 'unknown')}): "
                     f"source_url must start with http:// or https://"
                 )
-        
+
         return errors
     except Exception as e:
         return [f"Schema validation error: {e}"]
@@ -171,62 +171,62 @@ def validate_schema(manifest: dict, schema_path: Path) -> list[str]:
 def is_license_banned(license_str: str) -> tuple[bool, str]:
     """
     Check if a license string is banned.
-    
+
     Splits SPDX expressions and checks each component.
     Returns (is_banned, reason).
     """
     if not license_str or not license_str.strip():
         return True, "empty license"
-    
+
     # Split SPDX expression (OR, AND, WITH)
     components = re.split(r'\s+(?:OR|AND|WITH)\s+', license_str)
-    
+
     for comp in components:
         comp = comp.strip().strip('()')
-        
+
         # Check banned patterns
         for pattern in BANNED_LICENSE_PATTERNS:
             if re.search(pattern, comp, re.IGNORECASE):
                 return True, f"banned pattern '{pattern}' in '{comp}'"
-    
+
     return False, ""
 
 
 def is_license_allowed(license_str: str) -> bool:
     """
     Check if a license is in the allowed list.
-    
+
     Must be exact match (no prefix matching).
     """
     license_str = license_str.strip()
-    
+
     # Check SPDX identifiers (case-sensitive)
     if license_str in ALLOWED_SPDX:
         return True
-    
+
     # Check non-SPDX forms (case-insensitive)
     license_upper = license_str.upper()
     for allowed in ALLOWED_NON_SPDX:
         if license_upper == allowed.upper():
             return True
-    
+
     # Handle SPDX expressions with OR
     if ' OR ' in license_str:
         components = [c.strip() for c in license_str.split(' OR ')]
         # All components must be allowed
         return all(is_license_allowed(c) for c in components)
-    
+
     return False
 
 
 def check_manifest_licenses(manifest: dict) -> list[str]:
     """Check manifest entries for banned or unrecognized licenses."""
     violations = []
-    
+
     for entry in manifest.get('entries', []):
         license_str = entry.get('license', '').strip()
         name = entry.get('name', 'unknown')
-        
+
         is_banned, reason = is_license_banned(license_str)
         if is_banned:
             violations.append(f"{name}: banned license '{license_str}' ({reason})")
@@ -235,27 +235,27 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
                 f"{name}: license '{license_str}' not in allowed list "
                 "(must be exact SPDX or approved non-SPDX)"
             )
-    
+
     return violations
 
 
 def check_banned_components(manifest: dict) -> list[str]:
     """Check for banned component names using word boundaries."""
     violations = []
-    
+
     for entry in manifest.get('entries', []):
         name = entry.get('name', '').lower()
         source_url = entry.get('source_url', '').lower()
         notes = entry.get('notes', '').lower()
         combined = f"{name} {source_url} {notes}"
-        
+
         for pattern, desc in BANNED_COMPONENTS:
             if re.search(pattern, combined, re.IGNORECASE):
                 violations.append(
                     f"{entry.get('name', 'unknown')}: contains banned component '{desc}'"
                 )
                 break
-    
+
     return violations
 
 
@@ -287,22 +287,22 @@ def check_installed_packages(
     """Check installed packages against manifest and for banned licenses."""
     violations = []
     missing = []
-    
+
     manifest_packages = {}
     for entry in manifest.get('entries', []):
         if entry.get('type') == 'library':
             norm_name = entry.get('name', '').lower().replace('_', '-')
             manifest_packages[norm_name] = entry
-    
+
     for pkg in installed:
         name = pkg['name']
         version = pkg['version']
         license_str = pkg['license']
         norm_name = name.lower().replace('_', '-')
-        
+
         if norm_name not in manifest_packages:
             missing.append(f"{name} ({version}): installed but not in manifest")
-        
+
         is_banned, reason = is_license_banned(license_str)
         if is_banned:
             violations.append(
@@ -312,7 +312,7 @@ def check_installed_packages(
             violations.append(
                 f"{name} ({version}): license '{license_str}' not in allowed list"
             )
-    
+
     return violations, missing
 
 
@@ -326,13 +326,13 @@ def check_ffmpeg_build() -> list[str]:
             timeout=5
         )
         buildconf = result.stdout + result.stderr
-        
+
         violations = []
         if '--enable-gpl' in buildconf:
             violations.append("FFmpeg built with --enable-gpl (must be LGPL-only)")
         if '--enable-nonfree' in buildconf:
             violations.append("FFmpeg built with --enable-nonfree (must be LGPL-only)")
-        
+
         return violations
     except FileNotFoundError:
         return ["WARNING: FFmpeg not found (will be required for T2)"]
@@ -409,16 +409,16 @@ def main():
         default='NO_FFMPEG_CHECK' not in os.environ,
         help='Check FFmpeg build configuration (default: True)'
     )
-    
+
     args = parser.parse_args()
-    
+
     print(f"Checking license manifest: {args.manifest}")
     print()
-    
+
     manifest = load_manifest(args.manifest)
     all_violations = []
     installed = []
-    
+
     # Schema validation
     print("=== Validating manifest schema ===")
     schema_errors = validate_schema(manifest, args.schema)
@@ -429,7 +429,7 @@ def main():
     else:
         print("✓ Schema is valid")
     print()
-    
+
     # Manifest license checks
     print("=== Checking manifest licenses ===")
     manifest_violations = check_manifest_licenses(manifest)
@@ -440,7 +440,7 @@ def main():
     else:
         print("✓ No banned licenses in manifest")
     print()
-    
+
     # Component name checks
     print("=== Checking for banned components ===")
     component_violations = check_banned_components(manifest)
@@ -451,31 +451,31 @@ def main():
     else:
         print("✓ No banned components found")
     print()
-    
+
     # Scan installed packages
     if args.scan_installed:
         print("=== Scanning installed packages ===")
         installed = get_installed_packages(include_system=args.include_system)
         print(f"Found {len(installed)} installed packages")
-        
+
         install_violations, missing = check_installed_packages(installed, manifest)
-        
+
         if install_violations:
             print()
             for violation in install_violations:
                 print(f"ERROR: {violation}")
             all_violations.extend(install_violations)
-        
+
         if missing:
             print()
             for miss in missing:
                 print(f"ERROR: {miss}")
             all_violations.extend(missing)
-        
+
         if not install_violations and not missing:
             print("✓ All installed packages are clean and in manifest")
         print()
-    
+
     # FFmpeg check
     if args.check_ffmpeg:
         print("=== Checking FFmpeg build configuration ===")
@@ -492,7 +492,7 @@ def main():
             else:
                 print("✓ FFmpeg build is LGPL-only")
         print()
-    
+
     # Generate report
     if args.report:
         report = generate_report(manifest, installed, all_violations)
@@ -501,11 +501,11 @@ def main():
             json.dump(report, f, indent=2)
         print(f"Report written to: {args.report}")
         print()
-    
+
     # Summary
     total_entries = len(manifest.get('entries', []))
     print(f"Summary: Checked {total_entries} manifest entries")
-    
+
     if all_violations:
         print("\n❌ License fence check FAILED")
         sys.exit(1)

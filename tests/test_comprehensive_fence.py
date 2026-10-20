@@ -13,7 +13,7 @@ def run_checker(manifest_data: dict, extra_args: list = None) -> tuple[int, str]
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(manifest_data, f)
         temp_path = f.name
-    
+
     try:
         cmd = [
             sys.executable, 'scripts/check_licenses.py',
@@ -22,7 +22,7 @@ def run_checker(manifest_data: dict, extra_args: list = None) -> tuple[int, str]
         ]
         if extra_args:
             cmd.extend(extra_args)
-        
+
         result = subprocess.run(
             cmd,
             cwd=Path.cwd(),
@@ -51,7 +51,7 @@ def test_lgpl_gpl_dual_license_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Dual LGPL/GPL should fail: {output}"
     assert "GPL" in output.upper()
@@ -75,7 +75,7 @@ def test_gplv3_variant_fails():
                 }
             ]
         }
-        
+
         returncode, output = run_checker(manifest)
         assert returncode == 1, f"{lic} should fail: {output}"
         assert "banned" in output.lower() or "not in allowed" in output.lower()
@@ -97,7 +97,7 @@ def test_research_use_only_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Research-only should fail: {output}"
     assert "research" in output.lower() or "not in allowed" in output.lower()
@@ -120,7 +120,7 @@ def test_sspl_busl_fails():
                 }
             ]
         }
-        
+
         returncode, output = run_checker(manifest)
         assert returncode == 1, f"{lic} should fail: {output}"
 
@@ -142,7 +142,7 @@ def test_model_zoo_reid_weight_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Model-zoo ReID weight should fail: {output}"
     assert "banned component" in output.lower()
@@ -164,7 +164,7 @@ def test_laion_clip_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"LAION CLIP should fail: {output}"
     assert "laion" in output.lower() or "clip" in output.lower()
@@ -190,7 +190,7 @@ def test_insecam_clip_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Insecam clip should fail: {output}"
     assert "insecam" in output.lower() or "unknown" in output.lower()
@@ -212,7 +212,7 @@ def test_schema_validation_empty_name_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Empty name should fail: {output}"
     assert "schema" in output.lower() or "minLength" in output
@@ -234,7 +234,7 @@ def test_schema_validation_non_url_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Non-URL source should fail: {output}"
     assert "schema" in output.lower() or "format" in output
@@ -260,7 +260,7 @@ def test_schema_validation_clip_missing_phash_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Empty pHash should fail: {output}"
     assert "schema" in output.lower() or "minItems" in output
@@ -273,7 +273,7 @@ def test_schema_validation_empty_manifest_fails():
         "last_updated_ist": "2026-10-20",
         "entries": []
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Empty manifest should fail: {output}"
     assert "schema" in output.lower() or "minItems" in output
@@ -295,7 +295,7 @@ def test_innocent_substring_overgrew_passes():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 0, f"Innocent substring should pass: {output}"
     assert "✅" in output or "PASSED" in output
@@ -317,7 +317,7 @@ def test_unlicensed_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"UNLICENSED should fail: {output}"
     assert "banned" in output.lower() or "not in allowed" in output.lower()
@@ -339,7 +339,7 @@ def test_commons_clause_fails():
             }
         ]
     }
-    
+
     returncode, output = run_checker(manifest)
     assert returncode == 1, f"Commons Clause should fail: {output}"
     assert "commons clause" in output.lower() or "banned" in output.lower()
