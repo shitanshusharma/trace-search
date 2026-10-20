@@ -41,7 +41,9 @@ def _head_sha() -> str | None:
 def _open_log(directory: Path) -> AuditLog:
     key_path = directory / "keys" / "audit.key"
     init_hmac_key(key_path)
-    return AuditLog(directory / "audit.jsonl", key_path=key_path)
+    log = AuditLog(directory / "audit.jsonl", key_path=key_path)
+    log.initialize()
+    return log
 
 
 def _result_json(result) -> dict:

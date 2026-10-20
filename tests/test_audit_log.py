@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import subprocess
 import sys
+import threading
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,12 +33,20 @@ _ACTIONS = (
 )
 
 
-def _create_audit_log(tmp_path: Path, name: str = "audit.jsonl") -> AuditLog:
+def _create_audit_log(
+    tmp_path: Path,
+    name: str = "audit.jsonl",
+    *,
+    initialized: bool = True,
+) -> AuditLog:
     """Build a log whose key lives outside AUDIT_LOG_DIR, under tmp_path."""
     log_path = tmp_path / name
     key_path = tmp_path / "keys" / f"{name}.key"
     init_hmac_key(key_path)
-    return AuditLog(log_path, key_path=key_path)
+    log = AuditLog(log_path, key_path=key_path)
+    if initialized:
+        log.initialize()
+    return log
 
 
 def _append_login(log: AuditLog, username: str = "user1") -> AuditEntry:
@@ -101,15 +110,20 @@ def _concurrent_worker(log_path: str, key_path: str, process_id: int) -> None:
 class TestAuditPathHelper:
     """is_audit_path is the purge exemption check T9 imports."""
 
-    def test_audit_directory_component(self, tmp_path):
-        target = tmp_path / AUDIT_LOG_DIR / "nested" / "audit.jsonl"
+    def test_audit_directory_component(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        target = Path(AUDIT_LOG_DIR) / "nested" / "audit.jsonl"
         assert is_audit_path(target)
-        assert is_audit_path(tmp_path / AUDIT_LOG_DIR)
+        assert is_audit_path(AUDIT_LOG_DIR)
+        decoy = tmp_path / "clips" / AUDIT_LOG_DIR / "crop.json"
+        assert not is_audit_path(decoy)
 
     def test_absolute_audit_dir_from_another_cwd(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        assert is_audit_path("/data/audit_logs/system.jsonl")
-        assert is_audit_path(Path("/var/lib/audit_logs"))
+        assert not is_audit_path("/data/audit_logs/system.jsonl")
+        assert not is_audit_path(Path("/var/lib/audit_logs"))
+        inside = tmp_path / AUDIT_LOG_DIR / "system.jsonl"
+        assert is_audit_path(inside)
 
     def test_relative_names(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -156,6 +170,7 @@ class TestKeyHandling:
     def test_env_key_is_accepted(self, tmp_path, monkeypatch):
         monkeypatch.setenv(TRACE_AUDIT_HMAC_KEY_ENV, os.urandom(32).hex())
         log = AuditLog(tmp_path / "audit.jsonl")
+        log.initialize()
         log.append("user1", AuditAction.LOGIN)
         result = log.verify()
         assert result.valid is True
@@ -167,7 +182,8 @@ class TestKeyHandling:
         monkeypatch.setenv(TRACE_AUDIT_HMAC_KEY_ENV, os.urandom(32).hex())
         assert log.verify().valid is True
 
-    def test_key_inside_audit_dir_is_rejected(self, tmp_path):
+    def test_key_inside_audit_dir_is_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         key_path = tmp_path / AUDIT_LOG_DIR / ".audit_key"
         key_path.parent.mkdir(parents=True)
         key_path.write_text(os.urandom(32).hex() + "\n", encoding="utf-8")
@@ -178,7 +194,8 @@ class TestKeyHandling:
         assert result.valid is False
         assert "outside" in (result.error_message or "")
 
-    def test_init_is_the_only_creator_and_refuses_audit_dir(self, tmp_path):
+    def test_init_is_the_only_creator_and_refuses_audit_dir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         created = init_hmac_key(tmp_path / "keys" / "audit.key")
         assert created.is_file()
         assert created.stat().st_mode & 0o777 == 0o600
@@ -190,12 +207,21 @@ class TestKeyHandling:
 
 class TestAuditLogBasic:
     def test_empty_log_with_no_anchor_fails(self, tmp_path):
-        log = _create_audit_log(tmp_path)
+        log = _create_audit_log(tmp_path, initialized=False)
         result = log.verify()
         assert result.valid is False
         assert result.total_entries == 0
         assert result.error_message is not None
         assert "Missing head anchor" in result.error_message
+
+    def test_append_without_initialize_raises(self, tmp_path):
+        log = _create_audit_log(tmp_path, initialized=False)
+        with pytest.raises(RuntimeError, match="not initialized"):
+            _append_login(log)
+        assert not log.log_path.exists()
+        result = log.verify()
+        assert result.valid is False
+        assert "Missing head anchor" in (result.error_message or "")
 
     def test_single_entry_appends_every_field(self, tmp_path):
         log = _create_audit_log(tmp_path)
@@ -256,6 +282,7 @@ class TestAuditLogBasic:
         init_hmac_key(key_path)
         utc_noon = datetime(2026, 10, 20, 6, 30, tzinfo=timezone.utc)
         log = AuditLog(log_path, key_path=key_path, clock=lambda: utc_noon)
+        log.initialize()
         entry = _append_login(log)
         assert entry.timestamp.startswith("2026-10-20T12:00:00+05:30")
 
@@ -264,6 +291,7 @@ class TestAuditLogBasic:
             key_path=key_path,
             clock=lambda: datetime(2026, 10, 20, 12, 0, 0),
         )
+        naive.initialize()
         with pytest.raises(ValueError, match="timezone-aware"):
             naive.append("user1", AuditAction.LOGIN)
 
@@ -471,6 +499,44 @@ class TestTamperAndAnchor:
         assert result.broken_index == 0
         assert "HMAC mismatch" in (result.error_message or "")
 
+    def test_delete_last_two_then_append_raises(self, tmp_path):
+        log = self._five(tmp_path)
+        _write_lines(log, _read_lines(log)[:-2])
+        with pytest.raises(RuntimeError, match="does not match"):
+            _append_login(log)
+        result = log.verify()
+        assert result.valid is False
+        assert log.count() == 3
+
+    def test_wipe_then_append_raises(self, tmp_path):
+        log = self._five(tmp_path)
+        log.log_path.write_text("", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="does not match"):
+            _append_login(log)
+        result = log.verify()
+        assert result.valid is False
+        assert log.count() == 0
+
+    def test_delete_log_and_anchor_then_append_raises(self, tmp_path):
+        log = self._five(tmp_path)
+        log.log_path.unlink()
+        log.head_path.unlink()
+        with pytest.raises(RuntimeError, match="not initialized"):
+            _append_login(log)
+        assert not log.log_path.exists()
+        result = log.verify()
+        assert result.valid is False
+
+    def test_missing_anchor_on_nonempty_log_refuses_append(self, tmp_path):
+        log = self._five(tmp_path)
+        log.head_path.unlink()
+        with pytest.raises(RuntimeError, match="Missing head anchor"):
+            _append_login(log)
+        assert log.count() == 5
+        result = log.verify()
+        assert result.valid is False
+        assert "Missing head anchor" in (result.error_message or "")
+
     def test_full_truncation_fails(self, tmp_path):
         log = self._five(tmp_path)
         log.log_path.write_text("", encoding="utf-8")
@@ -490,6 +556,8 @@ class TestTamperAndAnchor:
         init_hmac_key(key_path)
         first = AuditLog(tmp_path / "a.jsonl", key_path=key_path)
         second = AuditLog(tmp_path / "b.jsonl", key_path=key_path)
+        first.initialize()
+        second.initialize()
         _append_login(first, "alice")
         for index in range(3):
             _append_login(second, f"bob{index}")
@@ -598,6 +666,37 @@ class TestVerifyNeverRaises:
         assert "Extra fields" in (planted.error_message or "")
         assert "face_id" in (planted.error_message or "")
 
+    def test_non_utf8_log_line_names_the_index(self, tmp_path):
+        log = _create_audit_log(tmp_path)
+        _append_login(log)
+        with log.log_path.open("ab") as handle:
+            handle.write(b"\xff\xfe{bad}\n")
+        result = log.verify()
+        assert result.valid is False
+        assert result.broken_index == 1
+        assert "UTF-8" in (result.error_message or "")
+
+    def test_non_utf8_anchor_returns_invalid(self, tmp_path):
+        log = _create_audit_log(tmp_path)
+        _append_login(log)
+        log.head_path.write_bytes(b"\xff\xfe")
+        result = log.verify()
+        assert result.valid is False
+        assert "UTF-8" in (result.error_message or "")
+
+    def test_blank_details_names_the_index(self, tmp_path):
+        log = _create_audit_log(tmp_path)
+        for _ in range(3):
+            _append_login(log)
+        rows = _read_lines(log)
+        rows[2]["details"] = "   "
+        _write_lines(log, rows)
+        result = log.verify()
+        assert result.valid is False
+        assert result.broken_index == 2
+        assert "details" in (result.error_message or "")
+        assert "entry 2" in (result.error_message or "")
+
     def test_unknown_action_in_the_log_is_rejected(self, tmp_path):
         log = _create_audit_log(tmp_path)
         _append_login(log)
@@ -699,6 +798,44 @@ class TestConcurrency:
         assert prev_hmacs.count("") == 1
         assert len(prev_hmacs) == len(set(prev_hmacs))
         assert log.count() == 400
+
+    def test_verify_during_appends_stays_valid(self, tmp_path):
+        log = _create_audit_log(tmp_path)
+        _append_login(log, "seed")
+        stop = threading.Event()
+        seen = threading.Event()
+        results: list[bool] = []
+        errors: list[str] = []
+        guard = threading.Lock()
+
+        def reader() -> None:
+            try:
+                while not stop.is_set():
+                    result = log.verify()
+                    with guard:
+                        results.append(result.valid)
+                        if not result.valid and len(errors) < 5:
+                            errors.append(result.error_message or "")
+                    seen.set()
+            except Exception as exc:
+                errors.append(repr(exc))
+                stop.set()
+
+        readers = [threading.Thread(target=reader) for _ in range(3)]
+        for thread in readers:
+            thread.start()
+        assert seen.wait(timeout=5)
+        for index in range(40):
+            log.append(f"user{index}", AuditAction.LOGIN)
+        stop.set()
+        for thread in readers:
+            thread.join(timeout=30)
+        assert all(not thread.is_alive() for thread in readers)
+        assert results
+        assert all(results), errors
+        final = log.verify()
+        assert final.valid is True
+        assert final.total_entries == 41
 
 
 def test_demo_script_prints_json():

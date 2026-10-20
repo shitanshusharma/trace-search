@@ -57,10 +57,6 @@ jobs:
           exit 1
         fi
 
-    - name: AC-13 audit log demo
-      run: |
-        python scripts/demo_audit_log.py --json
-
     - name: License fence check
       run: |
         python scripts/check_licenses.py \
@@ -68,6 +64,10 @@ jobs:
           --report=license-report.json
       env:
         NO_FFMPEG_CHECK: '1'
+
+    - name: AC-13 audit log demo
+      run: |
+        python scripts/demo_audit_log.py --json
     
     - name: Upload license report
       if: always()

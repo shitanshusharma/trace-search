@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -74,24 +75,17 @@ class AuditAction(Enum):
 
 def is_audit_path(path: Path | str) -> bool:
     """
-    Return True when `path` is the audit directory or anything inside it.
+    Return True when `path` resolves inside the configured audit directory.
 
-    A path matches when any component is AUDIT_LOG_DIR (so
-    `/data/audit_logs/system.jsonl` matches from any working directory) or
-    when it resolves inside the cwd-relative AUDIT_LOG_DIR.
+    The configured directory is `Path(AUDIT_LOG_DIR).resolve()` (relative to
+    the process working directory). A folder that is merely named
+    `audit_logs` somewhere else is not exempt. T9 purge must use this helper
+    instead of matching the directory name.
     """
-    candidate = Path(path)
-    if AUDIT_LOG_DIR in candidate.parts:
-        return True
     try:
-        resolved = candidate.resolve()
-    except OSError:
-        return False
-    if AUDIT_LOG_DIR in resolved.parts:
-        return True
-    try:
+        resolved = Path(path).resolve()
         resolved.relative_to(Path(AUDIT_LOG_DIR).resolve())
-    except ValueError:
+    except (OSError, ValueError):
         return False
     return True
 
@@ -303,8 +297,14 @@ class AuditLog:
                 error_message="Missing head anchor",
             )
         try:
-            raw = self.head_path.read_text(encoding="utf-8")
+            raw = self.head_path.read_bytes().decode("utf-8")
             data = json.loads(raw)
+        except UnicodeDecodeError as exc:
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message=f"Head anchor is not valid UTF-8: {exc}",
+            )
         except (OSError, json.JSONDecodeError) as exc:
             return VerificationResult(
                 valid=False,
@@ -427,6 +427,82 @@ class AuditLog:
             ) from exc
         return entry, len(nonempty)
 
+    @contextmanager
+    def _locked(self, exclusive: bool):
+        """Hold the log lock. Exclusive for writers, shared for verify()."""
+        if exclusive:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        elif not self.lock_path.parent.is_dir():
+            yield
+            return
+        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        flag = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        try:
+            fcntl.flock(fd, flag)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def _require_anchor_matches(
+        self,
+        key: bytes,
+        last_entry: AuditEntry | None,
+        count: int,
+    ) -> None:
+        """Raise when the signed anchor does not describe this tail."""
+        anchor = self._read_anchor(key)
+        if isinstance(anchor, VerificationResult):
+            message = anchor.error_message or "invalid head anchor"
+            if count == 0 and message == "Missing head anchor":
+                raise RuntimeError(
+                    "Audit log is not initialized. Call initialize() to "
+                    "write a signed count-0 anchor before appending."
+                )
+            if count > 0 and message == "Missing head anchor":
+                raise RuntimeError(
+                    "Missing head anchor for a non-empty audit log. "
+                    "Refusing to append."
+                )
+            raise RuntimeError(f"Refusing to append: {message}")
+        expected = last_entry.entry_hmac if last_entry is not None else ""
+        if anchor.entry_count != count or not _mac_equal(anchor.last_hmac, expected):
+            raise RuntimeError(
+                "Head anchor does not match the log tail "
+                f"(anchor count={anchor.entry_count}, log count={count}). "
+                "Refusing to append."
+            )
+
+    def initialize(self) -> None:
+        """
+        Write a signed count-0 anchor for a new log.
+
+        append() refuses to create that anchor itself, so deleting the log
+        and the anchor cannot be laundered by the next append. A log that
+        already has entries, or an anchor that is not an empty tip, raises.
+        """
+        key = self._get_key()
+        with self._locked(exclusive=True):
+            _last_entry, count = self._last_entry_and_count()
+            if count != 0:
+                raise RuntimeError(
+                    "Cannot initialize a log that already has entries."
+                )
+            if self.head_path.is_file():
+                anchor = self._read_anchor(key)
+                if (
+                    isinstance(anchor, _Anchor)
+                    and anchor.entry_count == 0
+                    and anchor.last_hmac == ""
+                ):
+                    return
+                raise RuntimeError(
+                    "Refusing to initialize: a head anchor already exists."
+                )
+            if not self.log_path.exists():
+                self.log_path.touch()
+            self._write_anchor(key, "", 0)
+
     def append(
         self,
         operator_username: str,
@@ -440,8 +516,10 @@ class AuditLog:
         """
         Append one entry and update the signed head anchor.
 
-        Holds one exclusive fcntl lock across the read of the last entry,
-        the append, and the anchor write.
+        Holds one exclusive fcntl lock across the anchor check, the read of
+        the last entry, the append, and the anchor write. The timestamp is
+        taken inside that lock. A new log must be initialize()'d first.
+        append() raises when the signed anchor does not match the tail.
         """
         operator_username = _require_nonempty_str(
             operator_username, "operator_username"
@@ -477,13 +555,11 @@ class AuditLog:
             raise ValueError("result_ids must be a list of strings")
 
         key = self._get_key()
-        timestamp = self._timestamp()
 
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        with self._locked(exclusive=True):
             last_entry, count = self._last_entry_and_count()
+            self._require_anchor_matches(key, last_entry, count)
+            timestamp = self._timestamp()
             prev_hmac = last_entry.entry_hmac if last_entry else ""
             entry = AuditEntry(
                 timestamp=timestamp,
@@ -503,9 +579,6 @@ class AuditLog:
                 handle.flush()
                 os.fsync(handle.fileno())
             self._write_anchor(key, entry.entry_hmac, count + 1)
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
         return entry
 
     def read_all(self) -> list[AuditEntry]:
@@ -583,6 +656,13 @@ class AuditLog:
                         f"got {type(data[name]).__name__}"
                     ),
                 )
+        if isinstance(data.get("details"), str) and not data["details"].strip():
+            return VerificationResult(
+                valid=False,
+                total_entries=index,
+                broken_index=index,
+                error_message=f"details is blank at entry {index}",
+            )
         extra = set(data) - set(_ENTRY_FIELDS)
         if extra:
             return VerificationResult(
@@ -653,8 +733,10 @@ class AuditLog:
             )
 
     def _load_entries(self) -> list[AuditEntry] | VerificationResult:
+        if not self.log_path.exists() or self.log_path.stat().st_size == 0:
+            return []
         try:
-            lines = self._log_lines()
+            raw = self.log_path.read_bytes()
         except OSError as exc:
             return VerificationResult(
                 valid=False,
@@ -662,11 +744,21 @@ class AuditLog:
                 error_message=f"Cannot read audit log: {exc}",
             )
         entries: list[AuditEntry] = []
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
+        for raw_line in raw.splitlines():
+            if not raw_line.strip():
                 continue
-            parsed = self._parse_entry(stripped, len(entries))
+            try:
+                text = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError as exc:
+                return VerificationResult(
+                    valid=False,
+                    total_entries=len(entries),
+                    broken_index=len(entries),
+                    error_message=(
+                        f"Log entry {len(entries)} is not valid UTF-8: {exc}"
+                    ),
+                )
+            parsed = self._parse_entry(text, len(entries))
             if isinstance(parsed, VerificationResult):
                 return parsed
             entries.append(parsed)
@@ -676,10 +768,12 @@ class AuditLog:
         """
         Check the chain and the signed head anchor.
 
-        Never raises and never creates a key, a log, or an anchor. A missing
-        key, a missing anchor, an unsigned anchor, a bad signature, or a
-        count mismatch returns valid=False. An empty log with no anchor
-        fails. An empty or truncated log whose anchor count is above 0 fails.
+        Never raises and never creates a key or an anchor. Takes a shared
+        flock on the same lock file as append() so an in-flight append cannot
+        look like tampering. A missing key, a missing anchor, an unsigned
+        anchor, a bad signature, non-UTF-8 bytes, or a count mismatch returns
+        valid=False. An empty log with no anchor fails. An empty or truncated
+        log whose anchor count is above 0 fails.
         """
         try:
             key = self._get_key()
@@ -690,6 +784,17 @@ class AuditLog:
                 error_message=f"HMAC key not available: {exc}",
             )
 
+        try:
+            with self._locked(exclusive=False):
+                return self._verify_locked(key)
+        except Exception as exc:
+            return VerificationResult(
+                valid=False,
+                total_entries=0,
+                error_message=f"Cannot verify audit log: {exc}",
+            )
+
+    def _verify_locked(self, key: bytes) -> VerificationResult:
         loaded = self._load_entries()
         if isinstance(loaded, VerificationResult):
             return loaded

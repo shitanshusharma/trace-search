@@ -121,8 +121,8 @@ The CI pipeline runs on every push and PR:
 1. **Lint** with ruff
 2. **Unit tests** with pytest
 3. **Clean worktree** — fails if `git status --porcelain` is not empty after pytest
-4. **AC-13 demo** — `python scripts/demo_audit_log.py --json`
-5. **License fence check** - fails on any AGPL/GPL/NC/unknown license or banned component
+4. **License fence check** - fails on any AGPL/GPL/NC/unknown license or banned component
+5. **AC-13 demo** — `python scripts/demo_audit_log.py --json`
 
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for details.
 
@@ -146,13 +146,13 @@ See [trace-search-cut01-plan.md](docs/trace-search-cut01-plan.md) for the full t
 
 ## Audit log (AC-13)
 
-The audit log records operator username, IST time, action, query, case ID, purpose, and result ids. It is an HMAC-SHA256 chain. Canonical JSON is `json.dumps(..., sort_keys=True, separators=(",", ":"))`. A signed head anchor at `<log_path>.head` stores the last HMAC and the entry count. A missing, unsigned, or mismatched anchor fails `verify()`.
+The audit log records operator username, IST time, action, query, case ID, purpose, an optional `details` note, and result ids. It is an HMAC-SHA256 chain. Canonical JSON is `json.dumps(..., sort_keys=True, separators=(",", ":"))`. A signed head anchor at `<log_path>.head` stores the last HMAC and the entry count. `initialize()` writes a signed count-0 anchor for a new log. `append()` checks that anchor under the lock and raises when it does not match the tail. A missing, unsigned, or mismatched anchor fails `verify()`. `verify()` takes a shared lock on the same lock file and returns `valid=False` for non-UTF-8 bytes and for a blank `details` string.
 
-The key comes only from `TRACE_AUDIT_HMAC_KEY` or from an explicit key file outside `audit_logs/`. There is no default key. `verify()` never creates a key. `init_hmac_key()` is the only function that creates one. `AUDIT_LOG_DIR` and `is_audit_path()` (exported from `trace_search.audit`) are the default path and the purge-exemption check.
+The key comes only from `TRACE_AUDIT_HMAC_KEY` or from an explicit key file outside the configured audit directory. There is no default key. `verify()` never creates a key. `init_hmac_key()` is the only function that creates one. `AUDIT_LOG_DIR` and `is_audit_path()` (exported from `trace_search.audit`) are the default path and the purge-exemption check. `is_audit_path()` matches the resolved configured directory only, not every folder named `audit_logs`.
 
-An attacker who holds the key and deletes both the log and the anchor is not detectable on this host. External anchoring is out of scope for Cut 01. The 1-year purge checkpoint is T9.
+An attacker who holds the key and deletes both the log and the anchor is not detectable on this host. An attacker without the key who restores an older copy of both the log and the anchor also passes `verify()`. Logs written before `details` existed fail HMAC verification, because the canonical payload now includes `"details": null`. External anchoring is out of scope for Cut 01. The 1-year purge checkpoint is T9. Audit retention is 365 days.
 
-`tests/test_audit_log.py` is 46 tests, all under `tmp_path`. The full suite is 83 tests. Details and a sample proof are in [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md).
+`tests/test_audit_log.py` is 55 tests, all under `tmp_path`. The full suite is 92 tests. Details and a sample proof are in [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md).
 
 ## Privacy and Ethics
 
