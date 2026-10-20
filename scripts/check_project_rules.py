@@ -73,17 +73,17 @@ def load_allow_list() -> set[str]:
     """Load the allow-list from .project-rules-allow file."""
     allow_list: set[str] = set()
     allow_file = Path(ALLOW_LIST_FILE)
-    
+
     if not allow_file.exists():
         return allow_list
-    
+
     content = allow_file.read_text()
     for line in content.splitlines():
         line = line.strip()
         # Skip empty lines and comments
         if line and not line.startswith("#"):
             allow_list.add(line)
-    
+
     return allow_list
 
 
@@ -91,17 +91,17 @@ def check_imports_and_deps() -> list[dict[str, Any]]:
     """Check for banned imports in Python files and dependencies."""
     violations: list[dict[str, Any]] = []
     allow_list = load_allow_list()
-    
+
     # Check Python source files
     for py_file in Path("src").rglob("*.py"):
         content = py_file.read_text()
-        
+
         for pattern in BANNED_IMPORTS:
             matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
             for match in matches:
                 line_num = content[:match.start()].count("\n") + 1
                 violation_id = f"{py_file}:{line_num}:{match.group()}"
-                
+
                 if violation_id not in allow_list:
                     violations.append({
                         "type": "banned_import",
@@ -111,21 +111,21 @@ def check_imports_and_deps() -> list[dict[str, Any]]:
                         "match": match.group(),
                         "message": f"Banned import/dependency pattern: {pattern}"
                     })
-    
+
     # Check requirements files
     req_files = ["requirements.txt", "requirements-dev.txt", "requirements-ci.txt"]
     for req_file in req_files:
         req_path = Path(req_file)
         if not req_path.exists():
             continue
-        
+
         content = req_path.read_text()
         for pattern in BANNED_IMPORTS:
             matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
             for match in matches:
                 line_num = content[:match.start()].count("\n") + 1
                 violation_id = f"{req_file}:{line_num}:{match.group()}"
-                
+
                 if violation_id not in allow_list:
                     violations.append({
                         "type": "banned_dependency",
@@ -135,7 +135,7 @@ def check_imports_and_deps() -> list[dict[str, Any]]:
                         "match": match.group(),
                         "message": f"Banned dependency pattern: {pattern}"
                     })
-    
+
     # Check pyproject.toml
     pyproject = Path("pyproject.toml")
     if pyproject.exists():
@@ -145,7 +145,7 @@ def check_imports_and_deps() -> list[dict[str, Any]]:
             for match in matches:
                 line_num = content[:match.start()].count("\n") + 1
                 violation_id = f"pyproject.toml:{line_num}:{match.group()}"
-                
+
                 if violation_id not in allow_list:
                     violations.append({
                         "type": "banned_dependency",
@@ -155,7 +155,7 @@ def check_imports_and_deps() -> list[dict[str, Any]]:
                         "match": match.group(),
                         "message": f"Banned dependency in pyproject.toml: {pattern}"
                     })
-    
+
     return violations
 
 
@@ -163,16 +163,16 @@ def check_identifiers() -> list[dict[str, Any]]:
     """Check for banned identifiers in Python source files."""
     violations: list[dict[str, Any]] = []
     allow_list = load_allow_list()
-    
+
     for py_file in Path("src").rglob("*.py"):
         content = py_file.read_text()
-        
+
         for pattern in BANNED_IDENTIFIERS:
             matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
             for match in matches:
                 line_num = content[:match.start()].count("\n") + 1
                 violation_id = f"{py_file}:{line_num}:{match.group()}"
-                
+
                 if violation_id not in allow_list:
                     violations.append({
                         "type": "banned_identifier",
@@ -182,7 +182,7 @@ def check_identifiers() -> list[dict[str, Any]]:
                         "match": match.group(),
                         "message": f"Banned identifier pattern: {pattern}"
                     })
-    
+
     return violations
 
 
@@ -190,7 +190,7 @@ def check_media_files() -> list[dict[str, Any]]:
     """Check for committed media files outside allow-listed paths."""
     violations: list[dict[str, Any]] = []
     allow_list = load_allow_list()
-    
+
     for ext in MEDIA_EXTENSIONS:
         # Search case-insensitively by checking both lower and upper variants
         for pattern in [f"*{ext}", f"*{ext.upper()}"]:
@@ -198,14 +198,14 @@ def check_media_files() -> list[dict[str, Any]]:
                 # Skip .git directory
                 if ".git" in media_file.parts:
                     continue
-                
+
                 # Check if file is in an allowed path
                 file_str = str(media_file)
                 allowed = any(file_str.startswith(allowed_path) 
                              for allowed_path in MEDIA_ALLOW_PATHS)
-                
+
                 violation_id = f"media:{file_str}"
-                
+
                 if not allowed and violation_id not in allow_list:
                     violations.append({
                         "type": "media_file",
@@ -213,45 +213,45 @@ def check_media_files() -> list[dict[str, Any]]:
                         "extension": media_file.suffix,
                         "message": f"Media file outside allowed paths: {file_str}"
                     })
-    
+
     return violations
 
 
 def main() -> int:
     """Run all project rules checks."""
     print("Running project rules checks...")
-    
+
     all_violations: list[dict[str, Any]] = []
-    
+
     # Run all checks
     all_violations.extend(check_imports_and_deps())
     all_violations.extend(check_identifiers())
     all_violations.extend(check_media_files())
-    
+
     if not all_violations:
         print("✅ All project rules checks passed!")
         return 0
-    
+
     # Report violations
     print(f"\n❌ Found {len(all_violations)} project rules violations:\n")
-    
+
     for violation in all_violations:
         print(f"  {violation['type']}: {violation['file']}")
         if "line" in violation:
             print(f"    Line {violation['line']}: {violation['match']}")
         print(f"    {violation['message']}")
         print()
-    
+
     # Write violations to JSON for artifact upload
     with open("project-rules-violations.json", "w") as f:
         json.dump(all_violations, f, indent=2)
-    
+
     print(f"Wrote violations to project-rules-violations.json")
     print()
     print("To allow a false positive, add the violation ID to .project-rules-allow:")
     print("  Format: <file>:<line>:<match> or media:<file>")
     print("  Each allow-list entry must be reviewed and have a justification comment.")
-    
+
     return 1
 
 
