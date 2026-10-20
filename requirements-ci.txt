@@ -1,0 +1,17 @@
+# CI/Security tools - managed separately from dev dependencies
+# Used by quality and security workflows
+
+# Code quality
+mypy==1.13.0
+pytest==9.1.1
+pytest-cov==7.1.0
+coverage[toml]==7.6.9
+diff-cover==9.2.0
+radon==6.0.1
+
+# Security scanning
+bandit[toml]==1.8.0
+semgrep==1.99.0
+
+# Audit
+pip-audit==2.7.3

@@ -1,0 +1,131 @@
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  summary:
+    name: review / pr-summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+    
+    - name: Wait for other checks
+      uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        running-workflow-name: 'review / pr-summary'
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        wait-interval: 10
+        allowed-conclusions: success,failure,cancelled,skipped
+      continue-on-error: true
+    
+    - name: Set up Python
+      uses: actions/setup-python@f677139bbe7f9c59b41e40162b753cc15f5c515d # v5.2.0
+      with:
+        python-version: '3.11'
+    
+    - name: Aggregate check results
+      id: aggregate
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+      with:
+        script: |
+          const { data: checks } = await github.rest.checks.listForRef({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            ref: context.payload.pull_request.head.sha,
+            per_page: 100
+          });
+          
+          const targetChecks = [
+            'quality / lint',
+            'quality / types',
+            'quality / tests+coverage',
+            'quality / complexity',
+            'security / bandit',
+            'security / semgrep',
+            'security / codeql (python)',
+            'security / gitleaks',
+            'security / pip-audit',
+            'security / dependency-review',
+            'rules / project-rules'
+          ];
+          
+          let summary = '## 🤖 Automated PR Review Summary\n\n';
+          let passing = 0;
+          let failing = 0;
+          let pending = 0;
+          
+          summary += '### Check Results\n\n';
+          summary += '| Check | Status |\n';
+          summary += '|-------|--------|\n';
+          
+          for (const checkName of targetChecks) {
+            const check = checks.check_runs.find(c => c.name === checkName);
+            if (!check) {
+              summary += `| ${checkName} | ⏳ Pending |\n`;
+              pending++;
+            } else if (check.conclusion === 'success') {
+              summary += `| ${checkName} | ✅ Pass |\n`;
+              passing++;
+            } else if (check.conclusion === 'failure') {
+              summary += `| ${checkName} | ❌ Fail |\n`;
+              failing++;
+            } else if (check.conclusion === 'skipped') {
+              summary += `| ${checkName} | ⏭️ Skipped |\n`;
+            } else {
+              summary += `| ${checkName} | ⏳ ${check.status} |\n`;
+              pending++;
+            }
+          }
+          
+          summary += '\n';
+          summary += `**Summary:** ${passing} passing, ${failing} failing, ${pending} pending\n\n`;
+          
+          if (failing > 0) {
+            summary += '### ⚠️ Action Required\n\n';
+            summary += 'Some checks failed. Please review the workflow logs and fix the issues.\n\n';
+          } else if (pending === 0) {
+            summary += '### ✅ All Checks Passed\n\n';
+            summary += 'Great work! All quality and security checks passed.\n\n';
+          }
+          
+          summary += '---\n';
+          summary += '*This comment is automatically updated on each push.*\n';
+          
+          return summary;
+    
+    - name: Find existing comment
+      id: find-comment
+      uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: 'github-actions[bot]'
+        body-includes: 'Automated PR Review Summary'
+    
+    - name: Create or update PR comment
+      uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4.0.0
+      with:
+        comment-id: ${{ steps.find-comment.outputs.comment-id }}
+        issue-number: ${{ github.event.pull_request.number }}
+        body: ${{ steps.aggregate.outputs.result }}
+        edit-mode: replace
+    
+    - name: Create check summary
+      run: |
+        echo "${{ steps.aggregate.outputs.result }}" >> $GITHUB_STEP_SUMMARY

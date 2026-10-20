@@ -1,0 +1,14 @@
+title = "trace-search gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allow list"
+paths = [
+  # Add paths to be excluded from gitleaks scanning
+]
+
+regexes = [
+  # Add regex patterns for known false positives
+]

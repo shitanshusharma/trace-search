@@ -1,0 +1,47 @@
+rules:
+  - id: trace-search-no-face-recognition
+    patterns:
+      - pattern: import face_recognition
+      - pattern: import insightface
+      - pattern: import arcface
+      - pattern: from insightface import ...
+      - pattern: from arcface import ...
+    message: "Face recognition libraries are banned (PRD §2 OUT)"
+    severity: ERROR
+    languages: [python]
+
+  - id: trace-search-no-watchlist
+    patterns:
+      - pattern: watchlist
+      - pattern: enroll
+      - pattern: enrolment
+    message: "Watchlist/enrolment features are banned (PRD §2 OUT)"
+    severity: ERROR
+    languages: [python]
+
+  - id: trace-search-no-face-embedding
+    patterns:
+      - pattern: face_embedding
+      - pattern: face_crop
+    message: "Face embeddings and crops are banned (PRD AC-12)"
+    severity: ERROR
+    languages: [python]
+
+  - id: trace-search-no-gpl-license
+    patterns:
+      - pattern: |
+          License: GPL
+      - pattern: |
+          License: AGPL
+    message: "GPL/AGPL licenses are banned (PRD §3)"
+    severity: ERROR
+    languages: [generic]
+
+  - id: trace-search-no-cloud-apis
+    patterns:
+      - pattern: import boto3
+      - pattern: from google.cloud import ...
+      - pattern: from azure. import ...
+    message: "Cloud APIs are banned - on-prem only (PRD §2 OUT)"
+    severity: ERROR
+    languages: [python]

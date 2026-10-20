@@ -1,0 +1,20 @@
+[run]
+branch = true
+source = ["src/trace_search"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/.venv/*",
+]
+
+[report]
+precision = 2
+show_missing = true
+skip_covered = false
+
+[html]
+directory = "htmlcov"
+
+[xml]
+output = "coverage.xml"

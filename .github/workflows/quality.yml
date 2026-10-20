@@ -1,0 +1,194 @@
+name: Quality
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: quality / lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+    
+    - name: Set up Python
+      uses: actions/setup-python@f677139bbe7f9c59b41e40162b753cc15f5c515d # v5.2.0
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install ruff
+      run: pip install ruff==0.17.1
+    
+    - name: Run ruff lint
+      run: ruff check src/ tests/ scripts/ --output-format=github
+    
+    - name: Run ruff format check
+      run: ruff format --check src/ tests/ scripts/
+
+  types:
+    name: quality / types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+    
+    - name: Set up Python
+      uses: actions/setup-python@f677139bbe7f9c59b41e40162b753cc15f5c515d # v5.2.0
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements-ci.txt
+        pip install -e .
+    
+    - name: Run mypy
+      run: mypy src/ --strict --pretty --show-error-codes
+      continue-on-error: false
+
+  tests-coverage:
+    name: quality / tests+coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+      with:
+        fetch-depth: 0  # For diff-cover
+    
+    - name: Set up Python
+      uses: actions/setup-python@f677139bbe7f9c59b41e40162b753cc15f5c515d # v5.2.0
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements-dev.txt
+        pip install -r requirements-ci.txt
+        pip install -e .
+    
+    - name: Run pytest with coverage
+      run: |
+        pytest tests/ \
+          --cov=src/trace_search \
+          --cov-report=xml \
+          --cov-report=term \
+          --cov-report=html \
+          --cov-branch \
+          -v
+      env:
+        NO_FFMPEG_CHECK: '1'
+    
+    - name: Check overall coverage floor (80%)
+      run: |
+        coverage report --fail-under=80
+    
+    - name: Check diff coverage on new/changed code
+      if: github.event_name == 'pull_request'
+      run: |
+        diff-cover coverage.xml \
+          --compare-branch=origin/${{ github.base_ref }} \
+          --fail-under=80 \
+          --show-missing
+      continue-on-error: true
+    
+    - name: Upload coverage reports
+      if: always()
+      uses: actions/upload-artifact@604373da6381bf24206979c74d06a550515601b9 # v4.4.1
+      with:
+        name: coverage-reports
+        path: |
+          coverage.xml
+          htmlcov/
+        retention-days: 30
+
+  complexity:
+    name: quality / complexity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+    
+    - name: Set up Python
+      uses: actions/setup-python@f677139bbe7f9c59b41e40162b753cc15f5c515d # v5.2.0
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install tools
+      run: |
+        pip install ruff==0.17.1
+        pip install radon==6.0.1
+    
+    - name: Check cyclomatic complexity (ruff mccabe)
+      run: ruff check src/ --select C90 --config 'lint.mccabe.max-complexity=10'
+    
+    - name: Check maintainability index (radon)
+      run: |
+        radon mi src/ -s -n B
+        radon cc src/ -s -n C
+
+  ui-checks:
+    name: quality / ui (eslint+tsc+prettier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: hashFiles('ui/package.json', 'web/package.json') != ''
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+    
+    - name: Detect UI directory
+      id: detect
+      run: |
+        if [ -f "ui/package.json" ]; then
+          echo "dir=ui" >> $GITHUB_OUTPUT
+        elif [ -f "web/package.json" ]; then
+          echo "dir=web" >> $GITHUB_OUTPUT
+        else
+          echo "No UI package found"
+          exit 1
+        fi
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6 # v4.0.4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: ${{ steps.detect.outputs.dir }}/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ${{ steps.detect.outputs.dir }}
+      run: npm ci
+    
+    - name: Run ESLint
+      working-directory: ${{ steps.detect.outputs.dir }}
+      run: npm run lint
+    
+    - name: Run TypeScript check
+      working-directory: ${{ steps.detect.outputs.dir }}
+      run: npx tsc --noEmit
+    
+    - name: Run Prettier check
+      working-directory: ${{ steps.detect.outputs.dir }}
+      run: npx prettier --check src/

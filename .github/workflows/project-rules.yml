@@ -1,0 +1,40 @@
+name: Project Rules
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-rules-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: rules / project-rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+    
+    - name: Set up Python
+      uses: actions/setup-python@f677139bbe7f9c59b41e40162b753cc15f5c515d # v5.2.0
+      with:
+        python-version: '3.11'
+    
+    - name: Run project rules check
+      run: python scripts/check_project_rules.py
+    
+    - name: Upload violations report
+      if: failure()
+      uses: actions/upload-artifact@604373da6381bf24206979c74d06a550515601b9 # v4.4.1
+      with:
+        name: project-rules-violations
+        path: project-rules-violations.json
+        retention-days: 90
