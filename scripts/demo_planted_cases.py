@@ -6,6 +6,7 @@ Creates test manifests for each blocking scenario and captures their output.
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -33,9 +34,6 @@ def run_checker(manifest_data: dict, name: str) -> tuple[int, str]:
         return result.returncode, result.stdout
     finally:
         Path(temp_path).unlink()
-
-
-import os
 
 
 # Base manifest template
