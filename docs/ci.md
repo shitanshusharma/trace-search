@@ -324,7 +324,7 @@ python scripts/check_project_rules.py
 
 ---
 
-### 15. License Fence (`rules / licence-fence`)
+### 15. License Fence (`Lint, Test, and License Check`)
 
 **What it checks:**
 - All dependencies in license manifest
@@ -345,7 +345,7 @@ python scripts/check_licenses.py \
   --report=license-report.json
 ```
 
-**Note:** This check is part of the existing CI from PR #1. Do not duplicate it.
+**Note:** This check is part of the existing `.github/workflows/ci.yml` from PR #1. The job name is `Lint, Test, and License Check` and includes linting, tests, and the license fence in one combined job.
 
 ---
 
@@ -449,7 +449,7 @@ Mark these job names as required:
 9. `security / pip-audit`
 10. `security / dependency-review` (PRs only)
 11. `rules / project-rules`
-12. `rules / licence-fence` (from existing CI)
+12. `Lint, Test, and License Check` (existing combined job from ci.yml)
 
 **Note:** `quality / ui (eslint+tsc+prettier)`, `security / codeql (javascript)`, and `security / npm-audit` are skipped when no UI package exists. Do not mark them as required until the UI is added.
 
@@ -614,7 +614,7 @@ jobs:
 | pip-audit | `security / pip-audit` | High/critical CVEs | `pip-audit --strict` |
 | Dep Review | `security / dependency-review` | High CVEs, banned licenses (PRs) | `gh api .../dependency-graph/compare/...` |
 | Project Rules | `rules / project-rules` | Banned imports, media files | `python scripts/check_project_rules.py` |
-| License Fence | `rules / licence-fence` | AGPL/GPL/NC, missing manifest | `python scripts/check_licenses.py` |
+| License Fence | `Lint, Test, and License Check` | AGPL/GPL/NC, missing manifest | `python scripts/check_licenses.py` |
 
 ---
 
