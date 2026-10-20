@@ -319,7 +319,8 @@ def check_installed_packages(
     """
     Check installed packages against manifest and for banned licenses.
 
-    If direct_deps is provided, only check those packages.
+    Checks ALL installed packages (full closure) to meet AC-01.
+    direct_deps parameter is ignored - kept for compatibility.
     """
     violations = []
     missing = []
@@ -336,10 +337,7 @@ def check_installed_packages(
         license_str = pkg['license']
         norm_name = name.lower().replace('_', '-')
 
-        # Skip if we're only checking direct dependencies and this isn't one
-        if direct_deps is not None and norm_name not in direct_deps:
-            continue
-
+        # Check ALL installed packages (full closure for AC-01)
         if norm_name not in manifest_packages:
             missing.append(f"{name} ({version}): installed but not in manifest")
 
@@ -505,15 +503,10 @@ def main():
         print("=== Scanning installed packages ===")
         installed = get_installed_packages(include_system=args.include_system)
         print(f"Found {len(installed)} installed packages")
-
-        # Get direct dependencies from requirements files
-        direct_deps = None
-        if args.requirements:
-            direct_deps = get_direct_dependencies(args.requirements)
-            print(f"Checking {len(direct_deps)} direct dependencies from requirements")
+        print("Checking ALL packages (full closure per AC-01)")
 
         install_violations, missing = check_installed_packages(
-            installed, manifest, direct_deps
+            installed, manifest
         )
 
         if install_violations:
