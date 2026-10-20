@@ -181,11 +181,16 @@ bandit -r src/ scripts/ \
 pip install semgrep==1.99.0
 
 semgrep scan \
-  --config=auto \
+  --error \
+  --metrics=off \
+  --config=.semgrep.yml \
   --config=p/owasp-top-ten \
   --config=p/security-audit \
   --config=p/python \
+  --exclude tests/semgrep \
   --severity=ERROR
+
+semgrep --test --metrics=off --config .semgrep.yml tests/semgrep/rules.py
 ```
 
 **Config:** `.semgrep.yml` (custom rules)
@@ -399,7 +404,7 @@ echo "→ Bandit..."
 bandit -r src/ scripts/ --severity-level high -ll
 
 echo "→ Semgrep..."
-semgrep scan --config=auto --config=p/owasp-top-ten --config=p/python --severity=ERROR
+semgrep scan --error --metrics=off --config=.semgrep.yml --config=p/owasp-top-ten --config=p/python --severity=ERROR
 
 echo "→ pip-audit..."
 pip-audit --strict

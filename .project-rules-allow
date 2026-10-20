@@ -12,3 +12,9 @@
 #   src/trace_search/docs.py:42:watchlist
 #
 # All entries in this file require review and sign-off.
+
+# Package metadata, not a tracked person's identity field. Reviewed 2026-10-20.
+pyproject.toml:6:name = "
+
+# Author metadata, not a tracked person's identity field. Reviewed 2026-10-20.
+pyproject.toml:13:name = "

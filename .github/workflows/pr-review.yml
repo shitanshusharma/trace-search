@@ -65,6 +65,10 @@ jobs:
             'security / pip-audit',
             'security / dependency-review',
             'rules / project-rules',
+            'rules / validate-action-shas',
+            'quality / ui (eslint+tsc+prettier)',
+            'security / codeql (javascript)',
+            'security / npm-audit',
             'Lint, Test, and License Check'
           ];
           
@@ -86,7 +90,7 @@ jobs:
               summary += `| ${checkName} | ✅ Pass |\n`;
               passing++;
             } else if (check.conclusion === 'failure') {
-              summary += `| ${checkName} | ❌ Fail |\n`;
+              summary += `| ${checkName} | ❌ FAILED |\n`;
               failing++;
             } else if (check.conclusion === 'skipped') {
               summary += `| ${checkName} | ⏭️ Skipped |\n`;
@@ -135,8 +139,12 @@ jobs:
     
     - name: Exit with failure if any check failed
       if: always()
+      env:
+        FAILED_COUNT: ${{ steps.aggregate.outputs.failed_count }}
+        SUMMARY: ${{ steps.aggregate.outputs.result }}
       run: |
-        if [ "${{ steps.aggregate.outputs.failed_count }}" != "0" ]; then
-          echo "One or more required checks failed (failed_count=${{ steps.aggregate.outputs.failed_count }})"
+        echo "failed_count=${FAILED_COUNT}"
+        if [ "${FAILED_COUNT}" != "0" ] || printf '%s\n' "$SUMMARY" | grep -q '❌ FAILED'; then
+          echo "One or more required checks failed"
           exit 1
         fi

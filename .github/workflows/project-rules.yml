@@ -23,42 +23,15 @@ jobs:
     - name: Check out code
       uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
     
-    - name: Validate all action SHAs exist in upstream repos
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: '3.11'
+
+    - name: Validate action pins are peeled commits on the named upstream tag
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        echo "Validating action SHAs..."
-        
-        # Extract all uses: lines with SHAs
-        grep -r "uses:.*@[a-f0-9]\{40\}" .github/workflows/ | \
-        grep -v ".github/workflows/ci.yml" | \
-        while IFS= read -r line; do
-          # Extract action and SHA
-          action=$(echo "$line" | sed -n 's/.*uses: *\([^@]*\)@\([a-f0-9]\{40\}\).*/\1/p')
-          sha=$(echo "$line" | sed -n 's/.*uses: *\([^@]*\)@\([a-f0-9]\{40\}\).*/\2/p')
-          
-          if [ -n "$action" ] && [ -n "$sha" ]; then
-            echo "Checking $action @ $sha"
-            
-            # Extract owner/repo from action (first two path segments)
-            owner=$(echo "$action" | cut -d'/' -f1)
-            repo=$(echo "$action" | cut -d'/' -f2)
-            
-            # Verify SHA exists via GitHub API
-            status_code=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$owner/$repo/commits/$sha")
-            
-            if [ "$status_code" != "200" ]; then
-              echo "ERROR: SHA $sha does not exist in $owner/$repo (HTTP $status_code)"
-              exit 1
-            fi
-            echo "  ✓ Valid (HTTP $status_code)"
-          fi
-        done
-        
-        echo "All action SHAs validated successfully!"
+      run: python scripts/validate_action_shas.py
 
   check:
     name: rules / project-rules

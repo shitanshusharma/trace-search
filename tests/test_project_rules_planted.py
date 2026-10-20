@@ -10,6 +10,7 @@ These tests verify that the project rules checker catches various violations:
 - Media files outside allowed paths
 """
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -619,3 +620,176 @@ def test_planted_unmanifested_mp4_fails():
 
         assert result.returncode == 1, "Should fail on unmanifested .mp4 file"
         assert "mp4" in result.stdout.lower() or "media" in result.stdout.lower()
+
+
+def test_camera_name_file_name_and_self_name_pass():
+    """Ordinary names must pass. The name rule is the bare identifier only."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        src_dir = tmppath / "src"
+        src_dir.mkdir()
+        (src_dir / "ingest.py").write_text(
+            "\n".join(
+                [
+                    "class Ingest:",
+                    "    def run(self):",
+                    '        self.name = "ingest"',
+                    '        camera_name = "cam-01"',
+                    '        file_name = "clip.mp4"',
+                    '        model_name = "rtdetr"',
+                    '        getLogger(name="x")',
+                    "        return camera_name, file_name, model_name",
+                    "",
+                ]
+            )
+        )
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout
+
+
+def test_face_crop_national_id_and_identity_id():
+    """Non-alphanumeric boundaries catch these identifiers."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        src_dir = tmppath / "src"
+        src_dir.mkdir()
+        (src_dir / "a.py").write_text("face_crop = img[0:10]\nnational_id = x\nidentity_id = 3\n")
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        lowered = result.stdout.lower()
+        assert "face_crop" in lowered
+        assert "national_id" in lowered
+        assert "identity_id" in lowered
+
+
+def test_exclusion_is_exact_path_not_suffix():
+    """The planted fixture path is exempt. The same name under src/ still fails."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        fixture = tmppath / "tests"
+        fixture.mkdir()
+        (fixture / "test_project_rules_planted.py").write_text("face_embedding = 1\n")
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+
+        only_fixture = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert only_fixture.returncode == 0, only_fixture.stdout
+
+        src = tmppath / "src"
+        src.mkdir()
+        (src / "real.py").write_text("face_embedding = 1\n")
+        with_src = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert with_src.returncode == 1
+
+        nested = tmppath / "src" / "x" / "tests"
+        nested.mkdir(parents=True)
+        (nested / "test_package.py").write_text("import insightface\n")
+        (src / "real.py").unlink()
+        suffix_trap = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert suffix_trap.returncode == 1, suffix_trap.stdout
+
+
+def test_license_checker_path_still_flags_real_imports():
+    """scripts/check_licenses.py is not exempt. A real import there fails."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        scripts = tmppath / "scripts"
+        scripts.mkdir()
+        (scripts / "check_licenses.py").write_text("import insightface\n")
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "insightface" in result.stdout.lower()
+
+
+def test_manifest_hash_is_tied_to_path():
+    """A manifest hash does not authorize the same bytes at another path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        payload = b"same bytes"
+        import hashlib
+
+        digest = hashlib.sha256(payload).hexdigest()
+        fixtures = tmppath / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "test.mp4").write_bytes(payload)
+        weights = tmppath / "src"
+        weights.mkdir()
+        (weights / "weights.pt").write_bytes(payload)
+        licenses = tmppath / "licenses"
+        licenses.mkdir()
+        manifest = {
+            "files": [
+                {
+                    "path": "fixtures/test.mp4",
+                    "sha256": digest,
+                    "use": "SMOKE_ONLY",
+                }
+            ]
+        }
+        (licenses / "manifest.json").write_text(json.dumps(manifest))
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "src/weights.pt" in result.stdout
+        assert "fixtures/test.mp4" not in result.stdout
+
+
+def _load_checker():
+    path = get_checker_path()
+    spec = importlib.util.spec_from_file_location("check_project_rules_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_unreadable_media_is_a_violation(monkeypatch, tmp_path):
+    module = _load_checker()
+    (tmp_path / "clip.mp4").write_bytes(b"abc")
+    monkeypatch.chdir(tmp_path)
+
+    def boom(_path):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(module, "hash_file", boom)
+    violations = module.check_media_files(set())
+    assert violations
+    assert any("Unreadable" in item["message"] for item in violations)

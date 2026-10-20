@@ -1,5 +1,12 @@
-# Semgrep ignore file
-# Exclude files owned by other PRs until they merge
+# Semgrep ignore file.
+# A custom ignore file replaces semgrep's defaults, so keep the usual skips.
+.git/
+.venv/
+venv/
+node_modules/
+__pycache__/
+.pytest_cache/
 
-# ci.yml owned by PR #3 - excludes mutable action tags at lines 24,27,57
+# ci.yml is owned by PR #3, which SHA-pins these actions.
+# Remove this line when this branch rebases onto that change.
 .github/workflows/ci.yml

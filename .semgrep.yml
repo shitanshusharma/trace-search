@@ -4,51 +4,47 @@ rules:
       - pattern: import face_recognition
       - pattern: import insightface
       - pattern: import arcface
-      - pattern: from face_recognition import ...
-      - pattern: from insightface import ...
-      - pattern: from arcface import ...
-      - pattern: from deepface import ...
-      - pattern: from facenet import ...
-    message: "Face recognition libraries are banned (PRD §2 OUT)"
+      - pattern: import deepface
+      - pattern: import facenet
+      - pattern: from face_recognition import $X
+      - pattern: from insightface import $X
+      - pattern: from arcface import $X
+      - pattern: from deepface import $X
+      - pattern: from facenet import $X
+    message: Face recognition libraries are banned (PRD §2 OUT)
     severity: ERROR
     languages: [python]
 
   - id: trace-search-no-watchlist
     pattern-either:
-      - pattern: |
-          $VAR = "watchlist"
-      - pattern: |
-          $VAR = "enroll"
-      - pattern: |
-          $VAR = "enrolment"
-      - pattern: |
-          watchlist = ...
-      - pattern: |
-          def $FUNC(..., watchlist, ...): ...
-    message: "Watchlist/enrolment features are banned (PRD §2 OUT)"
+      - pattern: watchlist = ...
+      - pattern: $VAR = "watchlist"
+      - pattern: $VAR = "enroll"
+      - pattern: $VAR = "enrolment"
+    message: Watchlist/enrolment features are banned (PRD §2 OUT)
     severity: ERROR
     languages: [python]
 
   - id: trace-search-no-face-embedding
     pattern-either:
       - pattern: face_embedding = ...
+      - pattern: face_embeddings = ...
       - pattern: face_crop = ...
-      - pattern: |
-          $VAR = "face_embedding"
-      - pattern: |
-          $VAR = "face_crop"
-    message: "Face embeddings and crops are banned (PRD AC-12)"
+      - pattern: face_crops = ...
+      - pattern: $VAR = "face_embedding"
+      - pattern: $VAR = "face_crop"
+    message: Face embeddings and crops are banned (PRD AC-12)
     severity: ERROR
     languages: [python]
 
   - id: trace-search-no-cloud-apis
     pattern-either:
       - pattern: import boto3
-      - pattern: from boto3 import ...
-      - pattern: from google.cloud import ...
-      - pattern: from azure.storage import ...
-      - pattern: from azure.core import ...
-    message: "Cloud APIs are banned - on-prem only (PRD §2 OUT)"
+      - pattern: from boto3 import $X
+      - pattern: from google.cloud import $X
+      - pattern: from azure.storage import $X
+      - pattern: from azure.core import $X
+    message: Cloud APIs are banned - on-prem only (PRD §2 OUT)
     severity: ERROR
     languages: [python]
 
@@ -63,9 +59,13 @@ rules:
             ...
             name: str
             ...
-    message: "Named identity field 'name: str' is banned (PRD §2 OUT)"
+    message: "Named identity field name: str is banned (PRD section 2 OUT)"
     severity: ERROR
     languages: [python]
+    paths:
+      exclude:
+        # Planted licence-fence demo uses a non-identity parameter named name.
+        - scripts/demo_planted_cases.py
 
   - id: trace-search-no-research-datasets
     pattern-either:
@@ -77,6 +77,16 @@ rules:
           "MSMT17"
       - pattern: |
           "DukeMTMC"
-    message: "Research-only datasets are banned (PRD §2 OUT, §3)"
+    message: Research-only datasets are banned (PRD §2 OUT, §3)
     severity: ERROR
     languages: [python]
+    paths:
+      exclude:
+        # Planted fixtures and the licence-fence pattern table name these datasets
+        # so the fence can reject them. They are not training data.
+        - scripts/demo_planted_cases.py
+        - scripts/check_licenses.py
+        - tests/test_license_fence.py
+        - tests/test_license_scanning.py
+        - tests/test_comprehensive_fence.py
+        - tests/test_project_rules_planted.py

@@ -27,6 +27,8 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Semgrep --test fixtures are planted imports. Keep them out of ruff.
+extend-exclude = ["tests/semgrep"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]

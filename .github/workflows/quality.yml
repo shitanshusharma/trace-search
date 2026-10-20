@@ -103,9 +103,11 @@ jobs:
     
     - name: Check diff coverage on new/changed code
       if: github.event_name == 'pull_request'
+      env:
+        BASE_REF: ${{ github.base_ref }}
       run: |
         diff-cover coverage.xml \
-          --compare-branch=origin/${{ github.base_ref }} \
+          --compare-branch="origin/$BASE_REF" \
           --fail-under=80 \
           --show-missing
       continue-on-error: true

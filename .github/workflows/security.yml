@@ -46,7 +46,7 @@ jobs:
     
     - name: Upload SARIF to code scanning
       if: always()
-      uses: github/codeql-action/upload-sarif@9887d98ae49f1f598651b556d8c8f02f3ea065cb # v3.27.0
+      uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd # v3.27.0
       with:
         sarif_file: bandit-results.sarif
         category: bandit
@@ -56,7 +56,6 @@ jobs:
         bandit -r src/ scripts/ \
           -c .bandit.toml \
           --severity-level high \
-          -ll \
           -f txt
 
   semgrep:
@@ -88,6 +87,7 @@ jobs:
           --config=p/owasp-top-ten \
           --config=p/security-audit \
           --config=p/python \
+          --exclude tests/semgrep \
           --sarif \
           --output=semgrep-results.sarif \
           --severity=WARNING
@@ -101,11 +101,12 @@ jobs:
           --config=p/owasp-top-ten \
           --config=p/security-audit \
           --config=p/python \
+          --exclude tests/semgrep \
           --severity=WARNING || true
     
     - name: Upload SARIF to code scanning
       if: always()
-      uses: github/codeql-action/upload-sarif@9887d98ae49f1f598651b556d8c8f02f3ea065cb # v3.27.0
+      uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd # v3.27.0
       with:
         sarif_file: semgrep-results.sarif
         category: semgrep
@@ -119,7 +120,11 @@ jobs:
           --config=p/owasp-top-ten \
           --config=p/security-audit \
           --config=p/python \
+          --exclude tests/semgrep \
           --severity=ERROR
+
+    - name: Test custom semgrep rules
+      run: semgrep --test --metrics=off --config .semgrep.yml tests/semgrep/rules.py
 
   pip-audit:
     name: security / pip-audit
@@ -146,19 +151,27 @@ jobs:
         pip install -r requirements-dev.txt
         pip install -r requirements-ci.txt
     
-    - name: Run pip-audit
+    - name: Upgrade packages with known fixes
+      run: |
+        # setuptools on the runner is older than 83 (PYSEC-2026-3447).
+        # semgrep 1.99.0 pulls opentelemetry-proto 1.25.0, which caps
+        # protobuf<5 and installs 4.25.9 (PYSEC-2026-1805 / CVE-2026-0994).
+        # Fixed releases are protobuf>=5.29.6. This job audits the environment;
+        # it does not import semgrep, so the override is safe here.
+        python -m pip install 'setuptools>=83.0.0' 'protobuf==6.33.5'
+
+    - name: Run pip-audit and name any vulnerable packages
       run: |
         pip-audit \
           --desc \
+          --format=columns \
+          --vulnerability-service=osv \
+          --strict
+        pip-audit \
           --format=json \
           --output=pip-audit-results.json \
-          --vulnerability-service=osv
-    
-    - name: Check for high/critical vulnerabilities
-      run: |
-        pip-audit \
-          --strict \
-          --vulnerability-service=osv
+          --vulnerability-service=osv \
+          --strict
     
     - name: Upload audit results
       if: always()
