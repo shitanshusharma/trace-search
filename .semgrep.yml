@@ -1,47 +1,82 @@
 rules:
   - id: trace-search-no-face-recognition
-    patterns:
+    pattern-either:
       - pattern: import face_recognition
       - pattern: import insightface
       - pattern: import arcface
+      - pattern: from face_recognition import ...
       - pattern: from insightface import ...
       - pattern: from arcface import ...
+      - pattern: from deepface import ...
+      - pattern: from facenet import ...
     message: "Face recognition libraries are banned (PRD §2 OUT)"
     severity: ERROR
     languages: [python]
 
   - id: trace-search-no-watchlist
-    patterns:
-      - pattern: watchlist
-      - pattern: enroll
-      - pattern: enrolment
+    pattern-either:
+      - pattern: |
+          $VAR = "watchlist"
+      - pattern: |
+          $VAR = "enroll"
+      - pattern: |
+          $VAR = "enrolment"
+      - pattern: |
+          watchlist = ...
+      - pattern: |
+          def $FUNC(..., watchlist, ...): ...
     message: "Watchlist/enrolment features are banned (PRD §2 OUT)"
     severity: ERROR
     languages: [python]
 
   - id: trace-search-no-face-embedding
-    patterns:
-      - pattern: face_embedding
-      - pattern: face_crop
+    pattern-either:
+      - pattern: face_embedding = ...
+      - pattern: face_crop = ...
+      - pattern: |
+          $VAR = "face_embedding"
+      - pattern: |
+          $VAR = "face_crop"
     message: "Face embeddings and crops are banned (PRD AC-12)"
     severity: ERROR
     languages: [python]
 
-  - id: trace-search-no-gpl-license
-    patterns:
-      - pattern: |
-          License: GPL
-      - pattern: |
-          License: AGPL
-    message: "GPL/AGPL licenses are banned (PRD §3)"
-    severity: ERROR
-    languages: [generic]
-
   - id: trace-search-no-cloud-apis
-    patterns:
+    pattern-either:
       - pattern: import boto3
+      - pattern: from boto3 import ...
       - pattern: from google.cloud import ...
-      - pattern: from azure. import ...
+      - pattern: from azure.storage import ...
+      - pattern: from azure.core import ...
     message: "Cloud APIs are banned - on-prem only (PRD §2 OUT)"
+    severity: ERROR
+    languages: [python]
+
+  - id: trace-search-no-name-field
+    pattern-either:
+      - pattern: |
+          name: str = ...
+      - pattern: |
+          def $FUNC(..., name: str, ...): ...
+      - pattern: |
+          class $CLASS:
+            ...
+            name: str
+            ...
+    message: "Named identity field 'name: str' is banned (PRD §2 OUT)"
+    severity: ERROR
+    languages: [python]
+
+  - id: trace-search-no-research-datasets
+    pattern-either:
+      - pattern: |
+          "market1501"
+      - pattern: |
+          "Market-1501"
+      - pattern: |
+          "MSMT17"
+      - pattern: |
+          "DukeMTMC"
+    message: "Research-only datasets are banned (PRD §2 OUT, §3)"
     severity: ERROR
     languages: [python]

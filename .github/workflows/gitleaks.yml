@@ -26,7 +26,7 @@ jobs:
         fetch-depth: 0  # Full history for PR scan
     
     - name: Run Gitleaks
-      uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2.3.6
+      uses: gitleaks/gitleaks-action@44c470ff5e2b1370d1fb8c37bbbe584b32abe5ea # v2.3.6
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GITLEAKS_ENABLE_COMMENTS: false

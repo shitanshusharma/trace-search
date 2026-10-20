@@ -49,7 +49,7 @@ BANNED_IDENTIFIERS = [
 
 # Media file extensions that should not be committed
 MEDIA_EXTENSIONS = [
-    # Video
+    # Video (case-insensitive matching below)
     ".mp4", ".mkv", ".avi", ".mov", ".h264", ".h265", ".dav", ".webm", ".flv",
     # Image
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp",
@@ -192,25 +192,27 @@ def check_media_files() -> list[dict[str, Any]]:
     allow_list = load_allow_list()
     
     for ext in MEDIA_EXTENSIONS:
-        for media_file in Path(".").rglob(f"*{ext}"):
-            # Skip .git directory
-            if ".git" in media_file.parts:
-                continue
-            
-            # Check if file is in an allowed path
-            file_str = str(media_file)
-            allowed = any(file_str.startswith(allowed_path) 
-                         for allowed_path in MEDIA_ALLOW_PATHS)
-            
-            violation_id = f"media:{file_str}"
-            
-            if not allowed and violation_id not in allow_list:
-                violations.append({
-                    "type": "media_file",
-                    "file": file_str,
-                    "extension": ext,
-                    "message": f"Media file outside allowed paths: {file_str}"
-                })
+        # Search case-insensitively by checking both lower and upper variants
+        for pattern in [f"*{ext}", f"*{ext.upper()}"]:
+            for media_file in Path(".").rglob(pattern):
+                # Skip .git directory
+                if ".git" in media_file.parts:
+                    continue
+                
+                # Check if file is in an allowed path
+                file_str = str(media_file)
+                allowed = any(file_str.startswith(allowed_path) 
+                             for allowed_path in MEDIA_ALLOW_PATHS)
+                
+                violation_id = f"media:{file_str}"
+                
+                if not allowed and violation_id not in allow_list:
+                    violations.append({
+                        "type": "media_file",
+                        "file": file_str,
+                        "extension": media_file.suffix,
+                        "message": f"Media file outside allowed paths: {file_str}"
+                    })
     
     return violations
 
