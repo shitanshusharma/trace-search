@@ -10,6 +10,7 @@ These tests verify that the project rules checker catches various violations:
 - Media files outside allowed paths
 """
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -230,6 +231,32 @@ def test_planted_name_assignment():
         )
 
         assert result.returncode == 1, "Should fail on name: str = assignment"
+        assert "name" in result.stdout.lower() or "banned" in result.stdout.lower()
+
+
+def test_planted_name_string_assignment():
+    """PLANTED FAILURE: name = "..." string assignment should be caught."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+
+        # Create src directory with banned assignment
+        src_dir = tmppath / "src"
+        src_dir.mkdir()
+        test_file = src_dir / "test.py"
+        test_file.write_text('name = "John Doe"\n')
+
+        # Create allow-list file
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+
+        # Run checker
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1, "Should fail on name = string assignment"
         assert "name" in result.stdout.lower() or "banned" in result.stdout.lower()
 
 
@@ -501,3 +528,94 @@ def test_clean_case_passes():
         )
 
         assert result.returncode == 0, f"Clean code should pass. Output: {result.stdout}"
+
+
+def test_planted_manifested_fixture_passes():
+    """PLANTED SUCCESS: A media file in manifest with matching SHA should pass."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+
+        # Create licenses directory and manifest
+        licenses_dir = tmppath / "licenses"
+        licenses_dir.mkdir()
+
+        # Create a dummy video file
+        fixtures_dir = tmppath / "fixtures"
+        fixtures_dir.mkdir()
+        video_file = fixtures_dir / "test.mp4"
+        video_content = b"fake mp4 content for testing"
+        video_file.write_bytes(video_content)
+
+        # Calculate SHA256
+        import hashlib
+
+        sha256_hash = hashlib.sha256(video_content).hexdigest()
+
+        # Create manifest with this file
+        manifest = {
+            "version": "1.0",
+            "files": [
+                {
+                    "path": "fixtures/test.mp4",
+                    "sha256": sha256_hash,
+                    "use": "CODE_TEST",
+                    "licence": "Pexels License",
+                }
+            ],
+        }
+        manifest_file = licenses_dir / "manifest.json"
+        manifest_file.write_text(json.dumps(manifest, indent=2))
+
+        # Create src directory
+        src_dir = tmppath / "src"
+        src_dir.mkdir()
+        (src_dir / "__init__.py").write_text("")
+
+        # Create allow-list file
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+
+        # Run checker
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"Manifested fixture should pass. Output: {result.stdout}"
+
+
+def test_planted_unmanifested_mp4_fails():
+    """PLANTED FAILURE: .mp4 file not in manifest should fail."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+
+        # Create licenses directory with empty manifest
+        licenses_dir = tmppath / "licenses"
+        licenses_dir.mkdir()
+        manifest = {"version": "1.0", "files": []}
+        manifest_file = licenses_dir / "manifest.json"
+        manifest_file.write_text(json.dumps(manifest, indent=2))
+
+        # Create src directory
+        src_dir = tmppath / "src"
+        src_dir.mkdir()
+        (src_dir / "__init__.py").write_text("")
+
+        # Create an unmanifested media file
+        media_file = tmppath / "test_video.mp4"
+        media_file.write_bytes(b"fake mp4 content")
+
+        # Create allow-list file
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+
+        # Run checker
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1, "Should fail on unmanifested .mp4 file"
+        assert "mp4" in result.stdout.lower() or "media" in result.stdout.lower()

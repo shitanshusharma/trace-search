@@ -110,6 +110,9 @@ jobs:
           summary += '---\n';
           summary += '*This comment is automatically updated on each push.*\n';
           
+          // Set failed count as output
+          core.setOutput('failed_count', failing.toString());
+          
           return summary;
     
     - name: Find existing comment
@@ -132,10 +135,8 @@ jobs:
     
     - name: Exit with failure if any check failed
       if: always()
-      env:
-        SUMMARY: ${{ steps.aggregate.outputs.result }}
       run: |
-        if echo "$SUMMARY" | grep -q "❌ FAILED"; then
-          echo "One or more required checks failed"
+        if [ "${{ steps.aggregate.outputs.failed_count }}" != "0" ]; then
+          echo "One or more required checks failed (failed_count=${{ steps.aggregate.outputs.failed_count }})"
           exit 1
         fi

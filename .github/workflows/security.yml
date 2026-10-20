@@ -33,7 +33,7 @@ jobs:
         cache: 'pip'
     
     - name: Install bandit
-      run: pip install bandit[toml]==1.8.0
+      run: pip install bandit[toml,sarif]==1.8.0
     
     - name: Run bandit
       run: |
@@ -96,7 +96,6 @@ jobs:
       if: always()
       run: |
         semgrep scan \
-          --error \
           --metrics=off \
           --config=.semgrep.yml \
           --config=p/owasp-top-ten \

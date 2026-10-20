@@ -43,26 +43,27 @@ BANNED_DATASETS = [
     r"duke.?mtmc",  # DukeMTMC, duke-mtmc, etc.
     r"cuhk03",
     r"casia.?b",  # CASIA-B, casia_b, etc.
-    r"grew",
+    r"\bgrew\b",  # GREW dataset (word boundary to avoid matching "grew")
     r"gait3d",
     r"objects365",
     r"model.?zoo.*reid",  # model-zoo ReID weights, model_zoo_reid, etc.
 ]
 
-# Banned identifiers in code (normalized: _ and . become wildcards)
-# These patterns are applied after normalizing underscores and dots
+# Banned identifiers in code (normalized: _ and . become spaces)
+# These patterns are applied after normalizing underscores and dots to spaces
 BANNED_IDENTIFIERS = [
     r"\bwatchlist\b",
-    r"\benroll?(?:ment|ed|_person)?\b",  # enrol, enroll, enrolment, enrolled, enroll_person
-    r"\bface[._]?embeddings?\b",  # face_embedding, face_embeddings, FaceEmbedding
-    r"\bface[._]?crops?\b",  # face_crop, face_crops
-    r"\bgait(?:[._]|[A-Z])|\bgait\b",  # gait_, gait., GaitModel, or bare gait
+    r"\benroll?\s?(?:ment|ed|person)?\b",  # enrol, enroll, enrolment, enrolled, enroll person
+    r"\bface\s?embeddings?\b",  # face embedding, face embeddings, face_embedding
+    r"\bface\s?crops?\b",  # face crop, face crops, face_crop
+    r"\bgait(?:\s|[A-Z])|\bgait\b",  # gait , gait., GaitModel, or bare gait
     r"\bname\s*:\s*str\b",  # Typed field: name: str
-    r"\bnational[._]?id\b",
-    r"\bidentity[._]?id\b",
+    r"\bname\s*=\s*['\"]",  # name = "..." or name = '...'
+    r"\bnational\s?id\b",
+    r"\bidentity\s?id\b",
 ]
 
-# Media file extensions (case-insensitive matching)
+# Media file extensions (case-insensitive matching via Path.suffix.lower())
 MEDIA_EXTENSIONS = [
     # Video
     ".mp4",
@@ -94,6 +95,23 @@ MEDIA_EXTENSIONS = [
     ".ckpt",
     ".bin",
     ".npy",
+    ".engine",
+]
+
+# Excluded paths for rule-definition and planted-fixture files
+# These files contain banned patterns as part of test cases or rule definitions
+# JUSTIFICATION: Each exclusion must have a reviewed reason
+EXCLUDED_PATHS = [
+    "scripts/check_project_rules.py",  # Contains pattern definitions
+    "scripts/check_licenses.py",  # Contains banned component patterns
+    "scripts/demo_planted_cases.py",  # Planted test demonstrations
+    "tests/test_project_rules_planted.py",  # Planted failure tests
+    "tests/test_license_fence.py",  # License fence tests
+    "tests/test_license_scanning.py",  # License scanning tests
+    "tests/test_comprehensive_fence.py",  # Comprehensive fence tests
+    "tests/test_package.py",  # Package tests
+    ".semgrep.yml",  # Semgrep rule definitions
+    "pyproject.toml",  # Package metadata (name = "..." is package/author name)
 ]
 
 # Allow-list file (lines starting with # are comments)
@@ -145,8 +163,12 @@ def check_imports_and_deps() -> list[dict[str, Any]]:
 
     # Check all Python source files (not just src/)
     for py_file in Path(".").rglob("*.py"):
-        # Skip .git directory
+        # Skip .git directory and excluded paths
         if ".git" in py_file.parts:
+            continue
+        if any(
+            str(py_file) == excl or str(py_file).endswith(f"/{excl}") for excl in EXCLUDED_PATHS
+        ):
             continue
 
         content = py_file.read_text()
@@ -254,8 +276,17 @@ def check_identifiers() -> list[dict[str, Any]]:
 
     for pattern in patterns_to_check:
         for file in Path(".").rglob(pattern):
-            # Skip .git directory and venv
+            # Skip .git directory, venv, and excluded paths
             if ".git" in file.parts or "venv" in file.parts or ".venv" in file.parts:
+                continue
+            # Check if file path matches any excluded path
+            file_str = str(file)
+            if any(
+                file_str == excl
+                or file_str.endswith(f"/{excl}")
+                or file_str.endswith(f"\\{excl}")
+                for excl in EXCLUDED_PATHS
+            ):
                 continue
 
             try:
@@ -296,40 +327,55 @@ def check_media_files() -> list[dict[str, Any]]:
     manifest = load_manifest()
 
     # Build a set of allowed media file SHAs from manifest
-    allowed_media_shas = set()
+    allowed_media_shas = {}
     for entry in manifest.get("files", []):
         if entry.get("sha256") and entry.get("use") in [
             "FX-CODE",
             "CODE_TEST",
             "SMOKE_ONLY",
         ]:
-            allowed_media_shas.add(entry["sha256"])
+            allowed_media_shas[entry["sha256"]] = entry.get("path", "")
 
-    for ext in MEDIA_EXTENSIONS:
-        # Search case-insensitively by checking both lower and upper variants
-        for pattern in [f"*{ext}", f"*{ext.upper()}"]:
-            for media_file in Path(".").rglob(pattern):
-                # Skip .git directory
-                if ".git" in media_file.parts:
-                    continue
+    # Check all media files
+    for media_file in Path(".").rglob("*"):
+        # Skip directories and .git
+        if media_file.is_dir() or ".git" in media_file.parts:
+            continue
 
-                file_str = str(media_file)
-                violation_id = f"media:{file_str}"
+        # Check if file extension matches (case-insensitive)
+        if media_file.suffix.lower() not in MEDIA_EXTENSIONS:
+            continue
 
-                # All media files must be in manifest with approved tag
-                # (never allow unmanifested media, even in fixtures/)
-                if violation_id not in allow_list:
-                    violations.append(
-                        {
-                            "type": "media_file",
-                            "file": file_str,
-                            "extension": media_file.suffix,
-                            "message": (
-                                f"Media file must be in manifest with approved tag: "
-                                f"{file_str}"
-                            ),
-                        }
-                    )
+        file_str = str(media_file)
+        violation_id = f"media:{file_str}"
+
+        # Skip if in allow-list
+        if violation_id in allow_list:
+            continue
+
+        # Calculate SHA256 of the file
+        import hashlib
+
+        sha256_hash = hashlib.sha256()
+        try:
+            with open(media_file, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            file_sha = sha256_hash.hexdigest()
+        except (OSError, PermissionError):
+            continue
+
+        # Check if SHA is in manifest with approved tag
+        if file_sha not in allowed_media_shas:
+            violations.append(
+                {
+                    "type": "media_file",
+                    "file": file_str,
+                    "extension": media_file.suffix,
+                    "sha256": file_sha,
+                    "message": f"Media file must be in manifest with approved tag: {file_str}",
+                }
+            )
 
     return violations
 

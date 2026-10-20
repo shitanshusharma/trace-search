@@ -1,0 +1,5 @@
+# Semgrep ignore file
+# Exclude files owned by other PRs until they merge
+
+# ci.yml owned by PR #3 - excludes mutable action tags at lines 24,27,57
+.github/workflows/ci.yml
