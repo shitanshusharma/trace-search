@@ -1,0 +1,2 @@
+# Core dependencies will be added by later tasks (T2-T7)
+# This file is maintained by the license fence process

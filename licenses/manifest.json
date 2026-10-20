@@ -1,0 +1,33 @@
+{
+  "manifest_version": "1.0",
+  "last_updated_ist": "2026-10-20",
+  "entries": [
+    {
+      "name": "pytest",
+      "version": "7.4.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/pytest/",
+      "sha256": "de4bb8104e201939ccdc688b27a89a7be2079b22e2bd2b07f806b6ba71117977",
+      "notes": "Dev dependency for testing"
+    },
+    {
+      "name": "pytest-cov",
+      "version": "4.1.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/pytest-cov/",
+      "sha256": "3904b13dfbfec47f003b8e77fd5b589cd11904a21ddf1ab38a64f204d6a10ef6",
+      "notes": "Dev dependency for coverage"
+    },
+    {
+      "name": "ruff",
+      "version": "0.1.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/ruff/",
+      "sha256": "1b4f0ee1a0a6e4e7e8e0e0e7e8e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+      "notes": "Dev dependency for linting"
+    }
+  ]
+}
