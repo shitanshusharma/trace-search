@@ -16,7 +16,7 @@ import trace_search.ingest.ffmpeg_check as fc
 
 
 @pytest.mark.parametrize(
-    ("name", "expected"),
+    ("distribution", "expected"),
     [
         ("opencv-python", True),
         ("OpenCV_Python_Headless", True),
@@ -26,8 +26,8 @@ import trace_search.ingest.ffmpeg_check as fc
         ("", False),
     ],
 )
-def test_is_opencv_ffmpeg_distribution(name: str, expected: bool) -> None:
-    assert fc.is_opencv_ffmpeg_distribution(name) is expected
+def test_is_opencv_ffmpeg_distribution(distribution: str, expected: bool) -> None:
+    assert fc.is_opencv_ffmpeg_distribution(distribution) is expected
 
 
 def _block_cv2(monkeypatch: pytest.MonkeyPatch) -> None:

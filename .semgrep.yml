@@ -64,8 +64,12 @@ rules:
     languages: [python]
     paths:
       exclude:
-        # Planted licence-fence demo uses a non-identity parameter named name.
-        - scripts/demo_planted_cases.py
+        # These use `name` as a package or distribution argument, not an
+        # identity field. The files belong to the licence fence; do not edit
+        # them to satisfy this rule. `**/` keeps the exclude unanchored.
+        - "**/scripts/demo_planted_cases.py"
+        - "**/scripts/check_licenses.py"
+        - "**/src/trace_search/ingest/ffmpeg_check.py"
 
   - id: trace-search-no-research-datasets
     pattern-either:
@@ -84,9 +88,10 @@ rules:
       exclude:
         # Planted fixtures and the licence-fence pattern table name these datasets
         # so the fence can reject them. They are not training data.
-        - scripts/demo_planted_cases.py
-        - scripts/check_licenses.py
-        - tests/test_license_fence.py
-        - tests/test_license_scanning.py
-        - tests/test_comprehensive_fence.py
-        - tests/test_project_rules_planted.py
+        # `**/` keeps the exclude unanchored under Semgrepignore v2.
+        - "**/scripts/demo_planted_cases.py"
+        - "**/scripts/check_licenses.py"
+        - "**/tests/test_license_fence.py"
+        - "**/tests/test_license_scanning.py"
+        - "**/tests/test_comprehensive_fence.py"
+        - "**/tests/test_project_rules_planted.py"
