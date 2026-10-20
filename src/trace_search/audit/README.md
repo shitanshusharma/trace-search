@@ -1,170 +1,128 @@
-# Audit Log Module
+# Audit log (T8)
 
-## Overview
+Append-only audit log for Cut 01 AC-13. Each entry is linked with HMAC-SHA256. A signed head anchor records the tip of the chain. The log is kept for 1 year and is stored apart from footage-derived data so a 7-day purge does not delete it.
 
-The audit log module provides an **append-only, hash-chained audit log** with tamper detection for trace-search. It records all operator actions with timestamps, operator identity, and action details.
+Python standard library only. No Ultralytics, no AGPL dependencies, no face data, no identity field other than `operator_username`.
 
-## Design
+## Chain
 
-### Hash Chain Integrity
+Every line is one JSON object. The HMAC input is canonical JSON of every field except `entry_hmac`:
 
-Each audit log entry contains:
-- **timestamp**: IST-aware timestamp (Asia/Kolkata timezone, UTC+05:30)
-- **operator_username**: Username of the operator (no other identity fields)
-- **action**: Type of action (login, search, view, export, retention_change, purge, etc.)
-- **query**: Optional query details (for search actions)
-- **case_id**: Optional case identifier
-- **purpose**: Optional purpose/reason for the action
-- **result_ids**: List of result identifiers returned by the action
-- **prev_hash**: SHA-256 hash of the previous entry (empty for first entry)
-- **entry_hash**: SHA-256 hash of this entry (excluding this field itself)
+```text
+json.dumps(payload, sort_keys=True, separators=(",", ":"))
+```
 
-The hash chain ensures:
-1. **Append-only**: New entries link to the previous entry's hash
-2. **Tamper-proof**: Any modification to an entry breaks the hash chain
-3. **Order-preserving**: Entries cannot be reordered without detection
-4. **Deletion-detection**: Removing an entry breaks the chain at the next entry
+`prev_hmac` is the previous line's `entry_hmac`. The first entry uses an empty `prev_hmac`.
 
-### Storage Format
+Fields on every entry:
 
-- **Format**: JSON Lines (one JSON object per line)
-- **Location**: `audit_logs/audit.jsonl` (default)
-- **Encoding**: UTF-8
+| Field | Meaning |
+|---|---|
+| `timestamp` | ISO-8601 in Asia/Kolkata (`+05:30`). A naive clock is rejected. Aware clocks are converted to IST. |
+| `operator_username` | Operator username. Required, non-empty. This is the only identity. |
+| `action` | `AuditAction`: `login`, `search`, `view`, `export`, `retention_change`, `purge`. Unknown actions are rejected. |
+| `query` | Optional query text. |
+| `case_id` | Required and non-empty for `search`, `view`, and `export`. |
+| `purpose` | Required and non-empty for `search`, `view`, and `export`. |
+| `result_ids` | List of result ids. |
+| `prev_hmac` | Previous entry HMAC, or `""` for the genesis entry. |
+| `entry_hmac` | HMAC-SHA256 of this entry. |
 
-### Verification
+`verify()` never raises. A malformed JSON line, a non-object, a missing key, a wrong type, an extra key, or an unknown action returns `valid=False` and sets `broken_index` to that entry.
 
-The `verify()` method checks:
-1. Each entry's hash matches its computed hash
-2. Each entry's `prev_hash` matches the previous entry's `entry_hash`
-3. The first entry has an empty `prev_hash`
-4. No entries are missing from the chain
+## Head anchor
 
-When tampering is detected, the verifier returns:
-- `valid=False`
-- `broken_index`: The index of the first broken entry
-- `error_message`: Description of the integrity violation
+The anchor path is derived from the log path: `<log_path>.head` (for example `audit_logs/audit.jsonl.head`). Two logs do not share an anchor, and the path does not depend on the working directory.
 
-## Retention and Separation
+The anchor is JSON with `last_hmac`, `entry_count`, and `anchor_hmac`. `anchor_hmac` is HMAC-SHA256 over the canonical JSON of `last_hmac` and `entry_count`, using the same key as the chain. It is written under the append lock: temp file in the same directory, `fsync`, then `os.replace`.
 
-### 1-Year Retention
+`verify()` fails when the anchor is missing, unsigned, signed with the wrong key, or does not match the last entry and the count. That includes:
 
-Audit log entries are kept for **1 year** (366 days) to comply with DPDP Rule 6 access log requirements.
+- an empty log with no anchor
+- an empty or fully truncated log whose anchor count is greater than 0
+- a tail delete, including one that also deletes the anchor or rewrites the anchor without the key
+- a tail edit that recomputes the entry HMAC but leaves the old anchor
+- a full rehash after an edit, including a rehash with the wrong key
 
-### Exemption from Derived-Data Purge
+## Key
 
-The audit log is stored in a **separate location** (`audit_logs/`) from derived data (tracks, embeddings, clips) to ensure it survives the configured retention purge.
+There is no default key in the code. `verify()` and `append()` never generate a key. A missing key makes `verify()` return `valid=False` with a clear error. `append()` raises.
 
-**Key separation points:**
+The key is 32 bytes, hex-encoded. It is loaded from exactly one of:
 
-1. **Storage location**: `audit_logs/` directory, separate from derived data stores
-2. **Retention policy**: Audit log has its own 1-year retention, independent of footage-derived data TTL (default 7 days)
-3. **Purge logic**: The retention purge module (T9) must **explicitly exclude** the `audit_logs/` directory
+1. `key_path` passed to `AuditLog` (this wins when both are set)
+2. the environment variable `TRACE_AUDIT_HMAC_KEY`
+
+The key file must sit outside `audit_logs/`. `is_audit_path()` is what that check uses. The only way to create a key is `init_hmac_key(path)`:
+
+```python
+from pathlib import Path
+from trace_search.audit import AuditLog, init_hmac_key
+
+init_hmac_key(Path("/etc/trace-search/audit.key"))
+log = AuditLog(key_path=Path("/etc/trace-search/audit.key"))
+```
+
+Or, with no key file:
+
+```bash
+export TRACE_AUDIT_HMAC_KEY="$(python3 -c 'import os; print(os.urandom(32).hex())')"
+```
+
+## Concurrency
+
+`append()` takes one exclusive `fcntl` lock on `<log_path>.auditlock` and holds it while it reads the last entry, writes the new line, `fsync`s it, and writes the anchor. A malformed last line raises `RuntimeError` instead of starting a new chain.
+
+## Where the log lives
+
+`AUDIT_LOG_DIR` (`"audit_logs"`) and `is_audit_path()` are exported from `trace_search.audit`. The default log path is `Path(AUDIT_LOG_DIR) / "audit.jsonl"`. Nothing else builds that path from a string literal.
+
+`is_audit_path()` is true when a path component is `audit_logs`, including absolute paths such as `/data/audit_logs/system.jsonl` from any working directory. T9 should import this helper and skip those paths during the footage-derived purge. A sibling name such as `audit_logs_backup` does not match.
+
+Constructing `AuditLog` does not create the log, the anchor, or a key.
+
+## What this does not detect
+
+An attacker who holds the HMAC key and deletes both the log and the anchor is not detectable on this host. There is no external witness of the previous tip, and the same key can sign a fresh chain that `verify()` accepts. Publishing the anchor outside the host is out of scope for Cut 01.
+
+The 1-year purge checkpoint is also out of scope. The genesis entry must have an empty `prev_hmac`, so dropping a prefix of the chain fails `verify()`. T9 owns the signed checkpoint that a prefix purge needs.
 
 ## Usage
 
 ```python
-from trace_search.audit import AuditLog
+from trace_search.audit import AuditAction, AuditLog, init_hmac_key
 
-# Initialize (default location: audit_logs/audit.jsonl)
-audit_log = AuditLog()
+init_hmac_key("/etc/trace-search/audit.key")
+audit_log = AuditLog(key_path="/etc/trace-search/audit.key")
 
-# Or specify custom path
-audit_log = AuditLog(Path("/data/audit_logs/system.jsonl"))
-
-# Append entries
 audit_log.append(
     operator_username="operator_alice",
-    action="search",
-    query="person with blue backpack",
+    action=AuditAction.SEARCH,
+    query="blue backpack",
     case_id="CASE-2024-001",
-    purpose="Patient search incident #42",
-    result_ids=["track-001", "track-002", "track-003"],
+    purpose="Incident review",
+    result_ids=["track-001", "track-002"],
 )
 
-# Verify integrity
 result = audit_log.verify()
 if not result.valid:
-    print(f"Tampering detected at index {result.broken_index}")
-    print(f"Error: {result.error_message}")
-
-# Query entries
-alice_actions = audit_log.query_by_operator("operator_alice")
-search_actions = audit_log.query_by_action("search")
-case_entries = audit_log.query_by_case_id("CASE-2024-001")
-
-# Count entries
-total = audit_log.count()
+    print(result.broken_index, result.error_message)
 ```
 
-## AC-13 Compliance
+## Tests and AC-13 proof
 
-This module satisfies AC-13 acceptance criteria:
+`tests/test_audit_log.py` has 45 tests. They use `tmp_path` only. Covered cases include 50 scripted actions (login, search, view, export, retention change, purge) with every field filled, edit/delete/swap with the broken index, tail delete, tail edit plus rehash, full rehash, forged genesis, rehash from entry 0, tail delete plus a deleted anchor, tail delete plus an anchor rewritten without the key, full rehash with the wrong key, full truncation, two logs that do not share an anchor, `verify()` with no key, and 8 processes × 50 appends (400 entries, no forked `prev_hmac`).
 
-✅ **50 scripted actions produce 50/50 entries**: The test `test_fifty_actions_produce_fifty_entries` demonstrates 50 actions creating 50 valid entries with all fields populated.
-
-✅ **Tampering detection**: Tests demonstrate that:
-- Editing one entry fails verification at the tampered index
-- Deleting one entry fails verification at the chain break
-- Swapping entries fails verification at the swap point
-
-✅ **All required fields**: Every entry has:
-- `timestamp` (IST-aware)
-- `operator_username` (who)
-- `action` (what)
-- `case_id` (why/context)
-- `purpose` (reason)
-- `result_ids` (what was returned)
-
-## Privacy Compliance
-
-**No identity fields beyond username**: The audit log records only the operator's username, not any PII or biometric data.
-
-**No face data**: The audit log contains no face embeddings, face crops, or facial recognition data.
-
-## Testing
-
-Run audit log tests:
 ```bash
 pytest tests/test_audit_log.py -v
+python3 scripts/demo_audit_log.py --json
 ```
 
-Key test cases:
-- `test_fifty_actions_produce_fifty_entries`: AC-13 requirement for 50/50 entries
-- `test_edit_entry_breaks_verification`: AC-13 tampering detection (edit)
-- `test_delete_entry_breaks_verification`: AC-13 tampering detection (delete)
-- `test_swap_entries_breaks_verification`: AC-13 tampering detection (reorder)
-- `test_audit_log_separate_location`: Storage separation for retention exemption
+A real `--json` run reports `passed: true`, `fifty_actions.count: 50`, `verification.total_entries: 50`, and tamper indexes edit 5, delete 3, swap 4. CI runs that command and fails if `git status --porcelain` is dirty after pytest.
 
-## Integration with Retention (T9)
+## Files
 
-When implementing the retention purge module (T9):
-
-1. **Exclude audit logs from derived-data purge**:
-   ```python
-   # Purge footage-derived data (tracks, embeddings, clips)
-   purge_older_than(ttl_days=7, exclude_dirs=["audit_logs"])
-   ```
-
-2. **Separate 1-year audit log purge**:
-   ```python
-   # Only purge audit entries older than 1 year (366 days)
-   purge_audit_logs_older_than(days=366)
-   ```
-
-3. **Verification after purge**:
-   ```python
-   # Verify audit log chain is intact after any purge
-   result = audit_log.verify()
-   assert result.valid, "Audit log compromised after purge"
-   ```
-
-## File Manifest
-
-- `src/trace_search/audit/__init__.py`: Module exports
-- `src/trace_search/audit/log.py`: AuditLog, AuditEntry, VerificationResult implementations
-- `tests/test_audit_log.py`: Comprehensive test suite (14 tests, including AC-13)
-- `src/trace_search/audit/README.md`: This file
-
-## License
-
-MIT License. All code uses Python standard library only (no external dependencies).
+- `src/trace_search/audit/__init__.py` exports `AUDIT_LOG_DIR`, `is_audit_path`, `init_hmac_key`, and `AuditLog`
+- `src/trace_search/audit/log.py` is the implementation
+- `tests/test_audit_log.py` (45 tests)
+- `scripts/demo_audit_log.py` prints the AC-13 JSON proof
