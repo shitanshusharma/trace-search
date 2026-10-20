@@ -69,3 +69,9 @@ models/*.onnx
 .env
 .env.local
 secrets/
+
+# Audit logs (runtime data, not committed)
+audit_logs/
+*.jsonl
+.audit_key
+.audit_head
