@@ -72,7 +72,7 @@ class AttributeExtractor:
     - Convert to HSV and bin dominant hue/saturation/value
     - Return 'unknown' when confidence is low
     - Handle low-light via value channel thresholding
-    - Assign bags frame-wide: each bag goes to at most one track
+    - Assign bags frame-wide: each bag goes to at most one track; a track may carry several bags
     """
 
     # HSV color boundaries (H: 0-180, S: 0-255, V: 0-255, same scale as OpenCV)
@@ -312,17 +312,22 @@ class AttributeExtractor:
         threshold: float = CONTAINMENT_THRESHOLD,
     ) -> list[bool]:
         """
-        Frame-level greedy one-to-one bag assignment.
+        Frame-level greedy bag-to-person assignment.
+
+        Each bag goes to the one person whose box contains the largest
+        share of it, and only when that share is above ``threshold``.
+        A person may carry more than one bag.
 
         Collect every (bag, person) pair whose containment (intersection /
         bag area) is above ``threshold``. Sort by containment descending,
         then bag index ascending, then person index ascending. Greedily
-        assign so each bag and each person is used at most once.
+        assign so each bag is used at most once.
 
         Tie-break: if two people contain a bag equally, the earlier person
         in ``person_boxes`` wins (lower index).
 
-        Returns one bool per person box.
+        Returns one bool per person box (True if that person received at
+        least one bag).
         """
         n_people = len(person_boxes)
         assigned = [False] * n_people
@@ -340,12 +345,10 @@ class AttributeExtractor:
         pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
 
         used_bags: set[int] = set()
-        used_people: set[int] = set()
         for _containment, bag_i, person_j in pairs:
-            if bag_i in used_bags or person_j in used_people:
+            if bag_i in used_bags:
                 continue
             used_bags.add(bag_i)
-            used_people.add(person_j)
             assigned[person_j] = True
         return assigned
 

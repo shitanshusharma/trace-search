@@ -293,6 +293,29 @@ class TestBagDetection:
         assert attrs[0].bag_on_track is True
         assert attrs[1].bag_on_track is False
 
+    def test_second_bag_stays_on_person_a(self, extractor):
+        """A second bag mostly inside A does not spill onto neighbour B."""
+        frame = np.zeros((100, 200, 3), dtype=np.uint8)
+        person_a_box = (10, 20, 90, 80)
+        person_b_box = (70, 20, 150, 80)
+        bag1 = (20, 30, 40, 50)  # Fully inside A
+        bag2 = (60, 30, 90, 60)  # Fully inside A, also overlaps B above 0.5
+
+        assert AttributeExtractor._containment_ratio(person_a_box, bag1) == pytest.approx(1.0)
+        assert AttributeExtractor._containment_ratio(person_b_box, bag1) == 0.0
+        assert AttributeExtractor._containment_ratio(person_a_box, bag2) == pytest.approx(1.0)
+        assert AttributeExtractor._containment_ratio(person_b_box, bag2) > 0.5
+        assert AttributeExtractor._containment_ratio(
+            person_a_box, bag2
+        ) > AttributeExtractor._containment_ratio(person_b_box, bag2)
+
+        assigned = AttributeExtractor.assign_bags([person_a_box, person_b_box], [bag1, bag2])
+        assert assigned == [True, False]
+
+        attrs = extractor.extract_frame(frame, [person_a_box, person_b_box], [bag1, bag2])
+        assert attrs[0].bag_on_track is True
+        assert attrs[1].bag_on_track is False
+
     def test_float_box_coordinates(self, extractor):
         """Float detector boxes are clipped and rounded."""
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
