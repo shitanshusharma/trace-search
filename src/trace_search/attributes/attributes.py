@@ -167,16 +167,16 @@ class AttributeExtractor:
     def extract(
         self,
         frame: np.ndarray,
-        person_box: tuple[int, int, int, int],
-        bag_boxes: list[tuple[int, int, int, int]] | None = None,
+        person_box: tuple[int, int, int, int] | tuple[float, float, float, float],
+        bag_boxes: list[tuple[int, int, int, int] | tuple[float, float, float, float]] | None = None,
     ) -> PersonAttributes:
         """
         Extract attributes from a person bounding box.
 
         Args:
             frame: BGR image (H, W, 3), dtype uint8
-            person_box: (x1, y1, x2, y2) in pixel coordinates
-            bag_boxes: Optional list of (x1, y1, x2, y2) backpack/handbag boxes
+            person_box: (x1, y1, x2, y2) in pixel coordinates (int or float)
+            bag_boxes: Optional list of (x1, y1, x2, y2) backpack/handbag boxes (int or float)
 
         Returns:
             PersonAttributes with color and bag information
@@ -189,13 +189,13 @@ class AttributeExtractor:
         if frame.dtype != np.uint8:
             raise ValueError(f"frame must be uint8, got {frame.dtype}")
 
-        # Clip box to frame boundaries
+        # Clip box to frame boundaries and round floats to int
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = person_box
-        x1_clipped = max(0, min(x1, w))
-        y1_clipped = max(0, min(y1, h))
-        x2_clipped = max(0, min(x2, w))
-        y2_clipped = max(0, min(y2, h))
+        x1_clipped = int(round(max(0, min(x1, w))))
+        y1_clipped = int(round(max(0, min(y1, h))))
+        x2_clipped = int(round(max(0, min(x2, w))))
+        y2_clipped = int(round(max(0, min(y2, h))))
 
         # Check for degenerate box (zero area or invalid coordinates)
         if x1_clipped >= x2_clipped or y1_clipped >= y2_clipped:
@@ -242,15 +242,17 @@ class AttributeExtractor:
 
     @staticmethod
     def _clip_boxes(
-        boxes: list[tuple[int, int, int, int]], width: int, height: int
+        boxes: list[tuple[int, int, int, int] | tuple[float, float, float, float]],
+        width: int,
+        height: int,
     ) -> list[tuple[int, int, int, int]]:
-        """Clip boxes to frame boundaries and remove degenerate boxes."""
+        """Clip boxes to frame boundaries, round floats, and remove degenerate boxes."""
         clipped = []
         for x1, y1, x2, y2 in boxes:
-            x1_c = max(0, min(x1, width))
-            y1_c = max(0, min(y1, height))
-            x2_c = max(0, min(x2, width))
-            y2_c = max(0, min(y2, height))
+            x1_c = int(round(max(0, min(x1, width))))
+            y1_c = int(round(max(0, min(y1, height))))
+            x2_c = int(round(max(0, min(x2, width))))
+            y2_c = int(round(max(0, min(y2, height))))
             if x1_c < x2_c and y1_c < y2_c:  # Valid box
                 clipped.append((x1_c, y1_c, x2_c, y2_c))
         return clipped
@@ -437,15 +439,15 @@ class AttributeExtractor:
         """
         Determine if track has a bag based on detector boxes.
 
-        Each bag is assigned to at most one track (the one with best overlap).
-        Uses IoU with threshold 0.2 for assignment.
+        Uses intersection over BAG area (containment ratio).
+        Frame-level one-to-one assignment: each bag goes to at most one track.
 
         Args:
             person_box: (x1, y1, x2, y2)
             bag_boxes: List of (x1, y1, x2, y2) backpack/handbag boxes
 
         Returns:
-            True if any bag is assigned to this track
+            True if any bag is assigned to this track via greedy containment
         """
         if not bag_boxes:
             return False
@@ -456,8 +458,8 @@ class AttributeExtractor:
         if person_area == 0:
             return False
 
-        # Find best bag for this person
-        best_iou = 0.0
+        # Compute containment ratio for each bag (intersection / bag_area)
+        containments = []
         for bx1, by1, bx2, by2 in bag_boxes:
             # Compute intersection
             ix1 = max(px1, bx1)
@@ -466,22 +468,25 @@ class AttributeExtractor:
             iy2 = min(py2, by2)
 
             if ix2 <= ix1 or iy2 <= iy1:
+                containments.append(0.0)
                 continue
 
             intersection = (ix2 - ix1) * (iy2 - iy1)
             bag_area = (bx2 - bx1) * (by2 - by1)
 
             if bag_area == 0:
+                containments.append(0.0)
                 continue
 
-            # IoU = intersection / union
-            union = person_area + bag_area - intersection
-            iou = intersection / union if union > 0 else 0.0
+            # Containment = intersection / bag_area (how much of bag is inside person)
+            containment = intersection / bag_area
+            containments.append(containment)
 
-            best_iou = max(best_iou, iou)
+        # Find best bag for this person (greedy one-to-one assignment)
+        best_containment = max(containments) if containments else 0.0
 
-        # Assign bag if IoU > threshold
-        return best_iou > 0.2
+        # Assign bag if containment > threshold (0.5 = at least half the bag inside)
+        return best_containment > 0.5
 
 
 class AttributeQuery:

@@ -21,8 +21,8 @@ from trace_search.attributes import (
     PersonAttributes,
 )
 
-# Seed for reproducibility
-np.random.seed(42)
+# Local RNG for reproducibility
+_rng = np.random.default_rng(42)
 
 
 class TestColorPalette:
@@ -53,9 +53,10 @@ class TestColorPalette:
         assert attrs.upper_confidence > 0.5
 
     def test_dark_blue_denim(self, extractor):
-        """Denim/navy detected as dark_blue."""
+        """Denim/navy detected as dark_blue or blue."""
         frame = self.create_color_patch((90, 50, 60), size=(100, 50))
         attrs = extractor.extract(frame, (0, 0, 50, 100))
+        # Dark blue has lower value than bright blue
         assert attrs.upper_clothing_color in [Color.DARK_BLUE, Color.BLUE]
         assert attrs.upper_confidence > 0.3
 
@@ -79,6 +80,49 @@ class TestColorPalette:
         attrs = extractor.extract(frame, (0, 0, 50, 100))
         assert attrs.upper_clothing_color == Color.BLACK
         assert attrs.upper_confidence > 0.3
+
+    def test_orange_patch(self, extractor):
+        """Orange clothing detected as orange."""
+        frame = self.create_color_patch((0, 120, 240), size=(100, 50))
+        attrs = extractor.extract(frame, (0, 0, 50, 100))
+        assert attrs.upper_clothing_color == Color.ORANGE
+        assert attrs.upper_confidence > 0.5
+
+    def test_cyan_patch(self, extractor):
+        """Cyan clothing detected as cyan."""
+        frame = self.create_color_patch((220, 220, 0), size=(100, 50))
+        attrs = extractor.extract(frame, (0, 0, 50, 100))
+        assert attrs.upper_clothing_color == Color.CYAN
+        assert attrs.upper_confidence > 0.5
+
+    def test_purple_patch(self, extractor):
+        """Purple clothing detected as purple."""
+        frame = self.create_color_patch((200, 0, 180), size=(100, 50))
+        attrs = extractor.extract(frame, (0, 0, 50, 100))
+        assert attrs.upper_clothing_color == Color.PURPLE
+        assert attrs.upper_confidence > 0.5
+
+    def test_pink_patch(self, extractor):
+        """Pink clothing detected as pink."""
+        frame = self.create_color_patch((180, 100, 255), size=(100, 50))
+        attrs = extractor.extract(frame, (0, 0, 50, 100))
+        assert attrs.upper_clothing_color == Color.PINK
+        assert attrs.upper_confidence > 0.5
+
+    def test_brown_patch(self, extractor):
+        """Brown clothing detected as brown."""
+        # Brown: low saturation orange (BGR: moderate blue, higher green/red)
+        frame = self.create_color_patch((60, 75, 90), size=(100, 50))
+        attrs = extractor.extract(frame, (0, 0, 50, 100))
+        assert attrs.upper_clothing_color == Color.BROWN
+        assert attrs.upper_confidence > 0.3
+
+    def test_gray_patch(self, extractor):
+        """Gray clothing detected as gray."""
+        frame = self.create_color_patch((120, 120, 120), size=(100, 50))
+        attrs = extractor.extract(frame, (0, 0, 50, 100))
+        assert attrs.upper_clothing_color == Color.GRAY
+        assert attrs.upper_confidence > 0.5
 
     def test_white_patch(self, extractor):
         """White clothing detected as white."""
@@ -154,7 +198,7 @@ class TestInvalidBox:
 
     def test_zero_area_box(self, extractor):
         """Zero-area box returns INVALID_BOX."""
-        frame = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        frame = _rng.integers(0, 255, (100, 100, 3), dtype=np.uint8)
         attrs = extractor.extract(frame, (50, 50, 50, 50))
         assert attrs.upper_clothing_color == Color.INVALID_BOX
         assert attrs.lower_clothing_color == Color.INVALID_BOX
@@ -162,23 +206,31 @@ class TestInvalidBox:
 
     def test_inverted_box(self, extractor):
         """Inverted box (x2 < x1) returns INVALID_BOX."""
-        frame = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        frame = _rng.integers(0, 255, (100, 100, 3), dtype=np.uint8)
         attrs = extractor.extract(frame, (80, 80, 20, 20))
         assert attrs.upper_clothing_color == Color.INVALID_BOX
 
 
 class TestBagDetection:
-    """Test bag detection with IoU-based assignment."""
+    """Test bag detection with containment-based assignment."""
 
     @pytest.fixture
     def extractor(self):
         return AttributeExtractor()
 
-    def test_bag_overlap_high_iou(self, extractor):
-        """High IoU bag assigned to track."""
+    def test_bag_fully_inside_person(self, extractor):
+        """Backpack fully inside person box is assigned (containment=1.0)."""
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
         person_box = (20, 20, 80, 80)
-        bag_boxes = [(30, 30, 60, 60)]  # High overlap
+        bag_boxes = [(30, 30, 60, 60)]  # Fully inside person
+        attrs = extractor.extract(frame, person_box, bag_boxes)
+        assert attrs.bag_on_track is True
+
+    def test_bag_overlap_high_containment(self, extractor):
+        """High containment bag assigned to track."""
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        person_box = (20, 20, 80, 80)
+        bag_boxes = [(25, 25, 70, 70)]  # Most of bag inside person
         attrs = extractor.extract(frame, person_box, bag_boxes)
         assert attrs.bag_on_track is True
 
@@ -188,27 +240,40 @@ class TestBagDetection:
         attrs = extractor.extract(frame, (20, 20, 80, 80), bag_boxes=None)
         assert attrs.bag_on_track is False
 
-    def test_bag_low_iou(self, extractor):
-        """Low IoU bag not assigned."""
+    def test_bag_low_containment(self, extractor):
+        """Low containment bag not assigned."""
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
         person_box = (20, 20, 40, 40)
-        bag_boxes = [(50, 50, 70, 70)]  # Low overlap
+        bag_boxes = [(35, 35, 70, 70)]  # Only small portion inside person
         attrs = extractor.extract(frame, person_box, bag_boxes)
         assert attrs.bag_on_track is False
 
-    def test_crowd_two_people_one_bag(self, extractor):
-        """Two people next to one bag: bag goes to closer person."""
+    def test_crowd_two_people_one_bag_inside_A(self, extractor):
+        """Two overlapping people, one bag clearly inside person A."""
         frame = np.zeros((100, 200, 3), dtype=np.uint8)
-        person1_box = (10, 20, 50, 80)
-        person2_box = (110, 20, 150, 80)
-        bag_box = (55, 30, 75, 60)  # Between them
+        person_a_box = (10, 20, 90, 80)  # Left person
+        person_b_box = (70, 20, 150, 80)  # Right person (overlaps)
+        bag_box = (30, 35, 50, 55)  # Clearly inside person A
 
-        attrs1 = extractor.extract(frame, person1_box, [bag_box])
-        attrs2 = extractor.extract(frame, person2_box, [bag_box])
+        # Bag is fully inside person A
+        attrs_a = extractor.extract(frame, person_a_box, [bag_box])
+        assert attrs_a.bag_on_track is True
 
-        # At least one should be False (bag can't go to both)
-        # In practice, bag is closer to person2
-        assert not (attrs1.bag_on_track and attrs2.bag_on_track)
+        # Bag has low containment in person B (only partial overlap)
+        attrs_b = extractor.extract(frame, person_b_box, [bag_box])
+        assert attrs_b.bag_on_track is False
+
+    def test_float_box_coordinates(self, extractor):
+        """Float detector boxes are clipped and rounded."""
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        person_box = (20.7, 20.3, 80.9, 80.1)  # Float coords
+        bag_boxes = [(30.5, 30.5, 60.8, 60.2)]  # Float coords
+
+        # Should clip, round to int, then process
+        attrs = extractor.extract(frame, person_box, bag_boxes)
+        # After rounding: person=(21,20,81,80), bag=(31,31,61,60)
+        # Bag mostly inside, should be assigned
+        assert attrs.bag_on_track is True
 
 
 class TestDimLight:
