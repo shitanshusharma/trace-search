@@ -43,7 +43,24 @@ jobs:
         pytest tests/ -v --tb=short
       env:
         NO_FFMPEG_CHECK: '1'
-    
+
+    - name: Worktree clean after pytest
+      run: |
+        dirty="$(git status --porcelain)"
+        if [ -n "$dirty" ]; then
+          echo "git status --porcelain was not clean after pytest:"
+          printf '%s\n' "$dirty"
+          exit 1
+        fi
+        if [ -d audit_logs ]; then
+          echo "pytest created audit_logs/ in the repo checkout"
+          exit 1
+        fi
+
+    - name: AC-13 audit log demo
+      run: |
+        python scripts/demo_audit_log.py --json
+
     - name: License fence check
       run: |
         python scripts/check_licenses.py \

@@ -70,8 +70,11 @@ models/*.onnx
 .env.local
 secrets/
 
-# Audit logs (runtime data, not committed)
+# Audit logs (runtime data, not committed).
+# The directory, `<log>.head` anchors, `<log>.auditlock` lock files, and
+# `*.audit_key` key files. `*.key` above also ignores key files. Do not
+# ignore *.jsonl for the whole repo.
 audit_logs/
-*.jsonl
-.audit_key
-.audit_head
+*.head
+*.auditlock
+*.audit_key
