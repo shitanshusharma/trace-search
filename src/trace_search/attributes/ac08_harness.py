@@ -5,10 +5,11 @@ Computes precision@10 for attribute queries from labelled records.
 Emits JSON results (not scored in code-only mode).
 """
 
-from dataclasses import dataclass, asdict
-from typing import List, Dict, Any
 import json
-from .attributes import PersonAttributes, AttributeQuery
+from dataclasses import dataclass
+from typing import Any
+
+from .attributes import AttributeQuery, PersonAttributes
 
 
 @dataclass
@@ -24,8 +25,8 @@ class AttributeSearchQuery:
     """An attribute search query with ground truth."""
 
     query_id: str
-    query: Dict[str, Any]
-    relevant_person_ids: List[str]
+    query: dict[str, Any]
+    relevant_person_ids: list[str]
 
 
 class AC08Harness:
@@ -40,13 +41,13 @@ class AC08Harness:
     """
 
     def __init__(self):
-        self.records: List[LabelledRecord] = []
+        self.records: list[LabelledRecord] = []
 
     def add_record(self, record: LabelledRecord):
         """Add a labelled person record to the index."""
         self.records.append(record)
 
-    def search(self, query: Dict[str, Any], k: int = 10) -> List[str]:
+    def search(self, query: dict[str, Any], k: int = 10) -> list[str]:
         """
         Search for persons matching the attribute query.
 
@@ -73,7 +74,7 @@ class AC08Harness:
 
         return [pid for pid, _ in matches[:k]]
 
-    def evaluate(self, queries: List[AttributeSearchQuery]) -> Dict[str, Any]:
+    def evaluate(self, queries: list[AttributeSearchQuery]) -> dict[str, Any]:
         """
         Evaluate precision@10 across multiple queries.
 
@@ -121,7 +122,7 @@ class AC08Harness:
             "threshold_met": mean_p10 >= 0.80,  # AC-08 threshold
         }
 
-    def evaluate_to_json(self, queries: List[AttributeSearchQuery]) -> str:
+    def evaluate_to_json(self, queries: list[AttributeSearchQuery]) -> str:
         """Run evaluation and return JSON string."""
         results = self.evaluate(queries)
         return json.dumps(results, indent=2)

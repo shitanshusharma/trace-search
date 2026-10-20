@@ -7,9 +7,9 @@ from person bounding boxes. No trained weights, no sensitive attributes.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple, List
-import numpy as np
+
 import cv2
+import numpy as np
 
 
 class Color(str, Enum):
@@ -113,8 +113,8 @@ class AttributeExtractor:
     def extract(
         self,
         frame: np.ndarray,
-        person_box: Tuple[int, int, int, int],
-        bag_boxes: Optional[List[Tuple[int, int, int, int]]] = None,
+        person_box: tuple[int, int, int, int],
+        bag_boxes: list[tuple[int, int, int, int]] | None = None,
     ) -> PersonAttributes:
         """
         Extract attributes from a person bounding box.
@@ -162,7 +162,7 @@ class AttributeExtractor:
         self,
         person_crop: np.ndarray,
         region: str,
-    ) -> Tuple[Color, float]:
+    ) -> tuple[Color, float]:
         """
         Extract dominant color from torso or leg region.
 
@@ -223,7 +223,7 @@ class AttributeExtractor:
 
         return color, confidence
 
-    def _classify_color_hsv(self, hsv: np.ndarray) -> Tuple[Color, float]:
+    def _classify_color_hsv(self, hsv: np.ndarray) -> tuple[Color, float]:
         """
         Classify dominant color from HSV image using binning.
 
@@ -296,8 +296,8 @@ class AttributeExtractor:
 
     def _has_bag(
         self,
-        person_box: Tuple[int, int, int, int],
-        bag_boxes: Optional[List[Tuple[int, int, int, int]]],
+        person_box: tuple[int, int, int, int],
+        bag_boxes: list[tuple[int, int, int, int]] | None,
     ) -> bool:
         """
         Determine if person has a bag based on detector boxes.

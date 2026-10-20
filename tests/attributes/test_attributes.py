@@ -10,14 +10,14 @@ Covers:
 - Schema validation (no sensitive attributes)
 """
 
-import pytest
 import numpy as np
-import cv2
+import pytest
+
 from trace_search.attributes import (
     AttributeExtractor,
-    PersonAttributes,
-    Color,
     AttributeQuery,
+    Color,
+    PersonAttributes,
 )
 
 

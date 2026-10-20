@@ -4,16 +4,16 @@ Person attribute extraction module (T4).
 Deterministic color classification and bag detection.
 """
 
-from .attributes import (
-    AttributeExtractor,
-    PersonAttributes,
-    Color,
-    AttributeQuery,
-)
 from .ac08_harness import (
     AC08Harness,
-    LabelledRecord,
     AttributeSearchQuery,
+    LabelledRecord,
+)
+from .attributes import (
+    AttributeExtractor,
+    AttributeQuery,
+    Color,
+    PersonAttributes,
 )
 
 __all__ = [
