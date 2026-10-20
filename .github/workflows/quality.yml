@@ -30,7 +30,7 @@ jobs:
         cache: 'pip'
     
     - name: Install locked dependencies
-      run: pip install --require-hashes --no-deps -r requirements-dev.lock
+      run: pip install --require-hashes -r requirements-dev.lock
     
     - name: Run ruff lint
       run: ruff check src/ tests/ scripts/ --output-format=github
@@ -55,7 +55,8 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install --require-hashes --no-deps -r requirements-dev.lock
+        # CI-tools lock only. The licence fence job does not install this file.
+        pip install --require-hashes --no-deps -r requirements-ci.lock
         pip install -e .
     
     - name: Run mypy
@@ -81,7 +82,8 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install --require-hashes --no-deps -r requirements-dev.lock
+        # App lock only. CI tools are installed later, after pytest, for diff-cover.
+        pip install --require-hashes -r requirements-dev.lock
         pip install -e .
     
     - name: Run pytest with coverage
@@ -105,6 +107,7 @@ jobs:
       env:
         BASE_REF: ${{ github.base_ref }}
       run: |
+        pip install --require-hashes --no-deps -r requirements-ci.lock
         diff-cover coverage.xml \
           --compare-branch="origin/$BASE_REF" \
           --fail-under=80
@@ -137,7 +140,8 @@ jobs:
     
     - name: Install tools
       run: |
-        pip install --require-hashes --no-deps -r requirements-dev.lock
+        pip install --require-hashes -r requirements-dev.lock
+        pip install --require-hashes --no-deps -r requirements-ci.lock
     
     - name: Check cyclomatic complexity (ruff mccabe)
       run: ruff check src/ --select C90 --config 'lint.mccabe.max-complexity=10'

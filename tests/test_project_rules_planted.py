@@ -7,7 +7,7 @@ These tests verify that the project rules checker catches various violations:
 - Banned identifiers and function calls (watchlist, add_to_watchlist, face_embeddings, etc.)
 - Typed name fields and assignments
 - Research dataset references (market1501, msmt17, duke, cuhk03, casia-b, grew, gait3d, objects365)
-- Media files outside allowed paths
+- Media files that miss entries[].path or sha256, including allow-list bypasses
 """
 
 import importlib.util
@@ -1096,3 +1096,64 @@ def test_media_allow_list_still_checks_manifest_sha_and_path():
             text=True,
         )
         assert matched.returncode == 0, matched.stdout
+
+
+def test_media_file_allow_entry_still_checks_manifest():
+    """media_file:<path> does not bypass entries[].path or sha256."""
+    import hashlib
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        payload = b"listed"
+        digest = hashlib.sha256(payload).hexdigest()
+        (tmppath / "fixtures").mkdir()
+        (tmppath / "licenses").mkdir()
+        (tmppath / ".project-rules-allow").write_text("media_file:fixtures/test.mp4\n")
+
+        (tmppath / "fixtures" / "test.mp4").write_bytes(payload)
+        (tmppath / "licenses" / "manifest.json").write_text(json.dumps({"entries": []}))
+        unlisted = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert unlisted.returncode == 1
+        assert "fixtures/test.mp4" in unlisted.stdout
+
+        (tmppath / "fixtures" / "test.mp4").unlink()
+        (tmppath / "licenses" / "manifest.json").write_text(
+            _clip_manifest("fixtures/test.mp4", digest)
+        )
+        missing = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert missing.returncode == 1
+        assert "missing" in missing.stdout.lower()
+
+        (tmppath / "fixtures" / "test.mp4").write_bytes(payload)
+        (tmppath / "licenses" / "manifest.json").write_text(
+            _clip_manifest("fixtures/test.mp4", "b" * 64)
+        )
+        mismatch = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert mismatch.returncode == 1
+        assert "sha256" in mismatch.stdout
+
+        (tmppath / "licenses" / "manifest.json").write_text(
+            _clip_manifest("fixtures/test.mp4", digest)
+        )
+        matched = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert matched.returncode == 0, matched.stdout + matched.stderr

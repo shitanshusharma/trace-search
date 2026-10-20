@@ -28,9 +28,6 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install locked dependencies
-      run: pip install --require-hashes --no-deps -r requirements-dev.lock
-
     - name: Validate action pins are peeled commits on the named upstream tag
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -50,9 +47,6 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install locked dependencies
-      run: pip install --require-hashes --no-deps -r requirements-dev.lock
-    
     - name: Run project rules check
       run: python scripts/check_project_rules.py
     

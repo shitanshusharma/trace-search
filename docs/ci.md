@@ -6,6 +6,11 @@ This document lists all CI checks, what they block on, how to run them locally, 
 
 The CI pipeline enforces quality gates and security checks on every PR and push to `main`. All checks must pass before merging.
 
+Two hashed locks stay apart:
+
+- `requirements-dev.lock` is the app environment. The licence fence job installs only this file. Its package versions match `licenses/manifest.json`, including `jsonschema==4.26.0`.
+- `requirements-ci.lock` is CI-only (semgrep, mypy, bandit, pip-audit, radon, diff-cover, and their dependencies). Install it with `--require-hashes --no-deps` in its own virtualenv or job. Do not install it into the fence environment, and do not uninstall packages before the fence runs. Manifest rows for these tools are not added yet. The package list and licences are in `requirements-ci-licenses.txt`. Notable rows: `semgrep` is LGPL-2.1-or-later, `certifi` is MPL-2.0, and `face` 26.0.1 and `peewee` 3.19.0 have no licence metadata on PyPI (`UNKNOWN`). Whether those rows belong in the manifest is still open.
+
 ## Quality Checks
 
 ### 1. Lint (`quality / lint`)
@@ -44,9 +49,10 @@ ruff format src/ tests/ scripts/
 
 **Run locally:**
 ```bash
-pip install --require-hashes --no-deps -r requirements-dev.lock
+python3 -m venv .venv-ci
+.venv-ci/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
 pip install -e .
-mypy src/ --strict --pretty --show-error-codes
+.venv-ci/bin/mypy src/ --strict --pretty --show-error-codes
 ```
 
 **Config:** `mypy.ini`
@@ -177,9 +183,10 @@ bandit -r src/ scripts/ \
 
 **Run locally:**
 ```bash
-pip install --require-hashes --no-deps -r requirements-dev.lock
+python3 -m venv .venv-ci
+.venv-ci/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
 
-semgrep scan \
+.venv-ci/bin/semgrep scan \
   --error \
   --metrics=off \
   --config=.semgrep.yml \
@@ -189,7 +196,7 @@ semgrep scan \
   --exclude tests/semgrep \
   --severity=ERROR
 
-semgrep --test --metrics=off --config .semgrep.yml tests/semgrep/rules.py
+.venv-ci/bin/semgrep --test --metrics=off --config .semgrep.yml tests/semgrep/rules.py
 ```
 
 **Config:** `.semgrep.yml` (custom rules)
@@ -250,7 +257,10 @@ gitleaks detect --verbose
 
 ### 11. pip-audit (`security / pip-audit`)
 
-**What it checks:** Known vulnerabilities in the shared lock (`requirements-dev.lock`), which every job installs. That lock pins `protobuf==5.29.6`, `mcp==1.30.0`, and `setuptools==84.2.1`. Install it with `--no-deps` because semgrep 1.182.0 declares `mcp==1.29.0` and pip will not resolve the fixed pin. The licence job then runs `scripts/prune_unmanifested.py` so the fence only scans the manifest closure.
+**What it checks:** Known vulnerabilities in two places that are never mixed into the licence-fence environment.
+
+- `requirements-ci.lock`, installed with `--no-deps` in this job. That lock pins `protobuf==5.29.6`, `mcp==1.30.0`, and `setuptools==84.2.1`. `--no-deps` is required because semgrep 1.182.0 declares `mcp==1.29.0` and pip will not resolve the fixed pin. `pip-audit -r requirements-ci.lock` hits that same resolver conflict, so this job audits the installed CI-tools environment instead.
+- `requirements-dev.lock`, the app lock, via `pip-audit -r requirements-dev.lock`. Its versions match the licence manifest, including `jsonschema==4.26.0`.
 
 **Fails on:**
 - High or critical CVEs in installed packages
@@ -258,10 +268,10 @@ gitleaks detect --verbose
 
 **Run locally:**
 ```bash
-pip install --require-hashes --no-deps -r requirements-dev.lock
-pip install -e .
-
-pip-audit --strict --vulnerability-service=osv
+python3 -m venv .venv-ci
+.venv-ci/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
+.venv-ci/bin/pip-audit --strict --vulnerability-service=osv
+.venv-ci/bin/pip-audit -r requirements-dev.lock --strict --vulnerability-service=osv
 ```
 
 ---
@@ -463,26 +473,41 @@ Mark these job names as required:
 7. `security / codeql (python)`
 8. `security / gitleaks`
 9. `security / pip-audit`
-10. `security / dependency-review` (PRs only)
+10. `security / dependency-review`
 11. `rules / project-rules`
 12. `rules / validate-action-shas`
-13. `Lint, Test, and License Check` (existing combined job from ci.yml)
+13. `Lint, Test, and License Check`
 
 **Note:** `quality / ui (eslint+tsc+prettier)`, `security / codeql (javascript)`, and `security / npm-audit` are skipped when no UI package exists. Do not mark them as required until the UI is added.
 
 ### Other Protection Rules
 
-- ✅ Require a pull request before merging
-- ✅ Require approvals: **1**
-- ✅ Dismiss stale pull request approvals when new commits are pushed
-- ✅ Require review from Code Owners
-- ✅ Require conversation resolution before merging
-- ✅ Require status checks to pass before merging
-- ✅ Require branches to be up to date before merging
-- ✅ Do not allow bypassing the above settings (include administrators)
-- ✅ Restrict who can push to matching branches (no direct pushes)
-- ✅ Block force pushes
-- ✅ Do not allow deletions
+Agreed setup for `main` (Option A). There is no CODEOWNERS file. Code-owner review stays off, because a sole author cannot approve their own pull request and the existing ruleset would otherwise block later PRs.
+
+- Require a pull request before merging
+- Required approvals: **0**
+- Code-owner review: **off**
+- Require status checks to pass before merging
+- Require branches to be up to date before merging
+- Require linear history
+- Block force pushes
+- Block deletions
+
+Required status checks, exact job names:
+
+1. `quality / lint`
+2. `quality / types`
+3. `quality / tests+coverage`
+4. `quality / complexity`
+5. `security / bandit`
+6. `security / semgrep`
+7. `security / codeql (python)`
+8. `security / gitleaks`
+9. `security / pip-audit`
+10. `security / dependency-review`
+11. `rules / project-rules`
+12. `rules / validate-action-shas`
+13. `Lint, Test, and License Check`
 
 ---
 

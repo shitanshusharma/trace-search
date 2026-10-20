@@ -1,5 +1,8 @@
-# CI/Security tools - managed separately from dev dependencies
-# Used by quality and security workflows
+# CI-only tools. The hashed lock is requirements-ci.lock.
+# Install it with: pip install --require-hashes --no-deps -r requirements-ci.lock
+# Never install it into the environment that runs scripts/check_licenses.py.
+# mcp==1.30.0 is pinned in the lock, not here: semgrep 1.182.0 declares
+# mcp==1.29.0 and pip will not resolve the fixed pin in the same request.
 
 # Code quality
 mypy==1.13.0

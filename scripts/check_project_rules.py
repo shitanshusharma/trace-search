@@ -7,7 +7,9 @@ Enforces PRD hard-stops:
 2. No research-only datasets or weights (Market-1501, MSMT17, DukeMTMC, Objects365, etc.).
 3. No media files committed unless a clip or synthetic_clip manifest entry lists
    that exact repo-relative path and sha256 with an approved use tag.
-4. Reviewed allow-list entries in .project-rules-allow for false positives.
+   The allow-list cannot waive this check.
+4. Reviewed allow-list entries in .project-rules-allow for false positives
+   other than media.
 
 Exit 0 if all checks pass, exit 1 if violations found.
 """
@@ -153,7 +155,14 @@ EXEMPT_PREFIXES = ("tests/semgrep/",)
 
 ALLOW_LIST_FILE = ".project-rules-allow"
 MANIFEST_FILE = "licenses/manifest.json"
-REQ_FILES = ("requirements.txt", "requirements-dev.txt", "requirements-ci.txt", "pyproject.toml")
+REQ_FILES = (
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements-dev.lock",
+    "requirements-ci.txt",
+    "requirements-ci.lock",
+    "pyproject.toml",
+)
 
 
 def repo_rel(path: Path) -> str:
@@ -218,9 +227,9 @@ def add_violation(
         violation_id = f"{kind}:{file}"
     else:
         violation_id = f"{file}:{line}:{match}"
-    # media:<file> does not waive the manifest path and sha256 check,
-    # and it does not silence any other violation in that file.
-    if violation_id in allow_list:
+    # Every media file goes through entries[].path and sha256.
+    # media:<file> and media_file:<file> do not waive that, or any other check.
+    if kind != "media_file" and violation_id in allow_list:
         return
     item: dict[str, Any] = {"type": kind, "file": file, "message": message}
     if line is not None:
@@ -507,8 +516,9 @@ def hash_file(path: Path) -> str:
 
 
 def check_media_files(allow_list: set[str] | None = None) -> list[dict[str, Any]]:
-    if allow_list is None:
-        allow_list = load_allow_list()
+    """Hash media against entries[].path. The allow-list is not consulted."""
+    del allow_list
+    allow_list = set()
     violations: list[dict[str, Any]] = []
     allowed = manifest_media_by_path(load_manifest())
     checked: set[str] = set()
@@ -599,7 +609,7 @@ def main() -> int:
     print()
     print("To allow a false positive, add the violation ID to .project-rules-allow:")
     print("  Format: <file>:<line>:<match>")
-    print("  A media:<file> line does not replace the manifest path and sha256 check.")
+    print("  media:<file> and media_file:<file> do not waive the manifest path and sha256 check.")
     print("  Each allow-list entry must be reviewed and have a justification comment.")
     return 1
 

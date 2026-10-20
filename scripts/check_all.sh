@@ -20,7 +20,7 @@ echo "✅ Lint passed"
 echo ""
 
 echo "→ Type checking (mypy)..."
-mypy src/ --strict --pretty --show-error-codes
+.venv-ci/bin/mypy src/ --strict --pretty --show-error-codes
 echo "✅ Type checking passed"
 echo ""
 
@@ -36,8 +36,8 @@ echo ""
 
 echo "→ Complexity..."
 ruff check src/ --select C90 --config 'lint.mccabe.max-complexity=10'
-radon mi src/ -s -n B
-radon cc src/ -s -n C
+.venv-ci/bin/radon mi src/ -s -n B
+.venv-ci/bin/radon cc src/ -s -n C
 echo "✅ Complexity checks passed"
 echo ""
 
@@ -48,12 +48,12 @@ echo "════════════════════════�
 echo ""
 
 echo "→ Bandit..."
-bandit -r src/ scripts/ --severity-level high -f txt
+.venv-ci/bin/bandit -r src/ scripts/ --severity-level high -f txt
 echo "✅ Bandit passed"
 echo ""
 
 echo "→ Semgrep..."
-semgrep scan \
+.venv-ci/bin/semgrep scan \
   --config=auto \
   --config=p/owasp-top-ten \
   --config=p/security-audit \
@@ -63,7 +63,8 @@ echo "✅ Semgrep passed"
 echo ""
 
 echo "→ pip-audit..."
-pip-audit --strict --vulnerability-service=osv
+.venv-ci/bin/pip-audit --strict --vulnerability-service=osv
+.venv-ci/bin/pip-audit -r requirements-dev.lock --strict --vulnerability-service=osv
 echo "✅ pip-audit passed"
 echo ""
 
@@ -87,8 +88,8 @@ python scripts/check_project_rules.py
 echo "✅ Project rules passed"
 echo ""
 
-echo "→ License fence..."
-python scripts/check_licenses.py --requirements=requirements-dev.txt --report=license-report.json
+echo "→ License fence (app environment; CI tools stay in .venv-ci)..."
+python scripts/check_licenses.py --requirements=requirements.txt --requirements=requirements-dev.txt --report=license-report.json
 echo "✅ License fence passed"
 echo ""
 

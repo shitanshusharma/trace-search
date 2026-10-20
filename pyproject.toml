@@ -37,10 +37,12 @@ exclude = [
     "scripts/check_licenses.py",
     "scripts/demo_planted_cases.py",
     "src/trace_search/ingest/ffmpeg_check.py",
+    "tests/__init__.py",
     "tests/test_comprehensive_fence.py",
     "tests/test_full_closure_fence.py",
     "tests/test_license_fence.py",
     "tests/test_license_scanning.py",
+    "tests/test_package.py",
     "tests/test_planted_fence.py",
 ]
 

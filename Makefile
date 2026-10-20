@@ -4,7 +4,8 @@ help:
 	@echo "trace-search - Makefile targets"
 	@echo ""
 	@echo "Development:"
-	@echo "  make install          Install dependencies"
+	@echo "  make install          Install the app lock (licence-fence environment)"
+	@echo "  make install-ci-tools Install CI tools into .venv-ci"
 	@echo "  make lint             Run linter (ruff)"
 	@echo "  make format           Auto-format code (ruff)"
 	@echo "  make types            Run type checker (mypy)"
@@ -17,9 +18,12 @@ help:
 	@echo ""
 
 install:
+	pip install --require-hashes -r requirements-dev.lock
 	pip install -e .
-	pip install -r requirements-dev.txt
-	pip install -r requirements-ci.txt
+
+install-ci-tools:
+	python3 -m venv .venv-ci
+	.venv-ci/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
 
 lint:
 	ruff check src/ tests/ scripts/ --output-format=github
@@ -30,7 +34,7 @@ format:
 	ruff format src/ tests/ scripts/
 
 types:
-	mypy src/ --strict --pretty --show-error-codes
+	.venv-ci/bin/mypy src/ --strict --pretty --show-error-codes
 
 test:
 	pytest tests/ -v
@@ -49,17 +53,17 @@ complexity:
 	@echo "→ Cyclomatic complexity (McCabe C90)..."
 	ruff check src/ --select C90 --config 'lint.mccabe.max-complexity=10'
 	@echo "→ Maintainability index..."
-	radon mi src/ -s -n B
+	.venv-ci/bin/radon mi src/ -s -n B
 	@echo "→ Code complexity..."
-	radon cc src/ -s -n C
+	.venv-ci/bin/radon cc src/ -s -n C
 
 security:
 	@echo "→ Bandit..."
-	bandit -r src/ scripts/ --severity-level high -f txt
+	.venv-ci/bin/bandit -r src/ scripts/ --severity-level high -f txt
 	@echo "→ Semgrep..."
-	semgrep scan --config=auto --config=p/owasp-top-ten --config=p/python --severity=ERROR || true
+	.venv-ci/bin/semgrep scan --config=auto --config=p/owasp-top-ten --config=p/python --severity=ERROR || true
 	@echo "→ pip-audit..."
-	pip-audit --strict --vulnerability-service=osv || true
+	.venv-ci/bin/pip-audit --strict --vulnerability-service=osv || true
 	@echo "→ Gitleaks..."
 	@command -v gitleaks > /dev/null && gitleaks detect --verbose || echo "gitleaks not installed, skipping"
 	@echo "→ Project rules..."
