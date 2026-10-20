@@ -127,10 +127,10 @@ def demo_fifty_actions():
         # Verify chain
         result = audit_log.verify()
         if result.valid:
-            print(f"✓ Hash chain verification: PASSED")
+            print("✓ Hash chain verification: PASSED")
             print(f"  All {result.total_entries} entries verified successfully")
         else:
-            print(f"✗ Hash chain verification: FAILED")
+            print("✗ Hash chain verification: FAILED")
             print(f"  Broken at index {result.broken_index}: {result.error_message}")
 
         print()
@@ -161,7 +161,7 @@ def demo_tampering_detection():
         print(f"  Before tampering: {result.valid} ({result.total_entries} entries)")
 
         # Tamper: edit entry 5
-        with open(log_path, "r", encoding="utf-8") as f:
+        with open(log_path, encoding="utf-8") as f:
             lines = f.readlines()
 
         entry_dict = json.loads(lines[5])
@@ -194,7 +194,7 @@ def demo_tampering_detection():
         print(f"  Before tampering: {result.valid} ({result.total_entries} entries)")
 
         # Tamper: delete entry 3
-        with open(log_path, "r", encoding="utf-8") as f:
+        with open(log_path, encoding="utf-8") as f:
             lines = f.readlines()
 
         del lines[3]
@@ -224,7 +224,7 @@ def demo_tampering_detection():
         print(f"  Before tampering: {result.valid} ({result.total_entries} entries)")
 
         # Tamper: swap entries 4 and 5
-        with open(log_path, "r", encoding="utf-8") as f:
+        with open(log_path, encoding="utf-8") as f:
             lines = f.readlines()
 
         lines[4], lines[5] = lines[5], lines[4]
