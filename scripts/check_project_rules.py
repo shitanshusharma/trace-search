@@ -5,8 +5,8 @@ Enforces PRD hard-stops:
 1. No face-recognition, face embedding/crop, gait, watchlist, enrolment or named-identity
    code or dependencies.
 2. No research-only datasets or weights (Market-1501, MSMT17, DukeMTMC, Objects365, etc.).
-3. No media files committed unless the manifest lists that exact path and sha256
-   with an approved use tag.
+3. No media files committed unless a clip or synthetic_clip manifest entry lists
+   that exact repo-relative path and sha256 with an approved use tag.
 4. Reviewed allow-list entries in .project-rules-allow for false positives.
 
 Exit 0 if all checks pass, exit 1 if violations found.
@@ -113,7 +113,10 @@ MEDIA_EXTENSIONS = {
     ".engine",
 }
 
-APPROVED_MEDIA_USES = {"FX-CODE", "CODE_TEST", "SMOKE_ONLY"}
+# Merged manifest schema: clip and synthetic_clip rows use SMOKE_ONLY.
+# CODE_TEST is the other schema use. FX-CODE is a fixture_id, not a use.
+APPROVED_MEDIA_USES = {"SMOKE_ONLY", "CODE_TEST"}
+MEDIA_ENTRY_TYPES = {"clip", "synthetic_clip"}
 SKIP_DIR_PARTS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}
 
 # Exact repo-relative paths. A path is exempt only when it equals one of these,
@@ -125,9 +128,13 @@ IDENTIFIER_EXEMPT = {
     "tests/test_project_rules_planted.py",
     # Rule text. A watchlist key in any other file still fails.
     ".semgrep.yml",
+    # This file's docstring and pattern strings name the banned identifiers.
+    "scripts/check_project_rules.py",
 }
 IMPORT_EXEMPT = {
     "tests/test_project_rules_planted.py",
+    # Semgrep --test corpus. Any other file under tests/semgrep/ is scanned.
+    "tests/semgrep/rules.py",
 }
 # Rule tables and planted fixtures name banned datasets so they can reject them.
 DATASET_EXEMPT = {
@@ -140,7 +147,8 @@ DATASET_EXEMPT = {
     "tests/test_comprehensive_fence.py",
     ".semgrep.yml",
 }
-# Semgrep --test corpus. Exempt by directory prefix, not by filename suffix.
+# Semgrep --test corpus. Identifier and dataset text only.
+# Imports are not covered by this prefix.
 EXEMPT_PREFIXES = ("tests/semgrep/",)
 
 ALLOW_LIST_FILE = ".project-rules-allow"
@@ -184,12 +192,12 @@ def load_allow_list() -> set[str]:
 def load_manifest() -> dict[str, Any]:
     manifest_path = Path(MANIFEST_FILE)
     if not manifest_path.exists():
-        return {"files": []}
+        return {"entries": []}
     try:
         loaded = json.loads(manifest_path.read_text())
     except json.JSONDecodeError:
-        return {"files": []}
-    return loaded if isinstance(loaded, dict) else {"files": []}
+        return {"entries": []}
+    return loaded if isinstance(loaded, dict) else {"entries": []}
 
 
 def line_of(text: str, offset: int) -> int:
@@ -210,7 +218,9 @@ def add_violation(
         violation_id = f"{kind}:{file}"
     else:
         violation_id = f"{file}:{line}:{match}"
-    if violation_id in allow_list or f"media:{file}" in allow_list:
+    # media:<file> does not waive the manifest path and sha256 check,
+    # and it does not silence any other violation in that file.
+    if violation_id in allow_list:
         return
     item: dict[str, Any] = {"type": kind, "file": file, "message": message}
     if line is not None:
@@ -254,18 +264,62 @@ def check_name_targets(node: ast.AST) -> bool:
     return False
 
 
+def iter_banned_idents(tree: ast.AST):
+    """Yield (line, match) for banned names in defs, params, keywords, and strings.
+
+    camera_name, file_name and self.name do not match: the name rule is the bare
+    identifier, and the banned-word regex does not treat '_' as part of a word.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if ident_is_banned(node.name):
+                yield node.lineno, node.name
+        elif isinstance(node, ast.arg) and ident_is_banned(node.arg):
+            yield node.lineno, node.arg
+        elif isinstance(node, ast.keyword) and node.arg and ident_is_banned(node.arg):
+            yield node.lineno, node.arg
+        elif isinstance(node, ast.alias) and node.asname and ident_is_banned(node.asname):
+            yield node.lineno, node.asname
+        elif isinstance(node, ast.Name) and ident_is_banned(node.id):
+            yield node.lineno, node.id
+        elif isinstance(node, ast.Attribute) and ident_is_banned(node.attr):
+            yield node.lineno, node.attr
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for match in BANNED_IDENT_RE.finditer(node.value):
+                yield node.lineno, match.group()
+        if check_name_targets(node):
+            yield getattr(node, "lineno", 1), "name"
+
+
 def check_python_file(
     path: Path,
     violations: list[dict[str, Any]],
     allow_list: set[str],
 ) -> None:
     rel = repo_rel(path)
-    if is_prefix_exempt(rel):
-        return
     try:
         source = path.read_text()
+    except (OSError, UnicodeDecodeError) as exc:
+        add_violation(
+            violations,
+            allow_list,
+            kind="unreadable",
+            file=rel,
+            message=f"Unreadable Python file: {rel} ({exc})",
+        )
+        return
+    try:
         tree = ast.parse(source)
-    except (OSError, UnicodeDecodeError, SyntaxError):
+    except SyntaxError as exc:
+        add_violation(
+            violations,
+            allow_list,
+            kind="syntax_error",
+            file=rel,
+            line=exc.lineno or 1,
+            match="syntax",
+            message=f"Python file failed to parse: {exc.msg}",
+        )
         return
 
     if rel not in IMPORT_EXEMPT:
@@ -287,38 +341,22 @@ def check_python_file(
                         message=f"Banned import: {module}",
                     )
 
-    if rel not in IDENTIFIER_EXEMPT:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and ident_is_banned(node.id):
-                add_violation(
-                    violations,
-                    allow_list,
-                    kind="banned_identifier",
-                    file=rel,
-                    line=node.lineno,
-                    match=node.id,
-                    message=f"Banned identifier: {node.id}",
-                )
-            elif isinstance(node, ast.Attribute) and ident_is_banned(node.attr):
-                add_violation(
-                    violations,
-                    allow_list,
-                    kind="banned_identifier",
-                    file=rel,
-                    line=node.lineno,
-                    match=node.attr,
-                    message=f"Banned identifier: {node.attr}",
-                )
-            elif check_name_targets(node):
-                add_violation(
-                    violations,
-                    allow_list,
-                    kind="banned_identifier",
-                    file=rel,
-                    line=getattr(node, "lineno", 1),
-                    match="name",
-                    message="Bare identity field name is banned",
-                )
+    if rel in IDENTIFIER_EXEMPT or is_prefix_exempt(rel):
+        return
+    for lineno, match in iter_banned_idents(tree):
+        if match == "name":
+            message = "Bare identity field name is banned"
+        else:
+            message = f"Banned identifier: {match}"
+        add_violation(
+            violations,
+            allow_list,
+            kind="banned_identifier",
+            file=rel,
+            line=lineno,
+            match=match,
+            message=message,
+        )
 
 
 def check_dependency_text(
@@ -425,14 +463,26 @@ def check_imports_and_deps(allow_list: set[str]) -> list[dict[str, Any]]:
     return violations
 
 
+def is_repo_relative_posix(value: str) -> bool:
+    """True when path is repo-relative POSIX: no leading '/' and no '..' segment."""
+    if not value or value.startswith("/") or "\\" in value:
+        return False
+    return all(part != ".." for part in value.split("/"))
+
+
 def manifest_media_by_path(manifest: dict[str, Any]) -> dict[str, str]:
-    """Map manifest path -> sha256. The hash is only valid for that path."""
+    """Map entries[].path -> sha256 for clip and synthetic_clip rows.
+
+    The hash is only valid for that path. A files[] list is ignored.
+    """
     allowed: dict[str, str] = {}
-    entries = manifest.get("files")
+    entries = manifest.get("entries")
     if not isinstance(entries, list):
         return allowed
     for entry in entries:
         if not isinstance(entry, dict):
+            continue
+        if entry.get("type") not in MEDIA_ENTRY_TYPES:
             continue
         if entry.get("use") not in APPROVED_MEDIA_USES:
             continue
@@ -440,7 +490,11 @@ def manifest_media_by_path(manifest: dict[str, Any]) -> dict[str, str]:
         media_path = entry.get("path")
         if not isinstance(sha, str) or not isinstance(media_path, str):
             continue
-        allowed[Path(media_path).as_posix()] = sha.lower()
+        if not re.fullmatch(r"[a-fA-F0-9]{64}", sha):
+            continue
+        if not is_repo_relative_posix(media_path):
+            continue
+        allowed[media_path] = sha.lower()
     return allowed
 
 
@@ -457,14 +511,19 @@ def check_media_files(allow_list: set[str] | None = None) -> list[dict[str, Any]
         allow_list = load_allow_list()
     violations: list[dict[str, Any]] = []
     allowed = manifest_media_by_path(load_manifest())
+    checked: set[str] = set()
 
-    for path in Path(".").rglob("*"):
-        if not path.is_file() or skip_path(path):
-            continue
-        if path.suffix.lower() not in MEDIA_EXTENSIONS:
-            continue
-        rel = repo_rel(path)
-        if f"media:{rel}" in allow_list:
+    for rel, expected in sorted(allowed.items()):
+        path = Path(rel)
+        checked.add(rel)
+        if not path.is_file():
+            add_violation(
+                violations,
+                allow_list,
+                kind="media_file",
+                file=rel,
+                message=f"Manifest lists {rel} but the file is missing",
+            )
             continue
         try:
             digest = hash_file(path)
@@ -477,18 +536,44 @@ def check_media_files(allow_list: set[str] | None = None) -> list[dict[str, Any]
                 message=f"Unreadable media file: {rel} ({exc})",
             )
             continue
-        expected = allowed.get(rel)
-        if expected != digest.lower():
+        if digest.lower() != expected:
             add_violation(
                 violations,
                 allow_list,
                 kind="media_file",
                 file=rel,
-                message=(
-                    f"Media file {rel} is not listed at this path in the manifest "
-                    f"with an approved use tag"
-                ),
+                message=f"Media file {rel} sha256 does not match entries[].path",
             )
+
+    for path in Path(".").rglob("*"):
+        if not path.is_file() or skip_path(path):
+            continue
+        if path.suffix.lower() not in MEDIA_EXTENSIONS:
+            continue
+        rel = repo_rel(path)
+        if rel in checked:
+            continue
+        try:
+            hash_file(path)
+        except OSError as exc:
+            add_violation(
+                violations,
+                allow_list,
+                kind="media_file",
+                file=rel,
+                message=f"Unreadable media file: {rel} ({exc})",
+            )
+            continue
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=rel,
+            message=(
+                f"Media file {rel} is not listed at this path in the manifest "
+                f"with an approved use tag"
+            ),
+        )
     return violations
 
 
@@ -513,7 +598,8 @@ def main() -> int:
     print("Wrote violations to project-rules-violations.json")
     print()
     print("To allow a false positive, add the violation ID to .project-rules-allow:")
-    print("  Format: <file>:<line>:<match> or media:<file>")
+    print("  Format: <file>:<line>:<match>")
+    print("  A media:<file> line does not replace the manifest path and sha256 check.")
     print("  Each allow-list entry must be reviewed and have a justification comment.")
     return 1
 

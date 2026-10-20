@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Validate GitHub Action pins in this repo's workflows.
 
-Every `uses: owner/repo[/path]@<sha> # vX.Y.Z` pin must be:
+Every `uses:` that is not `./` or `docker://` must be
+`owner/repo[/path]@<40-hex> # vX.Y.Z`. A SHA with no version comment, a
+comment without the leading `v`, a mutable tag, or a quoted non-pin is an
+error. A well-formed pin must also be:
 
 1. The commit the named upstream tag points at, after peeling annotated tag
    objects (`refs/tags/vX.Y.Z^{}`).
@@ -10,7 +13,7 @@ Every `uses: owner/repo[/path]@<sha> # vX.Y.Z` pin must be:
    returns 200 and status "identical".
 
 A commit that merely exists somewhere in the fork network is not enough.
-`.github/workflows/ci.yml` is skipped until PR #3, which SHA-pins that file, merges.
+Every workflow is checked, including ci.yml, now that those actions are SHA-pinned.
 """
 
 from __future__ import annotations
@@ -26,10 +29,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-PIN_RE = re.compile(r"uses:\s*(?P<action>\S+?)@(?P<sha>[0-9a-f]{40})\s+#\s*v(?P<version>\d+\S*)")
+USES_RE = re.compile(r"""uses:\s*(?P<quote>['"]?)(?P<value>[^'"\s#]+)""")
+SHA_PIN_RE = re.compile(r"^(?P<action>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)@(?P<sha>[0-9a-f]{40})$")
+VERSION_RE = re.compile(r"#\s*v(?P<version>\d+\S*)")
 
-# PR #3 owns ci.yml. Drop this once that pin change is on main.
-SKIP_WORKFLOW_NAMES = {"ci.yml"}
+SKIP_WORKFLOW_NAMES: set[str] = set()
 
 GetFn = Callable[[str], tuple[int, dict]]
 LsRemoteFn = Callable[[str, str, str], str]
@@ -56,24 +60,42 @@ class Pin:
         return f"v{self.version}"
 
 
-def iter_pins(text: str, filename: str) -> list[Pin]:
+def scan_uses(text: str, filename: str) -> tuple[list[Pin], list[str]]:
+    """Return well-formed pins and errors for every other third-party uses:."""
     pins: list[Pin] = []
+    errors: list[str] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
-        match = PIN_RE.search(line)
+        if line.lstrip().startswith("#"):
+            continue
+        match = USES_RE.search(line)
         if not match:
             continue
-        action = match.group("action")
-        if len(action.split("/")) < 2:
+        value = match.group("value")
+        if value.startswith("./") or value.startswith("docker://"):
+            continue
+        where = f"{filename}:{lineno}: uses: {value}"
+        pin_match = SHA_PIN_RE.fullmatch(value)
+        version_match = VERSION_RE.search(line)
+        if pin_match is None or version_match is None:
+            errors.append(
+                f"{where} must be owner/repo@<40-hex-sha> # vX.Y.Z. "
+                "A missing comment, a comment without v, or a mutable tag is rejected."
+            )
             continue
         pins.append(
             Pin(
                 file=filename,
                 line=lineno,
-                action=action,
-                sha=match.group("sha"),
-                version=match.group("version"),
+                action=pin_match.group("action"),
+                sha=pin_match.group("sha"),
+                version=version_match.group("version"),
             )
         )
+    return pins, errors
+
+
+def iter_pins(text: str, filename: str) -> list[Pin]:
+    pins, _errors = scan_uses(text, filename)
     return pins
 
 
@@ -154,13 +176,14 @@ def workflow_files(root: Path) -> list[Path]:
 
 def validate_repo(root: Path, get: GetFn, ls_remote: LsRemoteFn) -> list[str]:
     errors: list[str] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for path in workflow_files(root):
         rel = path.relative_to(root).as_posix()
-        for pin in iter_pins(path.read_text(), rel):
+        pins, structural = scan_uses(path.read_text(), rel)
+        errors.extend(structural)
+        for pin in pins:
             key = (pin.owner, pin.repo, pin.sha, pin.tag)
             if key in seen:
-                # Still record a same-tag mismatch if the comment differs on a duplicate.
                 continue
             seen.add(key)
             errors.extend(check_pin(pin, get, ls_remote))

@@ -5,7 +5,7 @@
 #
 # Format:
 #   - For code violations: <file>:<line>:<match>
-#   - For media files: media:<file>
+#   - A media:<file> line does not waive the manifest path and sha256 check.
 #
 # Example:
 #   # Allowed: "watchlist" used in documentation context only

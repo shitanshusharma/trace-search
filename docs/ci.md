@@ -21,13 +21,13 @@ The CI pipeline enforces quality gates and security checks on every PR and push 
 **Run locally:**
 ```bash
 ruff check src/ tests/ scripts/ --output-format=github
-ruff format --check --exclude scripts/check_licenses.py src/ tests/ scripts/
+ruff format --check src/ tests/ scripts/
 ```
 
 **Auto-fix:**
 ```bash
 ruff check --fix src/ tests/ scripts/
-ruff format --exclude scripts/check_licenses.py src/ tests/ scripts/
+ruff format src/ tests/ scripts/
 ```
 
 ---
@@ -44,7 +44,7 @@ ruff format --exclude scripts/check_licenses.py src/ tests/ scripts/
 
 **Run locally:**
 ```bash
-pip install -r requirements-ci.txt
+pip install --require-hashes --no-deps -r requirements-dev.lock
 pip install -e .
 mypy src/ --strict --pretty --show-error-codes
 ```
@@ -57,8 +57,8 @@ mypy src/ --strict --pretty --show-error-codes
 
 **What it checks:**
 - All unit tests pass
-- Overall coverage ≥80%
-- Diff coverage on new/changed code ≥80% (PRs only, soft-fail)
+- Overall coverage ≥80% of `src/trace_search` (the package, including `ingest`)
+- Diff coverage on new/changed code ≥80% (PRs only, soft-fail; the step does not use `--show-missing`)
 
 **Fails on:**
 - Any test failure
@@ -156,7 +156,6 @@ pip install bandit[toml]==1.8.0
 # Check for high/critical issues
 bandit -r src/ scripts/ \
   --severity-level high \
-  -ll \
   -f txt
 ```
 
@@ -178,7 +177,7 @@ bandit -r src/ scripts/ \
 
 **Run locally:**
 ```bash
-pip install semgrep==1.99.0
+pip install --require-hashes --no-deps -r requirements-dev.lock
 
 semgrep scan \
   --error \
@@ -251,7 +250,7 @@ gitleaks detect --verbose
 
 ### 11. pip-audit (`security / pip-audit`)
 
-**What it checks:** Known vulnerabilities in Python dependencies.
+**What it checks:** Known vulnerabilities in the shared lock (`requirements-dev.lock`), which every job installs. That lock pins `protobuf==5.29.6`, `mcp==1.30.0`, and `setuptools==84.2.1`. Install it with `--no-deps` because semgrep 1.182.0 declares `mcp==1.29.0` and pip will not resolve the fixed pin. The licence job then runs `scripts/prune_unmanifested.py` so the fence only scans the manifest closure.
 
 **Fails on:**
 - High or critical CVEs in installed packages
@@ -259,11 +258,8 @@ gitleaks detect --verbose
 
 **Run locally:**
 ```bash
-pip install pip-audit==2.7.3
+pip install --require-hashes --no-deps -r requirements-dev.lock
 pip install -e .
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-pip install -r requirements-ci.txt
 
 pip-audit --strict --vulnerability-service=osv
 ```
@@ -311,12 +307,12 @@ npm audit --audit-level=high --production
 **What it checks:**
 - No banned imports (face_recognition, insightface, ultralytics, etc.)
 - No banned identifiers (watchlist, enrol, face_embedding, gait, etc.)
-- No media files committed outside allowed paths
+- No media file unless `entries[].path` and its sha256 match that file
 
 **Fails on:**
 - Banned imports or dependencies (PRD §2 OUT, §3)
 - Banned identifiers in code (watchlist, face recognition, gait)
-- Video/image/weight files outside `fixtures/`, `tests/fixtures/`, `docs/diagrams/`
+- A media file whose path is missing from `entries[]`, whose sha256 does not match, or a listed path whose file is missing
 
 **Run locally:**
 ```bash
@@ -326,6 +322,21 @@ python scripts/check_project_rules.py
 **Allow-list for false positives:** `.project-rules-allow`
 
 **Config:** `scripts/check_project_rules.py`
+
+---
+
+### Action SHA pins (`rules / validate-action-shas`)
+
+**What it checks:** Every `uses:` in `.github/workflows` is `./`, `docker://`, or `owner/repo@<40-hex> # vX.Y.Z`. Each pin is the peeled upstream tag commit. The commits API returns 200 and compare against that tag is `identical`.
+
+**Fails on:**
+- A SHA with no version comment, a comment without `v`, or a mutable tag
+- A pin that is not the peeled commit for the named tag
+
+**Run locally:**
+```bash
+GITHUB_TOKEN="$(gh auth token)" python scripts/validate_action_shas.py
+```
 
 ---
 
@@ -385,7 +396,7 @@ echo "🔍 Running all CI checks locally..."
 # Quality
 echo "→ Lint..."
 ruff check src/ tests/ scripts/
-ruff format --check --exclude scripts/check_licenses.py src/ tests/ scripts/
+ruff format --check src/ tests/ scripts/
 
 echo "→ Types..."
 mypy src/ --strict
@@ -401,7 +412,7 @@ radon cc src/ -s -n C
 
 # Security
 echo "→ Bandit..."
-bandit -r src/ scripts/ --severity-level high -ll
+bandit -r src/ scripts/ --severity-level high
 
 echo "→ Semgrep..."
 semgrep scan --error --metrics=off --config=.semgrep.yml --config=p/owasp-top-ten --config=p/python --severity=ERROR
@@ -454,7 +465,8 @@ Mark these job names as required:
 9. `security / pip-audit`
 10. `security / dependency-review` (PRs only)
 11. `rules / project-rules`
-12. `Lint, Test, and License Check` (existing combined job from ci.yml)
+12. `rules / validate-action-shas`
+13. `Lint, Test, and License Check` (existing combined job from ci.yml)
 
 **Note:** `quality / ui (eslint+tsc+prettier)`, `security / codeql (javascript)`, and `security / npm-audit` are skipped when no UI package exists. Do not mark them as required until the UI is added.
 
@@ -510,7 +522,7 @@ Dependabot configuration is in `.github/dependabot.yml`:
 
 **Lint failures:**
 - Run `ruff check --fix src/ tests/ scripts/`
-- Run `ruff format --exclude scripts/check_licenses.py src/ tests/ scripts/`
+- Run `ruff format src/ tests/ scripts/`
 
 **Type errors:**
 - Add missing type annotations
@@ -619,6 +631,7 @@ jobs:
 | pip-audit | `security / pip-audit` | High/critical CVEs | `pip-audit --strict` |
 | Dep Review | `security / dependency-review` | High CVEs, banned licenses (PRs) | `gh api .../dependency-graph/compare/...` |
 | Project Rules | `rules / project-rules` | Banned imports, media files | `python scripts/check_project_rules.py` |
+| Action pins | `rules / validate-action-shas` | Unpinned or unverified actions | `python scripts/validate_action_shas.py` |
 | License Fence | `Lint, Test, and License Check` | AGPL/GPL/NC, missing manifest | `python scripts/check_licenses.py` |
 
 ---

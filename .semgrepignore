@@ -6,7 +6,3 @@ venv/
 node_modules/
 __pycache__/
 .pytest_cache/
-
-# ci.yml is owned by PR #3, which SHA-pins these actions.
-# Remove this line when this branch rebases onto that change.
-.github/workflows/ci.yml

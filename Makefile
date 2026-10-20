@@ -55,7 +55,7 @@ complexity:
 
 security:
 	@echo "→ Bandit..."
-	bandit -r src/ scripts/ --severity-level high -ll -f txt
+	bandit -r src/ scripts/ --severity-level high -f txt
 	@echo "→ Semgrep..."
 	semgrep scan --config=auto --config=p/owasp-top-ten --config=p/python --severity=ERROR || true
 	@echo "→ pip-audit..."

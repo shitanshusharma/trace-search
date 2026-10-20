@@ -552,15 +552,19 @@ def test_planted_manifested_fixture_passes():
 
         sha256_hash = hashlib.sha256(video_content).hexdigest()
 
-        # Create manifest with this file
+        # Create manifest with this file. The gate reads entries[].path.
         manifest = {
-            "version": "1.0",
-            "files": [
+            "manifest_version": "1.0",
+            "entries": [
                 {
-                    "path": "fixtures/test.mp4",
+                    "name": "test clip",
+                    "version": "1",
+                    "type": "clip",
+                    "license": "Pexels License",
+                    "source_url": "https://example.com/clip.mp4",
                     "sha256": sha256_hash,
+                    "path": "fixtures/test.mp4",
                     "use": "CODE_TEST",
-                    "licence": "Pexels License",
                 }
             ],
         }
@@ -594,7 +598,7 @@ def test_planted_unmanifested_mp4_fails():
         # Create licenses directory with empty manifest
         licenses_dir = tmppath / "licenses"
         licenses_dir.mkdir()
-        manifest = {"version": "1.0", "files": []}
+        manifest = {"manifest_version": "1.0", "entries": []}
         manifest_file = licenses_dir / "manifest.json"
         manifest_file.write_text(json.dumps(manifest, indent=2))
 
@@ -751,13 +755,19 @@ def test_manifest_hash_is_tied_to_path():
         licenses = tmppath / "licenses"
         licenses.mkdir()
         manifest = {
-            "files": [
+            "manifest_version": "1.0",
+            "entries": [
                 {
-                    "path": "fixtures/test.mp4",
+                    "name": "smoke clip",
+                    "version": "1",
+                    "type": "clip",
+                    "license": "Pexels License",
+                    "source_url": "https://example.com/clip.mp4",
                     "sha256": digest,
+                    "path": "fixtures/test.mp4",
                     "use": "SMOKE_ONLY",
                 }
-            ]
+            ],
         }
         (licenses / "manifest.json").write_text(json.dumps(manifest))
         (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
@@ -793,3 +803,296 @@ def test_unreadable_media_is_a_violation(monkeypatch, tmp_path):
     violations = module.check_media_files(set())
     assert violations
     assert any("Unreadable" in item["message"] for item in violations)
+
+
+def _run(tmppath: Path, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    for rel, content in files.items():
+        path = tmppath / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    allow = tmppath / ".project-rules-allow"
+    if not allow.exists():
+        allow.write_text("# No exceptions\n")
+    return subprocess.run(
+        [sys.executable, str(get_checker_path())],
+        cwd=tmppath,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _clip_manifest(path: str, sha: str, use: str = "CODE_TEST") -> str:
+    manifest = {
+        "manifest_version": "1.0",
+        "entries": [
+            {
+                "name": "clip",
+                "version": "1",
+                "type": "clip",
+                "license": "Pexels License",
+                "source_url": "https://example.com/clip.mp4",
+                "sha256": sha,
+                "path": path,
+                "use": use,
+            }
+        ],
+    }
+    return json.dumps(manifest)
+
+
+def test_function_name_add_to_watchlist_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(Path(tmpdir), {"src/a.py": "def add_to_watchlist(x):\n    return x\n"})
+    assert result.returncode == 1
+    assert "watchlist" in result.stdout.lower()
+
+
+def test_class_watchlist_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(Path(tmpdir), {"src/a.py": "class Watchlist:\n    pass\n"})
+    assert result.returncode == 1
+    assert "watchlist" in result.stdout.lower()
+
+
+def test_face_embedding_parameter_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = "def f(face_embedding):\n    return face_embedding\n"
+        result = _run(Path(tmpdir), {"src/a.py": source})
+    assert result.returncode == 1
+    assert "face_embedding" in result.stdout
+
+
+def test_face_embedding_keyword_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(Path(tmpdir), {"src/a.py": "f(face_embedding=v)\n"})
+    assert result.returncode == 1
+    assert "face_embedding" in result.stdout
+
+
+def test_dict_key_strings_fail():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = 'row = {"face_embedding": v, "national_id": n}\n'
+        result = _run(Path(tmpdir), {"src/a.py": source})
+    assert result.returncode == 1
+    assert "face_embedding" in result.stdout
+    assert "national_id" in result.stdout
+
+
+def test_sql_string_national_id_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = 'SQL = "CREATE TABLE p (national_id TEXT, face_crop BLOB)"\n'
+        result = _run(Path(tmpdir), {"src/a.py": source})
+    assert result.returncode == 1
+    lowered = result.stdout.lower()
+    assert "national_id" in lowered
+    assert "face_crop" in lowered
+
+
+def test_import_alias_face_embedding_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(Path(tmpdir), {"src/a.py": "import os as face_embedding\n"})
+    assert result.returncode == 1
+    assert "face_embedding" in result.stdout
+
+
+def test_syntax_error_fails_closed():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(Path(tmpdir), {"src/a.py": "import insightface\n(\n"})
+    assert result.returncode == 1
+    assert "failed to parse" in result.stdout.lower()
+
+
+def test_semgrep_directory_does_not_exempt_imports():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(Path(tmpdir), {"tests/semgrep/real.py": "import insightface\n"})
+    assert result.returncode == 1
+    assert "insightface" in result.stdout.lower()
+
+
+def test_semgrep_rules_fixture_import_is_exact_exemption():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(Path(tmpdir), {"tests/semgrep/rules.py": "import insightface\n"})
+    assert result.returncode == 0, result.stdout
+
+
+def test_entries_path_and_sha_match_passes():
+    """A clip row whose path and sha256 match the file passes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        payload = b"clip-bytes"
+        import hashlib
+
+        digest = hashlib.sha256(payload).hexdigest()
+        result = _run(
+            tmppath,
+            {
+                "fixtures/test.mp4": "",
+                "licenses/manifest.json": _clip_manifest("fixtures/test.mp4", digest),
+            },
+        )
+        (tmppath / "fixtures" / "test.mp4").write_bytes(payload)
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 0, result.stdout
+
+
+def test_entries_sha_mismatch_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        bad = "a" * 64
+        result = _run(
+            tmppath,
+            {
+                "fixtures/test.mp4": "",
+                "licenses/manifest.json": _clip_manifest("fixtures/test.mp4", bad),
+            },
+        )
+        (tmppath / "fixtures" / "test.mp4").write_bytes(b"real-bytes")
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 1
+    assert "fixtures/test.mp4" in result.stdout
+
+
+def test_listed_path_missing_file_fails():
+    """A manifest path whose file is not in the tree fails."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        digest = "c" * 64
+        result = _run(
+            tmppath,
+            {
+                "licenses/manifest.json": _clip_manifest(
+                    "fixtures/missing.mp4", digest, "SMOKE_ONLY"
+                ),
+            },
+        )
+    assert result.returncode == 1, result.stdout
+    assert "fixtures/missing.mp4" in result.stdout
+    assert "missing" in result.stdout.lower()
+
+
+def test_unlisted_mp4_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        result = _run(
+            tmppath,
+            {
+                "clip.mp4": "",
+                "licenses/manifest.json": json.dumps({"entries": []}),
+            },
+        )
+        (tmppath / "clip.mp4").write_bytes(b"unlisted")
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 1
+    assert "clip.mp4" in result.stdout
+
+
+def test_files_key_does_not_allow_media():
+    """The old files[] shape must not authorize a clip."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        payload = b"same"
+        import hashlib
+
+        digest = hashlib.sha256(payload).hexdigest()
+        manifest = {"files": [{"path": "fixtures/test.mp4", "sha256": digest, "use": "CODE_TEST"}]}
+        result = _run(
+            tmppath,
+            {
+                "fixtures/test.mp4": "",
+                "licenses/manifest.json": json.dumps(manifest),
+            },
+        )
+        (tmppath / "fixtures" / "test.mp4").write_bytes(payload)
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 1
+    assert "fixtures/test.mp4" in result.stdout
+
+
+def test_parent_and_absolute_paths_do_not_authorize():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        payload = b"clip"
+        import hashlib
+
+        digest = hashlib.sha256(payload).hexdigest()
+        for bad_path in ("../clip.mp4", "/tmp/clip.mp4"):
+            manifest = _clip_manifest(bad_path, digest)
+            (tmppath / "licenses").mkdir(exist_ok=True)
+            (tmppath / "licenses" / "manifest.json").write_text(manifest)
+            (tmppath / "clip.mp4").write_bytes(payload)
+            (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+            result = subprocess.run(
+                [sys.executable, str(get_checker_path())],
+                cwd=tmppath,
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 1, bad_path
+            assert "clip.mp4" in result.stdout
+
+
+def test_media_allow_list_still_checks_manifest_sha_and_path():
+    """media:<file> does not skip the manifest path and sha256 check."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        payload = b"listed"
+        import hashlib
+
+        digest = hashlib.sha256(payload).hexdigest()
+        (tmppath / "fixtures").mkdir()
+        (tmppath / "fixtures" / "test.mp4").write_bytes(payload)
+        (tmppath / ".project-rules-allow").write_text("media:fixtures/test.mp4\n")
+
+        (tmppath / "licenses").mkdir()
+        (tmppath / "licenses" / "manifest.json").write_text(json.dumps({"entries": []}))
+        missing = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert missing.returncode == 1
+        assert "fixtures/test.mp4" in missing.stdout
+
+        (tmppath / "licenses" / "manifest.json").write_text(
+            _clip_manifest("fixtures/test.mp4", "b" * 64)
+        )
+        mismatch = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert mismatch.returncode == 1
+        assert "fixtures/test.mp4" in mismatch.stdout
+
+        (tmppath / "licenses" / "manifest.json").write_text(
+            _clip_manifest("fixtures/test.mp4", digest)
+        )
+        matched = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+        assert matched.returncode == 0, matched.stdout

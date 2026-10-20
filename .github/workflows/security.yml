@@ -33,7 +33,7 @@ jobs:
         cache: 'pip'
     
     - name: Install bandit
-      run: pip install bandit[toml,sarif]==1.8.0
+      run: pip install --require-hashes --no-deps -r requirements-dev.lock
     
     - name: Run bandit
       run: |
@@ -76,7 +76,7 @@ jobs:
         python-version: '3.11'
     
     - name: Install semgrep
-      run: pip install semgrep==1.99.0
+      run: pip install --require-hashes --no-deps -r requirements-dev.lock
     
     - name: Run semgrep
       run: |
@@ -141,24 +141,10 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
     
-    - name: Install pip-audit
-      run: pip install pip-audit==2.7.3
-    
-    - name: Install project dependencies
+    - name: Install locked dependencies
       run: |
+        pip install --require-hashes --no-deps -r requirements-dev.lock
         pip install -e .
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
-        pip install -r requirements-ci.txt
-    
-    - name: Upgrade packages with known fixes
-      run: |
-        # setuptools on the runner is older than 83 (PYSEC-2026-3447).
-        # semgrep 1.99.0 pulls opentelemetry-proto 1.25.0, which caps
-        # protobuf<5 and installs 4.25.9 (PYSEC-2026-1805 / CVE-2026-0994).
-        # Fixed releases are protobuf>=5.29.6. This job audits the environment;
-        # it does not import semgrep, so the override is safe here.
-        python -m pip install 'setuptools>=83.0.0' 'protobuf==6.33.5'
 
     - name: Run pip-audit and name any vulnerable packages
       run: |

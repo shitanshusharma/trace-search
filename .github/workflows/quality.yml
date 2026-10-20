@@ -29,16 +29,14 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
     
-    - name: Install ruff
-      run: pip install ruff==0.17.1
+    - name: Install locked dependencies
+      run: pip install --require-hashes --no-deps -r requirements-dev.lock
     
     - name: Run ruff lint
       run: ruff check src/ tests/ scripts/ --output-format=github
     
     - name: Run ruff format check
-      # scripts/check_licenses.py is owned by the licence PR. Leave it
-      # byte-for-byte with main; do not reformat it here.
-      run: ruff format --check --exclude scripts/check_licenses.py src/ tests/ scripts/
+      run: ruff format --check src/ tests/ scripts/
 
   types:
     name: quality / types
@@ -57,7 +55,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install -r requirements-ci.txt
+        pip install --require-hashes --no-deps -r requirements-dev.lock
         pip install -e .
     
     - name: Run mypy
@@ -83,8 +81,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install -r requirements-dev.txt
-        pip install -r requirements-ci.txt
+        pip install --require-hashes --no-deps -r requirements-dev.lock
         pip install -e .
     
     - name: Run pytest with coverage
@@ -110,8 +107,7 @@ jobs:
       run: |
         diff-cover coverage.xml \
           --compare-branch="origin/$BASE_REF" \
-          --fail-under=80 \
-          --show-missing
+          --fail-under=80
       continue-on-error: true
     
     - name: Upload coverage reports
@@ -141,8 +137,7 @@ jobs:
     
     - name: Install tools
       run: |
-        pip install ruff==0.17.1
-        pip install radon==6.0.1
+        pip install --require-hashes --no-deps -r requirements-dev.lock
     
     - name: Check cyclomatic complexity (ruff mccabe)
       run: ruff check src/ --select C90 --config 'lint.mccabe.max-complexity=10'

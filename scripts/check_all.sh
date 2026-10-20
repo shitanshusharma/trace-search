@@ -15,7 +15,7 @@ echo ""
 
 echo "→ Lint (ruff)..."
 ruff check src/ tests/ scripts/ --output-format=github
-ruff format --check --exclude scripts/check_licenses.py src/ tests/ scripts/
+ruff format --check src/ tests/ scripts/
 echo "✅ Lint passed"
 echo ""
 
@@ -48,7 +48,7 @@ echo "════════════════════════�
 echo ""
 
 echo "→ Bandit..."
-bandit -r src/ scripts/ --severity-level high -ll -f txt
+bandit -r src/ scripts/ --severity-level high -f txt
 echo "✅ Bandit passed"
 echo ""
 

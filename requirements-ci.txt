@@ -5,13 +5,24 @@
 mypy==1.13.0
 pytest==9.1.1
 pytest-cov==7.1.0
-coverage[toml]==7.10.6
+coverage[toml]>=7.10.6
 diff-cover==9.2.0
 radon==6.0.1
 
 # Security scanning
 bandit[toml,sarif]==1.8.0
-semgrep==1.99.0
+# 1.99.0 cannot resolve with a fixed protobuf (opentelemetry-proto 1.25.0
+# requires protobuf<5). 1.137.0 and later use opentelemetry-proto 1.37
+# (protobuf>=5,<7) but also pin mcp>=1.12,<1.30 (GHSA-84m7-p3x7-pcfv).
+# 1.182.0 is the current release. The lock overrides its mcp pin to 1.30.0.
+semgrep==1.182.0
+
+# PYSEC-2026-1805 / CVE-2026-0994. 4.25.9 is vulnerable. 5.29.6 is the
+# lowest fixed 5.x release and resolves with semgrep 1.182.0.
+protobuf==5.29.6
+
+# PYSEC-2026-3447. Runner setuptools older than 83 is vulnerable.
+setuptools==84.2.1
 
 # Audit
 pip-audit==2.7.3
