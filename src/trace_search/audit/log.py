@@ -38,6 +38,7 @@ _ENTRY_FIELDS = (
     "query",
     "case_id",
     "purpose",
+    "details",
     "result_ids",
     "prev_hmac",
     "entry_hmac",
@@ -56,6 +57,7 @@ _OPTIONAL_ENTRY_TYPES = {
     "query": str,
     "case_id": str,
     "purpose": str,
+    "details": str,
 }
 
 
@@ -175,6 +177,7 @@ class AuditEntry:
     query: str | None = None
     case_id: str | None = None
     purpose: str | None = None
+    details: str | None = None
     result_ids: list[str] = field(default_factory=list)
     prev_hmac: str = ""
     entry_hmac: str = ""
@@ -431,6 +434,7 @@ class AuditLog:
         query: str | None = None,
         case_id: str | None = None,
         purpose: str | None = None,
+        details: str | None = None,
         result_ids: list[str] | None = None,
     ) -> AuditEntry:
         """
@@ -445,6 +449,8 @@ class AuditLog:
         action_enum = _normalize_action(action)
         if query is not None and not isinstance(query, str):
             raise ValueError("query must be a string when provided")
+        if details is not None and (not isinstance(details, str) or not details.strip()):
+            raise ValueError("details must be a non-empty string when provided")
         if action_enum.value in _CASE_ACTIONS:
             if not isinstance(case_id, str) or not case_id.strip():
                 raise ValueError(
@@ -486,6 +492,7 @@ class AuditLog:
                 query=query,
                 case_id=case_id,
                 purpose=purpose,
+                details=details,
                 result_ids=list(result_ids),
                 prev_hmac=prev_hmac,
             )

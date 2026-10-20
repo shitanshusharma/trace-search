@@ -24,6 +24,7 @@ Fields on every entry:
 | `query` | Optional query text. |
 | `case_id` | Required and non-empty for `search`, `view`, and `export`. |
 | `purpose` | Required and non-empty for `search`, `view`, and `export`. |
+| `details` | Optional text for `retention_change` and `purge` (not the search query). |
 | `result_ids` | List of result ids. |
 | `prev_hmac` | Previous entry HMAC, or `""` for the genesis entry. |
 | `entry_hmac` | HMAC-SHA256 of this entry. |
@@ -111,7 +112,7 @@ if not result.valid:
 
 ## Tests and AC-13 proof
 
-`tests/test_audit_log.py` has 45 tests. They use `tmp_path` only. Covered cases include 50 scripted actions (login, search, view, export, retention change, purge) with every field filled, edit/delete/swap with the broken index, tail delete, tail edit plus rehash, full rehash, forged genesis, rehash from entry 0, tail delete plus a deleted anchor, tail delete plus an anchor rewritten without the key, full rehash with the wrong key, full truncation, two logs that do not share an anchor, `verify()` with no key, and 8 processes × 50 appends (400 entries, no forked `prev_hmac`).
+`tests/test_audit_log.py` has 46 tests. They use `tmp_path` only. Covered cases include 50 scripted actions (login, search, view, export, retention change, purge) with every field filled, edit/delete/swap with the broken index, tail delete, tail edit plus rehash, full rehash, forged genesis, rehash from entry 0, tail delete plus a deleted anchor, tail delete plus an anchor rewritten without the key, full rehash with the wrong key, full truncation, two logs that do not share an anchor, `verify()` with no key, and 8 processes × 50 appends (400 entries, no forked `prev_hmac`).
 
 ```bash
 pytest tests/test_audit_log.py -v

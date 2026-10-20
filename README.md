@@ -152,7 +152,7 @@ The key comes only from `TRACE_AUDIT_HMAC_KEY` or from an explicit key file outs
 
 An attacker who holds the key and deletes both the log and the anchor is not detectable on this host. External anchoring is out of scope for Cut 01. The 1-year purge checkpoint is T9.
 
-`tests/test_audit_log.py` is 45 tests, all under `tmp_path`. The full suite is 82 tests. Details and a sample proof are in [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md).
+`tests/test_audit_log.py` is 46 tests, all under `tmp_path`. The full suite is 83 tests. Details and a sample proof are in [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md).
 
 ## Privacy and Ethics
 

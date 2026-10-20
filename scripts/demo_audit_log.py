@@ -57,12 +57,16 @@ def _fifty(directory: Path) -> dict:
     log = _open_log(directory)
     for index in range(50):
         action = _ACTIONS[index % len(_ACTIONS)]
+        details = None
+        if action in (AuditAction.RETENTION_CHANGE, AuditAction.PURGE):
+            details = f"details-{index}"
         log.append(
             operator_username=f"operator_{(index % 3) + 1}",
             action=action,
             query=f"query-{index}",
             case_id=f"CASE-{index:03d}",
             purpose=f"purpose-{index}",
+            details=details,
             result_ids=[f"r{index}"],
         )
     entries = log.read_all()
@@ -80,6 +84,7 @@ def _fifty(directory: Path) -> dict:
                 "query": entry.query,
                 "case_id": entry.case_id,
                 "purpose": entry.purpose,
+                "details": entry.details,
                 "result_ids": entry.result_ids,
                 "prev_hmac": entry.prev_hmac,
                 "entry_hmac": entry.entry_hmac,

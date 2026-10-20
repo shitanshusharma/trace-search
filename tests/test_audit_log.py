@@ -321,6 +321,27 @@ class TestActionValidation:
         with pytest.raises(ValueError, match="operator_username"):
             log.append("   ", AuditAction.LOGIN)
 
+    def test_retention_and_purge_store_details(self, tmp_path):
+        log = _create_audit_log(tmp_path)
+        change = log.append(
+            "admin",
+            AuditAction.RETENTION_CHANGE,
+            details="footage_ttl=7d audit_ttl=365d",
+        )
+        purge = log.append(
+            "admin",
+            AuditAction.PURGE,
+            details="purged footage-derived rows older than 7 days",
+        )
+        assert change.query is None
+        assert change.details == "footage_ttl=7d audit_ttl=365d"
+        assert purge.details == "purged footage-derived rows older than 7 days"
+        assert log.verify().valid is True
+        with pytest.raises(ValueError, match="details"):
+            log.append("admin", AuditAction.PURGE, details="  ")
+        with pytest.raises(ValueError, match="details"):
+            log.append("admin", AuditAction.PURGE, details=7)
+
 
 class TestTamperAndAnchor:
     def _five(self, tmp_path) -> AuditLog:
