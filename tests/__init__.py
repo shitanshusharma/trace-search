@@ -1,1 +1,2 @@
-"""Test suite for trace-search."""
+"""Test fixtures and utilities."""
+

@@ -1,2 +1,2 @@
-opencv-python-headless>=4.8.0,<5.0.0
-numpy>=1.24.0,<2.0.0
+# Core dependencies will be added by later tasks (T2-T7)
+# This file is maintained by the license fence process

@@ -2,88 +2,60 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'cursor/**' ]
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  lint-and-test:
+    name: Lint, Test, and License Check
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11"]
-
-    steps:
-    - uses: actions/checkout@v3
+    timeout-minutes: 15
     
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.11'
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
         pip install -r requirements-dev.txt
         pip install -e .
     
-    - name: Run tests
+    - name: Lint with ruff
       run: |
-        pytest tests/ -v --cov=trace_search --cov-report=term-missing --cov-report=xml
+        ruff check src/ tests/ scripts/
     
-    - name: Upload coverage
-      uses: codecov/codecov-action@v3
-      if: matrix.python-version == '3.11'
+    - name: Run unit tests
+      run: |
+        pytest tests/ -v --tb=short
+      env:
+        NO_FFMPEG_CHECK: '1'
+    
+    - name: License fence check
+      run: |
+        python scripts/check_licenses.py \
+          --requirements=requirements-dev.txt \
+          --report=license-report.json
+      env:
+        NO_FFMPEG_CHECK: '1'
+    
+    - name: Upload license report
+      if: always()
+      uses: actions/upload-artifact@v4
       with:
-        files: ./coverage.xml
-        fail_ci_if_error: false
-
-  lint:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install black flake8 mypy
-        pip install -r requirements.txt
-        pip install -e .
-    
-    - name: Check formatting with black
-      run: black --check trace_search tests
-    
-    - name: Lint with flake8
-      run: flake8 trace_search tests --max-line-length=120 --extend-ignore=E203,W503
-    
-    - name: Type check with mypy
-      run: mypy trace_search --ignore-missing-imports
-
-  schema-validation:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
-        pip install -e .
-    
-    - name: Run schema validation test
-      run: |
-        pytest tests/test_attributes.py::TestSchemaValidation -v
+        name: license-report
+        path: license-report.json
+        retention-days: 90

@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -18,26 +19,53 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
-.pytest_cache/
-.coverage
-coverage.xml
-htmlcov/
-
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-.venv
+# Virtual environments
 venv/
 ENV/
 env/
 
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+.hypothesis/
+
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Data (no real footage, no weights, no datasets in public repo)
+data/
+smoke/
+fixtures/*.mp4
+fixtures/*.avi
+fixtures/*.mov
+fixtures/*.mkv
+weights/
+models/*.pt
+models/*.pth
+models/*.onnx
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Secrets (never commit)
+*.key
+*.pem
+.env
+.env.local
+secrets/
