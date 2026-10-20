@@ -103,7 +103,8 @@ test_cases = {
             "source_url": "http://www.insecam.org/en/view/12345/",
             "sha256": "a" * 64,
             "phash": [f"{i:016x}" for i in range(10)],
-            "use": "SMOKE_ONLY"
+            "use": "SMOKE_ONLY",
+            "path": "tests/fixtures/media/insecam_camera_nyc_001.mp4",
         }
     ]),
 

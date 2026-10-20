@@ -83,6 +83,7 @@ def test_insecam_clip_fails():
             "sha256": "a" * 64,
             "phash": ["0123456789abcdef"] * 10,
             "use": "SMOKE_ONLY",
+            "path": "tests/fixtures/media/insecam.mp4",
         }
     ])
     code, stdout, _ = invoke_main(manifest)
@@ -125,6 +126,7 @@ def test_schema_validation_clip_missing_phash_fails():
             "sha256": "a" * 64,
             "phash": [],
             "use": "SMOKE_ONLY",
+            "path": "tests/fixtures/media/clip.mp4",
         }
     ])
     code, stdout, _ = invoke_main(manifest)

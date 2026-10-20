@@ -25,6 +25,7 @@ def _clip_fields(**overrides):
         "phash": [f"{i:016x}" for i in range(10)],
         "use": "SMOKE_ONLY",
         "fixture_id": "FX-SMOKE-001",
+        "path": "tests/fixtures/media/stock.mp4",
     }
     base.update(overrides)
     return base
@@ -43,6 +44,7 @@ def _synthetic_fields(**overrides):
         "phash": [f"{i:016x}" for i in range(10)],
         "use": "SMOKE_ONLY",
         "fixture_id": "FX-SMOKE-SYN-001",
+        "path": "tests/fixtures/media/synthetic.mp4",
         "generator": "trace-procedural",
         "generator_version": "1.0.0",
         "generator_license": "Apache-2.0",
@@ -258,12 +260,34 @@ def test_whitespace_only_generator_field_fails(field):
     ), errors
 
 
+@pytest.mark.parametrize(
+    "bad_path",
+    ["/clips/stock.mp4", "../stock.mp4", "clips/../stock.mp4", "clips\\stock.mp4"],
+)
+def test_media_path_must_be_repo_relative(bad_path):
+    errors = _schema_errors(make_manifest([_clip_fields(path=bad_path)]))
+    assert any(
+        "at entries.0.path" in err and "does not match" in err
+        for err in errors
+    ), errors
+
+
 def test_empty_license_version_fails():
     errors = _schema_errors(
         make_manifest([_synthetic_fields(license_version="")])
     )
     assert any(
         "at entries.0.license_version" in err and "non-empty" in err
+        for err in errors
+    ), errors
+
+
+def test_whitespace_only_license_version_fails():
+    errors = _schema_errors(
+        make_manifest([_synthetic_fields(license_version="   ")])
+    )
+    assert any(
+        "at entries.0.license_version" in err and "does not match" in err
         for err in errors
     ), errors
 
@@ -600,6 +624,7 @@ CLIP_REQUIRED = [
     "phash",
     "use",
     "fixture_id",
+    "path",
 ]
 SYNTHETIC_REQUIRED = [
     "license_version",
@@ -607,6 +632,7 @@ SYNTHETIC_REQUIRED = [
     "phash",
     "use",
     "fixture_id",
+    "path",
     "generator",
     "generator_version",
     "generator_license",

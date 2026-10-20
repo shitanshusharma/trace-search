@@ -40,7 +40,7 @@ This project maintains **strict license hygiene** for commercial use:
 
 Every dependency, model, weight, dataset, and test clip is tracked in [`licenses/manifest.json`](licenses/manifest.json) with:
 - Name, version, license, source URL, SHA-256
-- For video clips: license version, date checked (IST), perceptual hashes, usage tag
+- For video clips: repo-relative `path`, license version, date checked (IST), perceptual hashes, usage tag
 
 CI verifies the full installed closure (direct + transitive dependencies) against the manifest and bans GPL/AGPL/SSPL/BUSL/NC/proprietary licenses and problematic components.
 

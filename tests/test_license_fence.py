@@ -89,6 +89,7 @@ def test_license_checker_validates_clip_fields():
             "license": "Pexels License",
             "source_url": "https://www.pexels.com/video/test/",
             "sha256": "c" * 64,
+            "path": "tests/fixtures/media/test-clip.mp4",
         }
     ])
     code, stdout, _ = invoke_main(manifest)
@@ -113,6 +114,7 @@ def test_license_checker_accepts_valid_clip():
             "phash": [f"{i:016x}" for i in range(10)],
             "use": "SMOKE_ONLY",
             "fixture_id": "FX-SMOKE-001",
+            "path": "tests/fixtures/media/test-clip.mp4",
         }
     ])
     code, stdout, _ = invoke_main(manifest)

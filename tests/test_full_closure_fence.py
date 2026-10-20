@@ -103,6 +103,7 @@ def test_schema_synthetic_clip_fixture_id():
             "phash": [f"{i:016x}" for i in range(10)],
             "use": "SMOKE_ONLY",
             "fixture_id": "FX-SMOKE-SYN-001",
+            "path": "tests/fixtures/media/synthetic_walk_01.mp4",
             "generator": "trace-procedural",
             "generator_version": "3.6.0",
             "generator_license": "Apache-2.0",
