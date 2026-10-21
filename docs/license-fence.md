@@ -23,7 +23,7 @@ A match also requires the manifest row name (`FreeType`) and that file's sha256.
 
 `MIT-Modern-Variant`, `libpng-2.0`, `X11`, `BSD-3-Clause-Open-MPI`, `MIT-open-group`, and `bzip2-1.0.6` are plain allowlist identifiers. `X11` is libxcb. `MIT-open-group` is libXau. `bzip2-1.0.6` is bzip2 1.0.8 inside Pillow's libfreetype. zlib-ng uses the existing non-SPDX identifier `Zlib`. They are not named exceptions.
 
-Shitanshu, 2026-10-21 3:49 PM IST, loops chat: "Accept all six recommendations" (D-T3-6). That approval covers the `ALLOWED_NON_SPDX` strings `Pexels License` and `Pixabay Content License`. They are plain allowlist identifiers for stock clips. They are not named exceptions.
+Shitanshu, 2026-10-21 3:49 PM IST, loops chat: "Accept all six recommendations" (D-T3-6). That approval covers the `ALLOWED_NON_SPDX` strings `Pexels License` and `Pixabay Content License`. Both strings were already in the allowlist before this approval was recorded. They are plain allowlist identifiers for stock clips. They are not named exceptions. Non-SPDX matching uppercases both sides and requires the whole string to be equal, so case is ignored (`PEXELS LICENSE` matches `Pexels License`) and a substring does not match. `ALLOWED_SPDX` membership stays case-sensitive.
 
 | Licence | Allowlist |
 |---|---|

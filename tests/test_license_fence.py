@@ -204,13 +204,8 @@ def test_planted_pexels_british_spelling_fails_the_fence():
     assert "License fence check PASSED" not in stdout
 
 
-def test_allowed_non_spdx_grew_by_exactly_the_two_stock_licences():
-    """ALLOWED_NON_SPDX gained only the two approved stock-clip strings."""
+def test_allowed_non_spdx_is_exactly_the_approved_set():
+    """ALLOWED_NON_SPDX is the prior identifiers plus the two stock-clip strings."""
     import scripts.check_licenses as cl
 
     assert cl.ALLOWED_NON_SPDX == _NON_SPDX_WITHOUT_STOCK | _STOCK_NON_SPDX
-    for licence in _STOCK_NON_SPDX:
-        licence.encode("ascii")
-        assert licence == licence.strip()
-        assert "Licence" not in licence
-    assert "Pexels Licence" not in cl.ALLOWED_NON_SPDX
