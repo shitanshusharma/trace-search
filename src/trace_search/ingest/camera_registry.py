@@ -6,6 +6,7 @@ Manages camera metadata: id, brand, site-map position, and clock offsets.
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -18,7 +19,7 @@ class CameraConfig:
     site_map_y: float
     clock_offset_seconds: float = 0.0  # Correction to apply to camera timestamps
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate camera config."""
         if not self.camera_id:
             raise ValueError("camera_id cannot be empty")
@@ -36,7 +37,7 @@ class CameraConfig:
         """
         return timestamp_seconds + self.clock_offset_seconds
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str | float]:
         """Convert to dictionary for JSON serialization."""
         return {
             "camera_id": self.camera_id,
@@ -47,7 +48,7 @@ class CameraConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "CameraConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "CameraConfig":
         """Create from dictionary."""
         return cls(**data)
 
@@ -55,7 +56,7 @@ class CameraConfig:
 class CameraRegistry:
     """Registry of camera configurations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._cameras: dict[str, CameraConfig] = {}
 
     def register(self, camera: CameraConfig) -> None:

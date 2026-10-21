@@ -7,8 +7,10 @@ It does not include detection, tracking, or other processing.
 
 import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .file_ingest import FileVideoSource
 from .video_source import VideoSource
@@ -35,7 +37,7 @@ class ThroughputResult:
     total_wall_clock_seconds: float = 0.0
     aggregate_real_time_factor: float = 0.0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "streams": [
@@ -73,7 +75,7 @@ class ThroughputHarness:
     AC-04 requires ≥1.0x aggregate real-time factor for 6 streams.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._results = ThroughputResult()
 
     def measure_stream(self, source: VideoSource) -> StreamStats:
@@ -112,7 +114,7 @@ class ThroughputHarness:
 
     def measure_multiple_sequential(
         self,
-        sources: list[VideoSource],
+        sources: Sequence[VideoSource],
     ) -> ThroughputResult:
         """Measure throughput for multiple streams processed sequentially.
 

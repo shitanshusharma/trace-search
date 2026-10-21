@@ -6,6 +6,8 @@ Defines the common interface for video sources (files, RTSP streams).
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
+from types import TracebackType
+from typing import Any, Literal, Self
 
 import numpy as np
 
@@ -14,7 +16,7 @@ import numpy as np
 class Frame:
     """A single decoded video frame with metadata."""
 
-    image: np.ndarray  # Shape (H, W, 3), dtype uint8, BGR format
+    image: np.ndarray[Any, np.dtype[Any]]  # Shape (H, W, 3), dtype uint8, BGR format
     timestamp_seconds: float  # Timestamp in camera's clock (seconds since epoch)
     frame_number: int  # Sequential frame number from source (0-indexed)
     camera_id: str  # Camera identifier
@@ -106,12 +108,17 @@ class VideoSource(ABC):
                 break
             yield frame
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         """Context manager entry."""
         self.open()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> Literal[False]:
         """Context manager exit."""
         self.close()
         return False

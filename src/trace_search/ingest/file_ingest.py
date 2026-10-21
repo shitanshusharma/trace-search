@@ -108,12 +108,16 @@ class FileVideoSource(VideoSource):
         if not self._is_open or self._cap is None:
             return None
 
+        start_timestamp = self._start_timestamp
+        if start_timestamp is None:
+            return None
+
         ret, image = self._cap.read()
         if not ret or image is None:
             return None
 
         # Compute timestamp: start + (frame_number / fps)
-        timestamp = self._start_timestamp + (self._current_frame_number / self._fps)
+        timestamp = start_timestamp + (self._current_frame_number / self._fps)
 
         frame = Frame(
             image=image,
