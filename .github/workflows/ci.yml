@@ -53,7 +53,8 @@ jobs:
         # and do not uninstall packages from either environment.
         python -m venv .venv-ci-fence
         .venv-ci-fence/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
-        PYTHONPATH=src:. .venv-ci-fence/bin/python -m scripts.check_ci_licenses --report ci-tools-licence-report.json
+        site="$(.venv-ci-fence/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+        PYTHONPATH=src .venv-ci-fence/bin/python -m scripts.check_ci_licenses --path "$site" --report ci-tools-licence-report.json
 
     - name: Upload license report
       if: always()

@@ -9,7 +9,7 @@ The CI pipeline enforces quality gates and security checks on every PR and push 
 Two hashed locks stay apart:
 
 - `requirements-dev.lock` is the app environment. The licence fence job installs only this file. Its package versions match `licenses/manifest.json`, including `jsonschema==4.26.0`.
-- `requirements-ci.lock` is CI-only (semgrep, mypy, bandit, pip-audit, radon, diff-cover, and their dependencies). Install it with `--require-hashes --no-deps` in its own virtualenv. Do not install it into the app fence environment, and do not uninstall packages from either environment. These packages are out of scope for AC-01: they are not added to `licenses/manifest.json`. The same job then runs `scripts/check_ci_licenses.py` on that virtualenv. It uses the app fence's banned-licence parser and fails closed on AGPL, GPL, and the rest of that list. It does not add an allowlist. `semgrep` (`LGPL-2.1-or-later`) and `certifi` (`MPL-2.0`) are not banned terms. `face` 26.0.1 and `peewee` 3.19.0 ship no licence metadata; the check warns for those two exact versions after the upstream LICENSE files were read (BSD-3-Clause and MIT) and fails closed on any other unknown. `requirements-ci-licenses.txt` is an informational pip-licenses dump, not a manifest.
+- `requirements-ci.lock` is CI-only (semgrep, mypy, bandit, pip-audit, radon, diff-cover, and their dependencies). Install it with `--require-hashes --no-deps` in its own virtualenv. Do not install it into the app fence environment, and do not uninstall packages from either environment. These packages are out of scope for AC-01: they are not added to `licenses/manifest.json`. The same job then runs `scripts/check_ci_licenses.py` on that virtualenv's site-packages (`--path`). Trove classifiers and short licence headers are mapped to SPDX, then judged with the app fence's banned-licence parser. AGPL and GPL fail. Unrecognised text fails closed. It does not add an allowlist. `semgrep` (`LGPL-2.1-or-later`) and `certifi` (`MPL-2.0`) are not banned terms. `face` 26.0.1 and `peewee` 3.19.0 ship no licence metadata; the check warns for those two exact versions after the upstream LICENSE files were read (BSD-3-Clause and MIT) and fails closed on any other unknown. `requirements-ci-licenses.txt` is an informational pip-licenses dump, not a manifest.
 
 ## Quality Checks
 
@@ -371,15 +371,16 @@ python scripts/check_licenses.py \
   --report=license-report.json
 ```
 
-The same job then checks CI-only tools. That step installs `requirements-ci.lock` with `--require-hashes --no-deps` into a fresh virtualenv and runs:
+The same job then checks CI-only tools. That step installs `requirements-ci.lock` with `--require-hashes --no-deps` into `.venv-ci-fence` and scans only that environment's site-packages:
 
 ```bash
-python3 -m venv .venv-ci
-.venv-ci/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
-PYTHONPATH=src:. .venv-ci/bin/python -m scripts.check_ci_licenses
+python3 -m venv .venv-ci-fence
+.venv-ci-fence/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
+site="$(.venv-ci-fence/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+PYTHONPATH=src .venv-ci-fence/bin/python -m scripts.check_ci_licenses --path "$site"
 ```
 
-`scripts/check_ci_licenses.py` reads each installed package's `License-Expression`, licence classifier, or one-line `License` field, and passes that string to `is_license_banned` in `scripts/check_licenses.py`. A banned term fails the job. Missing or `UNKNOWN` metadata fails closed, except `face==26.0.1` (BSD-3-Clause, https://github.com/mahmoud/face/blob/v26.0.1/LICENSE) and `peewee==3.19.0` (MIT, https://github.com/coleifer/peewee/blob/3.19.0/LICENSE). Those two rows are warnings. The exception does not apply when a licence string is present, so it cannot hide AGPL or GPL. No allowlist entry was added for LGPL or MPL.
+`scripts/check_ci_licenses.py` reads each installed package's `License-Expression`, every licence classifier, and a one-line `License` header. The header is checked even when classifiers exist, so `OSI Approved` plus `License: AGPL-3.0` fails. Classifier tails and shorthands are mapped to SPDX, then passed to `is_license_banned` in `scripts/check_licenses.py`. `GNU General Public License v3 (GPLv3)`, `GNU Affero General Public License v3 or later (AGPLv3+)`, and bare `GPLv3` fail. `GNU Lesser General Public License v2 or later (LGPLv2+)` stays allowed. A classifier that is only `OSI Approved` is not a licence and fails closed. Any other free text that does not map to SPDX fails closed. Missing or `UNKNOWN` metadata fails closed, except the exact name and version `face==26.0.1` (BSD-3-Clause, https://github.com/mahmoud/face/blob/v26.0.1/LICENSE) and `peewee==3.19.0` (MIT, https://github.com/coleifer/peewee/blob/3.19.0/LICENSE). Those two rows are warnings, and only when metadata is missing. `PYTHONPATH` is only so the checker can import the package; it is not the scan scope. No allowlist entry was added for LGPL or MPL.
 
 **Note:** This check is part of the existing `.github/workflows/ci.yml` from PR #1. The job name is `Lint, Test, and License Check` and includes linting, tests, the app licence fence, and the CI-tools banned-licence check. No extra required check name is added.
 
@@ -579,7 +580,7 @@ Dependabot configuration is in `.github/dependabot.yml`:
 **License fence failures:**
 - Add missing app dependencies to `licenses/manifest.json`
 - Replace banned dependencies (AGPL/GPL/NC)
-- For `requirements-ci.lock`, fix the package or its metadata. Do not add a manifest row for a CI-only tool. An unknown licence fails unless that exact name and version is already in the reviewed override list in `scripts/check_ci_licenses.py`.
+- For `requirements-ci.lock`, fix the package or its metadata. Do not add a manifest row for a CI-only tool. Unrecognised licence text fails closed. Missing metadata fails unless that exact name and version is already in the reviewed override list in `scripts/check_ci_licenses.py`.
 
 ### CI Performance
 

@@ -71,7 +71,8 @@ security:
 	@echo "→ License fence..."
 	python scripts/check_licenses.py --requirements=requirements-dev.txt
 	@echo "→ CI tools banned licences..."
-	PYTHONPATH=src:. .venv-ci/bin/python -m scripts.check_ci_licenses
+	@site="$$(.venv-ci/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"; \
+	PYTHONPATH=src .venv-ci/bin/python -m scripts.check_ci_licenses --path "$$site"
 
 check: lint types test complexity security
 	@echo "✅ All checks passed!"
