@@ -10,6 +10,7 @@ from tests.media_helpers import write_mp4v_variant
 from trace_search.fixtures.generator import SyntheticVideoGenerator
 from trace_search.fixtures.guards import (
     FixtureSeparationError,
+    FixtureUseTag,
     LoaderContext,
     check_fixture_allowed,
     validate_dataset_for_context,
@@ -249,6 +250,58 @@ def test_hash_exception_is_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("trace_search.fixtures.guards.sha256_file", _boom)
     with pytest.raises(FixtureSeparationError, match="FAIL-CLOSED"):
         validate_dataset_for_context([clip], manifest, LoaderContext.TRAINING)
+
+
+def test_smoke_test_refuses_every_tag_except_smoke_only(tmp_path: Path):
+    clip = tmp_path / "tagged.mp4"
+    gen = _clip(clip, 601)
+    sha = gen.compute_sha256(clip)
+    phashes = gen.compute_phashes(clip)
+    refused = [tag for tag in FixtureUseTag if tag is not FixtureUseTag.SMOKE_ONLY]
+    assert {tag.value for tag in refused} >= {"CODE_TEST", "TRAIN", "DEV", "HOLD"}
+    for tag in refused:
+        manifest = _manifest(tmp_path, sha, phashes, "FX-TAGGED-001", tag.value)
+        with pytest.raises(FixtureSeparationError, match=tag.value):
+            check_fixture_allowed(clip, LoaderContext.SMOKE_TEST, manifest)
+
+
+def test_smoke_test_allows_smoke_only(tmp_path: Path):
+    clip = tmp_path / "smoke.mp4"
+    gen = _clip(clip, 602)
+    manifest = _manifest(
+        tmp_path,
+        gen.compute_sha256(clip),
+        gen.compute_phashes(clip),
+        "FX-SMOKE-SYN-602",
+        "SMOKE_ONLY",
+    )
+    check_fixture_allowed(clip, LoaderContext.SMOKE_TEST, manifest)
+
+
+def test_smoke_test_refuses_a_file_with_no_row(tmp_path: Path):
+    clip = tmp_path / "unknown.mp4"
+    _clip(clip, 603)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"entries": []}))
+    with pytest.raises(FixtureSeparationError, match="no manifest row"):
+        check_fixture_allowed(clip, LoaderContext.SMOKE_TEST, manifest)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        LoaderContext.UNIT_TEST,
+        LoaderContext.TRAINING,
+        LoaderContext.EVALUATION,
+        LoaderContext.STUDY,
+    ],
+)
+def test_other_contexts_still_allow_an_unidentified_file(tmp_path: Path, context: LoaderContext):
+    clip = tmp_path / "unknown.mp4"
+    _clip(clip, 604)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"entries": []}))
+    check_fixture_allowed(clip, context, manifest)
 
 
 def test_loader_allows_train_in_training(tmp_path: Path):

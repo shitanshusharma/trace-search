@@ -3,6 +3,10 @@
 SHA-256 matches the manifest. pHash (Hamming <= 8) catches a re-encode.
 Unknown use tags, unknown contexts, missing files, and decode or pHash
 errors are denied.
+
+SMOKE_TEST allows only SMOKE_ONLY rows. A file with no manifest row fails
+closed. The other contexts are unchanged: they still deny their existing
+forbidden tags, and a file that is not in the manifest is still allowed.
 """
 
 from __future__ import annotations
@@ -122,6 +126,29 @@ def identify_fixture_by_content(
     return None
 
 
+def _deny_unidentified_smoke(file_path: Path, context: LoaderContext) -> None:
+    """Smoke stores rows as SMOKE, so a file with no SMOKE_ONLY row is refused.
+
+    Other contexts still allow a file that is not in the manifest.
+    """
+    if context is not LoaderContext.SMOKE_TEST:
+        return
+    raise FixtureSeparationError(
+        f"FAIL-CLOSED: no manifest row for {file_path} (refused before the clip is opened)"
+    )
+
+
+def _allow_smoke_only(file_path: Path, use_tag: FixtureUseTag, fixture_id: str) -> None:
+    """SMOKE_TEST is an allow-list: only SMOKE_ONLY may be loaded."""
+    if use_tag is FixtureUseTag.SMOKE_ONLY:
+        return
+    raise FixtureSeparationError(
+        f"Fixture {file_path} identified as {fixture_id} with use tag {use_tag.value} "
+        f"is FORBIDDEN in {LoaderContext.SMOKE_TEST.value} context "
+        "(identified by SHA-256 or pHash)."
+    )
+
+
 def _enforce(
     file_path: Path,
     context: LoaderContext,
@@ -130,8 +157,12 @@ def _enforce(
 ) -> None:
     identified = identify_fixture_by_content(file_path, manifest_fixtures, hamming_threshold)
     if identified is None:
+        _deny_unidentified_smoke(file_path, context)
         return
     use_tag, fixture_id = identified
+    if context is LoaderContext.SMOKE_TEST:
+        _allow_smoke_only(file_path, use_tag, fixture_id)
+        return
     forbidden = FORBIDDEN_TAGS_BY_CONTEXT.get(context, set())
     if use_tag in forbidden:
         raise FixtureSeparationError(
@@ -146,7 +177,7 @@ def check_fixture_allowed(
     manifest_path: Path,
     hamming_threshold: int = HAMMING_THRESHOLD,
 ) -> None:
-    """Deny forbidden fixtures and any failure to identify the file."""
+    """Deny forbidden fixtures. SMOKE_TEST allows only a SMOKE_ONLY row."""
     _require_context(context)
     fixtures = load_manifest_fixtures(manifest_path)
     _enforce(Path(file_path), context, fixtures, hamming_threshold)
