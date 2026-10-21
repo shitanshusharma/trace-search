@@ -90,6 +90,29 @@ def inspect_opencv_libavcodec() -> tuple[str, str]:
     )
 
 
+def _judge_lgpl_evidence(license_str: str, config_str: str) -> tuple[bool, str]:
+    """Judge license and configuration strings already read from libavcodec.
+
+    Empty evidence, a non-LGPL license, --enable-gpl, or --enable-nonfree
+    fails closed.
+    """
+    if not license_str.strip():
+        return False, "avcodec_license() returned empty evidence"
+    if not config_str.strip():
+        return False, "avcodec_configuration() returned empty evidence"
+
+    if "LGPL" not in license_str.upper():
+        return False, f"License is not LGPL: {license_str!r}"
+
+    config_lower = config_str.lower()
+    if "--enable-gpl" in config_lower:
+        return False, f"Configuration contains --enable-gpl: {config_str!r}"
+    if "--enable-nonfree" in config_lower:
+        return False, f"Configuration contains --enable-nonfree: {config_str!r}"
+
+    return True, f"FFmpeg LGPL compliance verified: {license_str}"
+
+
 def check_ffmpeg_lgpl_compliance() -> tuple[bool, str]:
     """Fail-closed LGPL check for the OpenCV wheel's libavcodec.
 
@@ -113,18 +136,4 @@ def check_ffmpeg_lgpl_compliance() -> tuple[bool, str]:
     except Exception as exc:
         return False, f"Failed to load libavcodec: {exc}"
 
-    if not license_str.strip():
-        return False, "avcodec_license() returned empty evidence"
-    if not config_str.strip():
-        return False, "avcodec_configuration() returned empty evidence"
-
-    if "LGPL" not in license_str.upper():
-        return False, f"License is not LGPL: {license_str!r}"
-
-    config_lower = config_str.lower()
-    if "--enable-gpl" in config_lower:
-        return False, f"Configuration contains --enable-gpl: {config_str!r}"
-    if "--enable-nonfree" in config_lower:
-        return False, f"Configuration contains --enable-nonfree: {config_str!r}"
-
-    return True, f"FFmpeg LGPL compliance verified: {license_str}"
+    return _judge_lgpl_evidence(license_str, config_str)
