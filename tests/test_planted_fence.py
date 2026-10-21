@@ -1444,3 +1444,426 @@ def test_openssl_semicolon_mit_on_libssl_row_fails(tmp_path):
     code, stdout, _ = invoke_main(make_manifest([row]), tmp_dir=tmp_path)
     assert code == 1, stdout
     assert "license 'OpenSSL; MIT' not in allowed list" in stdout
+
+
+# ----- Pillow bundled libs and scipy OpenBLAS / LAPACK (T-7-8) -----
+
+_FTL_CREDIT = (
+    "Portions of this software are copyright © 1996-2026 The FreeType "
+    "Project (www.freetype.org).  All rights reserved."
+)
+_NEW_PILLOW_FILES = {
+    "pillow.libs/libfreetype-57f805ba.so.6.20.6": "FTL",
+    "pillow.libs/libharfbuzz-fb49c9fc.so.0.61450.0": "MIT-Modern-Variant",
+    "pillow.libs/libpng16-1d1ba958.so.16.58.0": "libpng-2.0",
+    "pillow.libs/libXau-154567c4.so.6.0.0": "MIT-open-group",
+    "pillow.libs/libxcb-9065bb12.so.1.1.0": "X11",
+}
+_PRIMARY_PILLOW_NAMES = {"FreeType", "HarfBuzz", "libpng", "libXau", "libxcb"}
+_OPENBLAS_FILE = "scipy.libs/libscipy_openblas-6cdc3b4a.so"
+_OPENBLAS_LICENSE = "BSD-3-Clause AND BSD-3-Clause-Open-MPI"
+_ADDED_SPDX = {
+    "MIT-Modern-Variant",
+    "libpng-2.0",
+    "X11",
+    "BSD-3-Clause-Open-MPI",
+    "MIT-open-group",
+    "bzip2-1.0.6",
+}
+_CONTAINED_COMPONENTS = (
+    ("bzip2", "pillow.libs/libfreetype-57f805ba.so.6.20.6", "1.0.8", "bzip2-1.0.6"),
+    ("zlib-ng", "pillow.libs/libfreetype-57f805ba.so.6.20.6", "2.3.3", "Zlib"),
+    ("zlib-ng", "pillow.libs/libpng16-1d1ba958.so.16.58.0", "2.3.3", "Zlib"),
+)
+
+
+def _manifest_entries():
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    return manifest["entries"]
+
+
+def _new_pillow_rows():
+    rows = [
+        entry
+        for entry in _manifest_entries()
+        if entry.get("name") in _PRIMARY_PILLOW_NAMES
+        and str(entry.get("bundled_in", "")).startswith("pillow-13.0.0")
+        and entry.get("bundled_file") in _NEW_PILLOW_FILES
+    ]
+    assert len(rows) == 5
+    return rows
+
+
+def _freetype_row():
+    rows = [
+        entry
+        for entry in _manifest_entries()
+        if entry.get("name") == "FreeType"
+        and entry.get("bundled_file") == "pillow.libs/libfreetype-57f805ba.so.6.20.6"
+    ]
+    assert len(rows) == 1
+    return dict(rows[0])
+
+
+def _contained_component_rows():
+    found = []
+    for name, bundled_file, version, licence in _CONTAINED_COMPONENTS:
+        matches = [
+            entry
+            for entry in _manifest_entries()
+            if entry.get("name") == name
+            and entry.get("bundled_file") == bundled_file
+            and str(entry.get("bundled_in", "")).startswith("pillow-13.0.0")
+        ]
+        assert len(matches) == 1
+        row = matches[0]
+        assert row["version"] == version
+        assert row["license"] == licence
+        found.append(row)
+    return found
+
+
+def _openblas_row():
+    rows = [
+        entry
+        for entry in _manifest_entries()
+        if entry.get("bundled_file") == _OPENBLAS_FILE
+    ]
+    assert len(rows) == 1
+    return dict(rows[0])
+
+
+def test_new_pillow_rows_and_openblas_expression_pass():
+    """The five new Pillow rows and the OpenBLAS plus LAPACK expression pass."""
+    rows = _new_pillow_rows()
+    by_file = {row["bundled_file"]: row["license"] for row in rows}
+    assert by_file == _NEW_PILLOW_FILES
+    freetype = _freetype_row()
+    spec = cl.PILLOW_BUNDLED_FILE_EXCEPTIONS[0]
+    assert len(cl.PILLOW_BUNDLED_FILE_EXCEPTIONS) == 1
+    assert spec["license"] == "FTL"
+    assert spec["file"] == freetype["bundled_file"]
+    assert spec["sha256"] == freetype["sha256"]
+    assert spec["name"] == freetype["name"]
+    assert spec["version"] == freetype["version"]
+    assert freetype["bundled_package"] == "Pillow"
+    assert freetype["bundled_package_version"] == "13.0.0"
+    openblas = _openblas_row()
+    assert openblas["license"] == _OPENBLAS_LICENSE
+    code, stdout, _ = invoke_main(make_manifest(rows + [openblas]))
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+    assert cl.is_license_allowed(_OPENBLAS_LICENSE) is True
+
+
+@pytest.mark.parametrize("planted", ["GPL-2.0", "GPL-2.0-or-later"])
+def test_planted_freetype_gpl_fails(planted):
+    """A FreeType row recorded as GPL-2.0 or GPL-2.0-or-later fails the fence."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    changed = False
+    for entry in manifest["entries"]:
+        if (
+            entry.get("name") == "FreeType"
+            and entry.get("bundled_file") == "pillow.libs/libfreetype-57f805ba.so.6.20.6"
+        ):
+            assert entry["license"] == "FTL"
+            entry["license"] = planted
+            changed = True
+            break
+    assert changed
+    code, stdout, _ = invoke_main(manifest)
+    assert code == 1, stdout
+    assert f"banned license '{planted}'" in stdout
+    assert "banned pattern '^GPL-[123]'" in stdout
+
+
+def test_ftl_on_a_file_that_is_not_libfreetype_fails():
+    """FTL is not a global licence. Another file still fails."""
+    row = _freetype_row()
+    row["bundled_file"] = "pillow.libs/libharfbuzz-fb49c9fc.so.0.61450.0"
+    assert "libfreetype" not in row["bundled_file"]
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert "FreeType" in stdout
+    assert "license 'FTL' not in allowed list" in stdout
+    plain = library_entry(name="not-freetype", license_id="FTL")
+    code, stdout, _ = invoke_main(make_manifest([plain]))
+    assert code == 1, stdout
+    assert "not-freetype" in stdout
+    assert "license 'FTL' not in allowed list" in stdout
+    assert cl.is_license_allowed("FTL") is False
+
+
+def test_freetype_row_with_wrong_sha256_fails():
+    """FTL on libfreetype fails when the row sha256 is not the pinned file."""
+    row = _freetype_row()
+    assert row["license"] == "FTL"
+    assert row["sha256"] != "0" * 64
+    row["sha256"] = "0" * 64
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert "FreeType" in stdout
+    assert "license 'FTL' not in allowed list" in stdout
+
+
+def test_freetype_on_disk_sha256_mismatch_fails(tmp_path, monkeypatch):
+    """A different file at the libfreetype path fails the named exception."""
+    row = _freetype_row()
+    site_root = tmp_path / "site-packages"
+    target = site_root / row["bundled_file"]
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"not-the-real-libfreetype")
+    actual = cl.sha256_file(target)
+    assert actual != row["sha256"]
+    code, stdout, _ = _run_installed_closure([row], tmp_path, monkeypatch, [site_root])
+    assert code == 1, stdout
+    assert row["bundled_file"] in stdout
+    assert actual in stdout
+    assert row["sha256"] in stdout
+    assert "does not match" in stdout
+    assert "license 'FTL' not in allowed list" in stdout
+
+
+def test_freetype_matching_on_disk_passes(tmp_path, monkeypatch):
+    """The libfreetype exception passes when the installed digest is the pin."""
+    row = _freetype_row()
+    site_root = tmp_path / "site-packages"
+    target = site_root / row["bundled_file"]
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"placeholder")
+
+    def fake_sha256(path):
+        relative = str(Path(path).relative_to(site_root)).replace("\\", "/")
+        assert relative == row["bundled_file"]
+        return row["sha256"]
+
+    monkeypatch.setattr(cl, "sha256_file", fake_sha256)
+    code, stdout, _ = _run_installed_closure([row], tmp_path, monkeypatch, [site_root])
+    assert code == 0, stdout
+    assert "Checking Pillow bundled file hashes" in stdout
+    assert f"{row['bundled_file']} sha256 {row['sha256']}" in stdout
+    assert "License fence check PASSED" in stdout
+
+
+def test_openblas_expression_with_gpl_still_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="OpenBLAS",
+                license_id="BSD-3-Clause AND BSD-3-Clause-Open-MPI AND GPL-2.0",
+            )
+        ])
+    )
+    assert code == 1, stdout
+    assert "banned" in stdout.lower()
+    assert "GPL-2.0" in stdout
+
+
+def test_allowlist_adds_only_the_six_plain_strings():
+    """FTL stays off the allowlist. The six plain ids in _ADDED_SPDX are the only additions."""
+    previous = {
+        "MIT",
+        "Apache-2.0",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "ISC",
+        "CC0-1.0",
+        "CC-BY-4.0",
+        "LGPL-2.1-only",
+        "LGPL-2.1-or-later",
+        "LGPL-3.0-only",
+        "LGPL-3.0-or-later",
+        "PSF-2.0",
+        "MPL-2.0",
+        "Unlicense",
+        "0BSD",
+        "HPND",
+        "MIT-CMU",
+        "IJG",
+    }
+    assert cl.ALLOWED_SPDX == previous | _ADDED_SPDX
+    assert "FTL" not in cl.ALLOWED_SPDX
+    assert "FTL" not in cl.ALLOWED_NON_SPDX
+    for licence in _ADDED_SPDX:
+        assert cl.is_license_allowed(licence) is True
+    assert cl.ALLOWED_NON_SPDX == {
+        "MIT License",
+        "Apache License 2.0",
+        "Apache Software License",
+        "BSD License",
+        "ISC License",
+        "ISC License (ISCL)",
+        "Python Software Foundation License",
+        "Public Domain",
+        "Historical Permission Notice and Disclaimer (HPND)",
+        "MIT CMU License (MIT-CMU)",
+        "Pexels License",
+        "Pixabay Content License",
+        "Zlib",
+        "Libpng",
+        "libtiff",
+    }
+    assert cl.GCC_RUNTIME_EXCEPTION_LIBRARIES == {
+        "libgfortran",
+        "libquadmath",
+        "libgcc-s",
+        "libstdc++",
+    }
+    assert cl.GCC_RUNTIME_EXCEPTION_LICENSES == {
+        "GPL-3.0 WITH GCC-exception-3.1",
+        "GPL-3.0-only WITH GCC-exception-3.1",
+        "GPL-3.0-or-later WITH GCC-exception-3.1",
+        "GCC Runtime Library Exception",
+    }
+    assert cl.PIP_LICENSES_TO_SPDX == {
+        ("imagehash", "2-clause BSD License"): "BSD-2-Clause",
+    }
+    assert [spec["license"] for spec in cl.OPENCV_BUNDLED_FILE_EXCEPTIONS] == [
+        "OpenSSL",
+        "OpenSSL",
+        "LicenseRef-Intel-Simplified-Software-License",
+        "LicenseRef-Intel-Simplified-Software-License",
+    ]
+    assert "FTL" not in {spec["license"] for spec in cl.OPENCV_BUNDLED_FILE_EXCEPTIONS}
+    assert "Zlib" in cl.ALLOWED_NON_SPDX
+    assert "Zlib" not in cl.ALLOWED_SPDX
+    assert "bzip2-1.0.6" not in cl.ALLOWED_NON_SPDX
+    assert "MIT-open-group" not in cl.ALLOWED_NON_SPDX
+
+
+def test_freetype_credit_line_uses_the_wheel_sentence():
+    text = Path("THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    assert _FTL_CREDIT in text
+    assert "<year>" not in text
+    assert "VER-2-14-3" in text
+    assert "freetype.h" in text
+    assert "GPL" not in text
+    fence = Path("docs/license-fence.md").read_text(encoding="utf-8")
+    assert "THIRD_PARTY_NOTICES.md" in fence
+    assert "FTL" in fence
+
+
+_COMPOUND_FTL = [
+    "FTL OR GPL-2.0-or-later",
+    "FTL OR GPL-2.0+",
+    "GPL-2.0-or-later OR FTL",
+    "FTL AND MIT",
+    "FTL WITH GCC-exception-3.1",
+]
+
+
+@pytest.mark.parametrize("planted", _COMPOUND_FTL)
+def test_compound_ftl_on_the_real_freetype_row_fails(planted):
+    """OR, AND, and WITH on the real FreeType row do not get the bare FTL exception."""
+    row = _freetype_row()
+    assert row["license"] == "FTL"
+    assert cl.is_pillow_bundled_file_exception("FTL", row, _on_disk_pin(row)) is True
+    row["license"] = planted
+    assert cl._is_single_bare_license_term(planted) is False
+    assert cl.is_pillow_bundled_file_exception(planted, row, _on_disk_pin(row)) is False
+    decision = cl._license_decision(planted, row["name"], row, _on_disk_pin(row))
+    assert decision[1] is False
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert "FreeType" in stdout
+    assert planted in stdout
+    if "GPL" in planted:
+        assert f"banned license '{planted}'" in stdout
+        assert "banned pattern '^GPL-[123]'" in stdout
+    else:
+        assert f"license '{planted}' not in allowed list" in stdout
+        assert "banned license" not in stdout
+
+
+def test_missing_libfreetype_on_disk_fails(tmp_path, monkeypatch):
+    """A FreeType row whose file is absent on disk fails and names that file."""
+    row = _freetype_row()
+    relative = row["bundled_file"]
+    assert relative == "pillow.libs/libfreetype-57f805ba.so.6.20.6"
+    site_root = tmp_path / "site-packages"
+    site_root.mkdir()
+    assert not (site_root / relative).is_file()
+    code, stdout, _ = _run_installed_closure([row], tmp_path, monkeypatch, [site_root])
+    assert code == 1, stdout
+    assert (
+        f"FreeType: bundled file {relative} is missing "
+        f"(manifest sha256 {row['sha256']}, pinned sha256 {row['sha256']})"
+    ) in stdout
+
+
+def test_libxau_row_licence_is_mit_open_group():
+    """libXau is MIT-open-group. libxcb stays X11."""
+    rows = [
+        entry
+        for entry in _manifest_entries()
+        if entry.get("bundled_file") == "pillow.libs/libXau-154567c4.so.6.0.0"
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["name"] == "libXau"
+    assert row["license"] == "MIT-open-group"
+    xcb = [
+        entry
+        for entry in _new_pillow_rows()
+        if entry["bundled_file"] == "pillow.libs/libxcb-9065bb12.so.1.1.0"
+    ]
+    assert len(xcb) == 1
+    assert xcb[0]["license"] == "X11"
+    assert "MIT-open-group" in cl.ALLOWED_SPDX
+    assert "X11" in cl.ALLOWED_SPDX
+    code, stdout, _ = invoke_main(make_manifest([row, xcb[0]]))
+    assert code == 0, stdout
+    assert "License fence check PASSED" in stdout
+
+
+def test_contained_bzip2_and_zlib_rows_pass():
+    """bzip2 and zlib-ng rows pass, and the FreeType row stays bare FTL."""
+    rows = _contained_component_rows()
+    freetype = _freetype_row()
+    libpng = [
+        entry
+        for entry in _new_pillow_rows()
+        if entry["name"] == "libpng"
+    ]
+    assert len(libpng) == 1
+    assert freetype["license"] == "FTL"
+    assert libpng[0]["license"] == "libpng-2.0"
+    assert cl.PILLOW_BUNDLED_FILE_EXCEPTIONS[0]["license"] == "FTL"
+    assert cl.PILLOW_BUNDLED_FILE_EXCEPTIONS[0]["sha256"] == freetype["sha256"]
+    by_file = {entry["bundled_file"]: entry["sha256"] for entry in (freetype, libpng[0])}
+    for row in rows:
+        assert row["sha256"] == by_file[row["bundled_file"]]
+    assert cl.is_license_allowed("bzip2-1.0.6") is True
+    assert cl.is_license_allowed("Zlib") is True
+    code, stdout, _ = invoke_main(make_manifest(rows + [freetype, libpng[0]]))
+    assert code == 0, stdout
+    assert "License fence check PASSED" in stdout
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_contained_component_row_with_gpl_fails(index):
+    """A bzip2 or zlib-ng row recorded as GPL-2.0 fails the fence."""
+    row = dict(_contained_component_rows()[index])
+    assert "GPL" not in row["license"]
+    row["license"] = "GPL-2.0"
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert row["name"] in stdout
+    assert "banned license 'GPL-2.0'" in stdout
+    assert "banned pattern '^GPL-[123]'" in stdout
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_ftl_on_contained_component_row_fails(index):
+    """FTL on a bzip2 or zlib-ng row is not the FreeType exception."""
+    row = dict(_contained_component_rows()[index])
+    assert row["name"] != "FreeType"
+    assert row["license"] != "FTL"
+    row["license"] = "FTL"
+    assert "FTL" not in cl.ALLOWED_SPDX
+    assert "FTL" not in cl.ALLOWED_NON_SPDX
+    assert cl.is_pillow_bundled_file_exception("FTL", row, _on_disk_pin(row)) is False
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert row["name"] in stdout
+    assert "license 'FTL' not in allowed list" in stdout
