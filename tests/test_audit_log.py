@@ -35,13 +35,13 @@ _ACTIONS = (
 
 def _create_audit_log(
     tmp_path: Path,
-    name: str = "audit.jsonl",
+    filename: str = "audit.jsonl",
     *,
     initialized: bool = True,
 ) -> AuditLog:
     """Build a log whose key lives outside AUDIT_LOG_DIR, under tmp_path."""
-    log_path = tmp_path / name
-    key_path = tmp_path / "keys" / f"{name}.key"
+    log_path = tmp_path / filename
+    key_path = tmp_path / "keys" / f"{filename}.key"
     init_hmac_key(key_path)
     log = AuditLog(log_path, key_path=key_path)
     if initialized:
@@ -59,9 +59,7 @@ def _read_lines(log: AuditLog) -> list[dict]:
 
 
 def _write_lines(log: AuditLog, rows: list[dict]) -> None:
-    payload = "".join(
-        json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows
-    )
+    payload = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
     log.log_path.write_text(payload, encoding="utf-8")
 
 
@@ -623,7 +621,7 @@ class TestVerifyNeverRaises:
         assert result.broken_index == 1
         assert "Missing required field 'action'" in (result.error_message or "")
 
-        log2 = _create_audit_log(tmp_path, name="types.jsonl")
+        log2 = _create_audit_log(tmp_path, filename="types.jsonl")
         _append_login(log2)
         wrong = {
             "timestamp": "2026-10-20T12:00:00+05:30",
@@ -644,7 +642,7 @@ class TestVerifyNeverRaises:
         assert "result_ids" in (typed.error_message or "")
         assert "wrong type" in (typed.error_message or "")
 
-        log3 = _create_audit_log(tmp_path, name="extra.jsonl")
+        log3 = _create_audit_log(tmp_path, filename="extra.jsonl")
         _append_login(log3)
         extra = {
             "timestamp": "2026-10-20T12:00:00+05:30",

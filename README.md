@@ -34,14 +34,15 @@ This is investigative tooling with human review, not automated surveillance.
 This project maintains **strict license hygiene** for commercial use:
 
 - **Banned licenses:** AGPL, GPL, NC (Non-Commercial), unknown/unrecognized
+- **GCC Runtime Library Exception:** The single GPL-family exception is GCC runtime libraries (`libgfortran`, `libquadmath`, `libgcc_s`, `libstdc++`) with the GCC Runtime Library Exception (`GPL-3.0 WITH GCC-exception-3.1`), which are required runtime components
 - **Banned components:** Ultralytics (AGPL), boxmot (AGPL), InsightFace/ArcFace, OpenGait
 - **Banned datasets:** Market-1501, MSMT17, DukeMTMC, CUHK03, CASIA-B, GREW, Gait3D, Objects365-trained weights
 
 Every dependency, model, weight, dataset, and test clip is tracked in [`licenses/manifest.json`](licenses/manifest.json) with:
 - Name, version, license, source URL, SHA-256
-- For video clips: license version, date checked (IST), perceptual hashes, usage tag
+- For video clips: repo-relative `path`, license version, date checked (IST), perceptual hashes, usage tag
 
-The CI runs automatic license checks against installed packages and the manifest. See [PRD Cut 01 §2, §3](docs/) for full details.
+CI verifies the full installed closure (direct + transitive dependencies) against the manifest and bans GPL/AGPL/SSPL/BUSL/NC/proprietary licenses and problematic components.
 
 ## Project Structure
 
@@ -122,7 +123,8 @@ The CI pipeline runs on every push and PR:
 2. **Unit tests** with pytest
 3. **Clean worktree** — fails if `git status --porcelain` is not empty after pytest
 4. **License fence check** - fails on any AGPL/GPL/NC/unknown license or banned component
-5. **AC-13 demo** — `python scripts/demo_audit_log.py --json`
+5. **CI tools banned-licence check** — separate venv from `requirements-ci.lock`
+6. **AC-13 demo** — `python scripts/demo_audit_log.py --json`
 
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for details.
 
@@ -152,7 +154,7 @@ The key comes only from `TRACE_AUDIT_HMAC_KEY` or from an explicit key file outs
 
 An attacker who holds the key and deletes both the log and the anchor is not detectable on this host. An attacker without the key who restores an older copy of both the log and the anchor also passes `verify()`. Logs written before `details` existed fail HMAC verification, because the canonical payload now includes `"details": null`. External anchoring is out of scope for Cut 01. The 1-year purge checkpoint is T9. Audit retention is 365 days.
 
-`tests/test_audit_log.py` is 55 tests, all under `tmp_path`. The full suite is 92 tests. Details and a sample proof are in [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md).
+`tests/test_audit_log.py` is 55 tests, all under `tmp_path`. The full suite is 277 tests. Details and a sample proof are in [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md).
 
 ## Privacy and Ethics
 
@@ -183,7 +185,7 @@ Internal contributors: follow the task plan. Each task gets one PR. Run tests an
 
 MIT License. See [LICENSE](LICENSE) for full text.
 
-All dependencies are tracked in [`licenses/manifest.json`](licenses/manifest.json) and verified by CI to exclude AGPL/GPL/SSPL/BUSL/NC licenses and banned components.
+All dependencies are tracked in [`licenses/manifest.json`](licenses/manifest.json). CI verifies that all installed packages (direct + transitive) have allowed licenses and are not on the banned list. See AC-01 for details.
 
 ## Contact
 

@@ -27,6 +27,24 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Semgrep --test fixtures are planted imports. Keep them out of ruff.
+extend-exclude = ["tests/semgrep"]
+
+# Main's copies of these files do not pass ruff format --check.
+# Do not reformat them. This is the only format exclude.
+[tool.ruff.format]
+exclude = [
+    "scripts/check_licenses.py",
+    "scripts/demo_planted_cases.py",
+    "src/trace_search/ingest/ffmpeg_check.py",
+    "tests/__init__.py",
+    "tests/test_comprehensive_fence.py",
+    "tests/test_full_closure_fence.py",
+    "tests/test_license_fence.py",
+    "tests/test_license_scanning.py",
+    "tests/test_package.py",
+    "tests/test_planted_fence.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
@@ -38,3 +56,6 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --strict-markers"
+markers = [
+    "ffmpeg_real: marks tests that load a real libavcodec",
+]

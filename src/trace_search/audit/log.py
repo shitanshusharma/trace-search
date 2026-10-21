@@ -11,12 +11,13 @@ import hmac
 import json
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 # IST for every stored timestamp (Asia/Kolkata, UTC+05:30).
@@ -104,11 +105,11 @@ def _lock_path(log_path: Path) -> Path:
     return Path(f"{log_path}.auditlock")
 
 
-def _canonical(payload: dict) -> str:
+def _canonical(payload: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def _hmac_hex(key: bytes, payload: dict) -> str:
+def _hmac_hex(key: bytes, payload: dict[str, Any]) -> str:
     digest = hmac.new(key, _canonical(payload).encode("utf-8"), hashlib.sha256)
     return digest.hexdigest()
 
@@ -129,8 +130,7 @@ def _decode_key(key_hex: str, source: str) -> bytes:
         raise RuntimeError(f"{source} must be a hex-encoded HMAC key") from exc
     if len(key) != _KEY_BYTES:
         raise RuntimeError(
-            f"{source} must be exactly {_KEY_BYTES} bytes "
-            f"({_KEY_BYTES * 2} hex characters)"
+            f"{source} must be exactly {_KEY_BYTES} bytes ({_KEY_BYTES * 2} hex characters)"
         )
     return key
 
@@ -144,9 +144,7 @@ def init_hmac_key(key_path: Path | str) -> Path:
     """
     path = Path(key_path)
     if is_audit_path(path):
-        raise RuntimeError(
-            f"Refusing to create an HMAC key inside {AUDIT_LOG_DIR}: {path}"
-        )
+        raise RuntimeError(f"Refusing to create an HMAC key inside {AUDIT_LOG_DIR}: {path}")
     if path.exists():
         raise FileExistsError(f"HMAC key file already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,7 +174,7 @@ class AuditEntry:
     prev_hmac: str = ""
     entry_hmac: str = ""
 
-    def hmac_payload(self) -> dict:
+    def hmac_payload(self) -> dict[str, Any]:
         payload = asdict(self)
         payload.pop("entry_hmac", None)
         return payload
@@ -206,6 +204,249 @@ def _require_nonempty_str(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} is required and must be a non-empty string")
     return value
+
+
+def _anchor_error(message: str) -> VerificationResult:
+    return VerificationResult(valid=False, total_entries=0, error_message=message)
+
+
+def _missing_anchor_field(data: dict[str, Any]) -> VerificationResult | None:
+    for field_name in ("last_hmac", "entry_count"):
+        if field_name not in data:
+            return _anchor_error(f"Head anchor is missing {field_name}")
+    return None
+
+
+def _anchor_field_types(data: dict[str, Any]) -> VerificationResult | None:
+    if not isinstance(data["last_hmac"], str) or isinstance(data["entry_count"], bool):
+        return _anchor_error("Head anchor field has the wrong type")
+    if not isinstance(data["entry_count"], int):
+        return _anchor_error("Head anchor field has the wrong type")
+    return None
+
+
+def _signed_anchor(data: dict[str, Any], key: bytes) -> _Anchor | VerificationResult:
+    expected = _hmac_hex(
+        key,
+        {"entry_count": data["entry_count"], "last_hmac": data["last_hmac"]},
+    )
+    if not _mac_equal(data["anchor_hmac"], expected):
+        return _anchor_error("Head anchor signature mismatch (unsigned or wrong key)")
+    last_hmac = data["last_hmac"]
+    entry_count = data["entry_count"]
+    if not isinstance(last_hmac, str) or not isinstance(entry_count, int):
+        return _anchor_error("Head anchor field has the wrong type")
+    return _Anchor(last_hmac=last_hmac, entry_count=entry_count)
+
+
+def _parse_anchor_object(data: object, key: bytes) -> _Anchor | VerificationResult:
+    if not isinstance(data, dict):
+        return _anchor_error("Head anchor is malformed: expected a JSON object")
+    if "anchor_hmac" not in data or not isinstance(data.get("anchor_hmac"), str):
+        return _anchor_error("Head anchor is unsigned (missing anchor_hmac)")
+    if data["anchor_hmac"] == "":
+        return _anchor_error("Head anchor is unsigned (missing anchor_hmac)")
+    missing = _missing_anchor_field(data)
+    if missing is not None:
+        return missing
+    typed = _anchor_field_types(data)
+    if typed is not None:
+        return typed
+    extra = set(data) - {"anchor_hmac", "entry_count", "last_hmac"}
+    if extra:
+        return _anchor_error(f"Head anchor has extra fields: {sorted(extra)}")
+    return _signed_anchor(data, key)
+
+
+def _invalid_entry(index: int, message: str) -> VerificationResult:
+    return VerificationResult(
+        valid=False,
+        total_entries=index,
+        broken_index=index,
+        error_message=message,
+    )
+
+
+def _check_entry_types(data: dict[str, Any], index: int) -> VerificationResult | None:
+    for field_name, expected in _REQUIRED_ENTRY_TYPES.items():
+        if field_name not in data:
+            return _invalid_entry(index, f"Missing required field '{field_name}' at entry {index}")
+        if not isinstance(data[field_name], expected):
+            return _invalid_entry(
+                index,
+                (
+                    f"Field '{field_name}' has the wrong type at entry {index}: "
+                    f"expected {expected.__name__}, "
+                    f"got {type(data[field_name]).__name__}"
+                ),
+            )
+    for field_name, expected in _OPTIONAL_ENTRY_TYPES.items():
+        if field_name not in data or data[field_name] is None:
+            continue
+        if not isinstance(data[field_name], expected):
+            return _invalid_entry(
+                index,
+                (
+                    f"Field '{field_name}' has the wrong type at entry {index}: "
+                    f"expected {expected.__name__}, "
+                    f"got {type(data[field_name]).__name__}"
+                ),
+            )
+    return None
+
+
+def _check_entry_shape(data: dict[str, Any], index: int) -> VerificationResult | None:
+    if isinstance(data.get("details"), str) and not data["details"].strip():
+        return _invalid_entry(index, f"details is blank at entry {index}")
+    extra = set(data) - set(_ENTRY_FIELDS)
+    if extra:
+        return _invalid_entry(index, f"Extra fields at entry {index}: {sorted(extra)}")
+    try:
+        AuditAction(data["action"])
+    except ValueError:
+        return _invalid_entry(index, f"Unknown action '{data['action']}' at entry {index}")
+    if not isinstance(data["operator_username"], str) or not data["operator_username"].strip():
+        return _invalid_entry(index, f"operator_username is empty at entry {index}")
+    return None
+
+
+def _check_case_fields(data: dict[str, Any], index: int) -> VerificationResult | None:
+    try:
+        action_enum = AuditAction(data["action"])
+    except ValueError:
+        return None
+    if action_enum.value not in _CASE_ACTIONS:
+        return None
+    case_id = data.get("case_id")
+    if not isinstance(case_id, str) or not case_id.strip():
+        return _invalid_entry(
+            index,
+            f"case_id is required for action '{action_enum.value}' at entry {index}",
+        )
+    purpose = data.get("purpose")
+    if not isinstance(purpose, str) or not purpose.strip():
+        return _invalid_entry(
+            index,
+            f"purpose is required for action '{action_enum.value}' at entry {index}",
+        )
+    return None
+
+
+def _chain_failure(total: int, index: int, message: str) -> VerificationResult:
+    return VerificationResult(
+        valid=False,
+        total_entries=total,
+        broken_index=index,
+        error_message=message,
+    )
+
+
+def _check_entry_chain(
+    entries: list[AuditEntry],
+    key: bytes,
+) -> VerificationResult | None:
+    if not entries:
+        return None
+    total = len(entries)
+    if entries[0].prev_hmac != "":
+        return _chain_failure(total, 0, "First entry has a non-empty prev_hmac")
+    for index, entry in enumerate(entries):
+        expected = entry.compute_hmac(key)
+        if not _mac_equal(entry.entry_hmac, expected):
+            return _chain_failure(
+                total,
+                index,
+                (
+                    f"Entry {index} HMAC mismatch: "
+                    f"stored={entry.entry_hmac[:16]}..., "
+                    f"computed={expected[:16]}..."
+                ),
+            )
+    for index in range(1, total):
+        expected_prev = entries[index - 1].entry_hmac
+        actual_prev = entries[index].prev_hmac
+        if not _mac_equal(actual_prev, expected_prev):
+            return _chain_failure(
+                total,
+                index,
+                (
+                    f"Chain break at entry {index}: "
+                    f"prev_hmac={actual_prev[:16]}... != "
+                    f"expected={expected_prev[:16]}..."
+                ),
+            )
+    return None
+
+
+def _check_empty_anchor(anchor: _Anchor) -> VerificationResult:
+    if anchor.entry_count > 0:
+        return VerificationResult(
+            valid=False,
+            total_entries=0,
+            broken_index=0,
+            error_message=(
+                f"Audit log is empty or truncated but head anchor count is {anchor.entry_count}"
+            ),
+        )
+    if anchor.entry_count != 0 or anchor.last_hmac != "":
+        return VerificationResult(
+            valid=False,
+            total_entries=0,
+            broken_index=0,
+            error_message=(
+                f"Head anchor does not describe an empty log (count={anchor.entry_count})"
+            ),
+        )
+    return VerificationResult(
+        valid=True,
+        total_entries=0,
+        error_message="Empty log with a signed count of 0",
+    )
+
+
+def _check_anchor_against_log(
+    entries: list[AuditEntry],
+    anchor: _Anchor | VerificationResult,
+) -> VerificationResult:
+    if isinstance(anchor, VerificationResult):
+        anchor.total_entries = len(entries)
+        if entries:
+            anchor.broken_index = len(entries) - 1
+        return anchor
+    if not entries:
+        return _check_empty_anchor(anchor)
+    total = len(entries)
+    if anchor.entry_count != total:
+        return _chain_failure(
+            total,
+            total - 1,
+            f"Head anchor count mismatch: anchor={anchor.entry_count}, actual={total}",
+        )
+    if not _mac_equal(anchor.last_hmac, entries[-1].entry_hmac):
+        return _chain_failure(
+            total,
+            total - 1,
+            (
+                "Head anchor HMAC mismatch: "
+                f"anchor={anchor.last_hmac[:16]}..., "
+                f"last_entry={entries[-1].entry_hmac[:16]}..."
+            ),
+        )
+    return VerificationResult(
+        valid=True,
+        total_entries=total,
+        error_message="All entries verified successfully",
+    )
+
+
+def _check_result_ids(data: dict[str, Any], index: int) -> VerificationResult | None:
+    result_ids = data.get("result_ids")
+    if not isinstance(result_ids, list) or not all(isinstance(item, str) for item in result_ids):
+        return _invalid_entry(
+            index,
+            (f"Field 'result_ids' has the wrong type at entry {index}: expected a list of strings"),
+        )
+    return None
 
 
 def _normalize_action(action: str | AuditAction) -> AuditAction:
@@ -265,13 +506,11 @@ class AuditLog:
         if self.key_path is not None:
             if is_audit_path(self.key_path):
                 raise RuntimeError(
-                    f"HMAC key file must be outside {AUDIT_LOG_DIR}. "
-                    f"Got: {self.key_path}"
+                    f"HMAC key file must be outside {AUDIT_LOG_DIR}. Got: {self.key_path}"
                 )
             if not self.key_path.is_file():
                 raise RuntimeError(
-                    f"HMAC key file not found: {self.key_path}. "
-                    "Create one with init_hmac_key()."
+                    f"HMAC key file not found: {self.key_path}. Create one with init_hmac_key()."
                 )
             return _decode_key(
                 self.key_path.read_text(encoding="utf-8"),
@@ -291,83 +530,15 @@ class AuditLog:
 
     def _read_anchor(self, key: bytes) -> _Anchor | VerificationResult:
         if not self.head_path.is_file():
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message="Missing head anchor",
-            )
+            return _anchor_error("Missing head anchor")
         try:
             raw = self.head_path.read_bytes().decode("utf-8")
             data = json.loads(raw)
         except UnicodeDecodeError as exc:
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message=f"Head anchor is not valid UTF-8: {exc}",
-            )
+            return _anchor_error(f"Head anchor is not valid UTF-8: {exc}")
         except (OSError, json.JSONDecodeError) as exc:
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message=f"Head anchor is malformed: {exc}",
-            )
-        if not isinstance(data, dict):
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message="Head anchor is malformed: expected a JSON object",
-            )
-        if "anchor_hmac" not in data or not isinstance(data.get("anchor_hmac"), str):
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message="Head anchor is unsigned (missing anchor_hmac)",
-            )
-        if data["anchor_hmac"] == "":
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message="Head anchor is unsigned (missing anchor_hmac)",
-            )
-        for name in ("last_hmac", "entry_count"):
-            if name not in data:
-                return VerificationResult(
-                    valid=False,
-                    total_entries=0,
-                    error_message=f"Head anchor is missing {name}",
-                )
-        if not isinstance(data["last_hmac"], str) or isinstance(data["entry_count"], bool):
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message="Head anchor field has the wrong type",
-            )
-        if not isinstance(data["entry_count"], int):
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message="Head anchor field has the wrong type",
-            )
-        extra = set(data) - {"anchor_hmac", "entry_count", "last_hmac"}
-        if extra:
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message=f"Head anchor has extra fields: {sorted(extra)}",
-            )
-        expected = _hmac_hex(
-            key,
-            {"entry_count": data["entry_count"], "last_hmac": data["last_hmac"]},
-        )
-        if not _mac_equal(data["anchor_hmac"], expected):
-            return VerificationResult(
-                valid=False,
-                total_entries=0,
-                error_message=(
-                    "Head anchor signature mismatch (unsigned or wrong key)"
-                ),
-            )
-        return _Anchor(last_hmac=data["last_hmac"], entry_count=data["entry_count"])
+            return _anchor_error(f"Head anchor is malformed: {exc}")
+        return _parse_anchor_object(data, key)
 
     def _write_anchor(self, key: bytes, last_hmac: str, entry_count: int) -> None:
         """Atomically write `<log>.head` (temp file, fsync, os.replace)."""
@@ -422,13 +593,11 @@ class AuditLog:
             data = json.loads(last)
             entry = AuditEntry(**data)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"Cannot append: last line in the log is malformed: {exc}"
-            ) from exc
+            raise RuntimeError(f"Cannot append: last line in the log is malformed: {exc}") from exc
         return entry, len(nonempty)
 
     @contextmanager
-    def _locked(self, exclusive: bool):
+    def _locked(self, exclusive: bool) -> Iterator[None]:
         """Hold the log lock. Exclusive for writers, shared for verify()."""
         if exclusive:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,8 +630,7 @@ class AuditLog:
                 )
             if count > 0 and message == "Missing head anchor":
                 raise RuntimeError(
-                    "Missing head anchor for a non-empty audit log. "
-                    "Refusing to append."
+                    "Missing head anchor for a non-empty audit log. Refusing to append."
                 )
             raise RuntimeError(f"Refusing to append: {message}")
         expected = last_entry.entry_hmac if last_entry is not None else ""
@@ -485,9 +653,7 @@ class AuditLog:
         with self._locked(exclusive=True):
             _last_entry, count = self._last_entry_and_count()
             if count != 0:
-                raise RuntimeError(
-                    "Cannot initialize a log that already has entries."
-                )
+                raise RuntimeError("Cannot initialize a log that already has entries.")
             if self.head_path.is_file():
                 anchor = self._read_anchor(key)
                 if (
@@ -496,9 +662,7 @@ class AuditLog:
                     and anchor.last_hmac == ""
                 ):
                     return
-                raise RuntimeError(
-                    "Refusing to initialize: a head anchor already exists."
-                )
+                raise RuntimeError("Refusing to initialize: a head anchor already exists.")
             if not self.log_path.exists():
                 self.log_path.touch()
             self._write_anchor(key, "", 0)
@@ -521,9 +685,7 @@ class AuditLog:
         taken inside that lock. A new log must be initialize()'d first.
         append() raises when the signed anchor does not match the tail.
         """
-        operator_username = _require_nonempty_str(
-            operator_username, "operator_username"
-        )
+        operator_username = _require_nonempty_str(operator_username, "operator_username")
         action_enum = _normalize_action(action)
         if query is not None and not isinstance(query, str):
             raise ValueError("query must be a string when provided")
@@ -531,21 +693,13 @@ class AuditLog:
             raise ValueError("details must be a non-empty string when provided")
         if action_enum.value in _CASE_ACTIONS:
             if not isinstance(case_id, str) or not case_id.strip():
-                raise ValueError(
-                    f"case_id is required for action '{action_enum.value}'"
-                )
+                raise ValueError(f"case_id is required for action '{action_enum.value}'")
             if not isinstance(purpose, str) or not purpose.strip():
-                raise ValueError(
-                    f"purpose is required for action '{action_enum.value}'"
-                )
+                raise ValueError(f"purpose is required for action '{action_enum.value}'")
         else:
-            if case_id is not None and (
-                not isinstance(case_id, str) or not case_id.strip()
-            ):
+            if case_id is not None and (not isinstance(case_id, str) or not case_id.strip()):
                 raise ValueError("case_id must be a non-empty string")
-            if purpose is not None and (
-                not isinstance(purpose, str) or not purpose.strip()
-            ):
+            if purpose is not None and (not isinstance(purpose, str) or not purpose.strip()):
                 raise ValueError("purpose must be a non-empty string")
         if result_ids is None:
             result_ids = []
@@ -592,9 +746,7 @@ class AuditLog:
                 data = json.loads(stripped)
                 entries.append(AuditEntry(**data))
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                raise RuntimeError(
-                    f"Malformed audit entry at index {len(entries)}: {exc}"
-                ) from exc
+                raise RuntimeError(f"Malformed audit entry at index {len(entries)}: {exc}") from exc
         return entries
 
     def count(self) -> int:
@@ -605,132 +757,26 @@ class AuditLog:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
-            return VerificationResult(
-                valid=False,
-                total_entries=index,
-                broken_index=index,
-                error_message=f"Malformed JSON at entry {index}: {exc}",
-            )
+            return _invalid_entry(index, f"Malformed JSON at entry {index}: {exc}")
         if not isinstance(data, dict):
             got = type(data).__name__
-            return VerificationResult(
-                valid=False,
-                total_entries=index,
-                broken_index=index,
-                error_message=(
-                    f"Entry {index} has the wrong type: expected object, got {got}"
-                ),
+            return _invalid_entry(
+                index,
+                f"Entry {index} has the wrong type: expected object, got {got}",
             )
-        for name, expected in _REQUIRED_ENTRY_TYPES.items():
-            if name not in data:
-                return VerificationResult(
-                    valid=False,
-                    total_entries=index,
-                    broken_index=index,
-                    error_message=(
-                        f"Missing required field '{name}' at entry {index}"
-                    ),
-                )
-            if not isinstance(data[name], expected):
-                return VerificationResult(
-                    valid=False,
-                    total_entries=index,
-                    broken_index=index,
-                    error_message=(
-                        f"Field '{name}' has the wrong type at entry {index}: "
-                        f"expected {expected.__name__}, "
-                        f"got {type(data[name]).__name__}"
-                    ),
-                )
-        for name, expected in _OPTIONAL_ENTRY_TYPES.items():
-            if name not in data or data[name] is None:
-                continue
-            if not isinstance(data[name], expected):
-                return VerificationResult(
-                    valid=False,
-                    total_entries=index,
-                    broken_index=index,
-                    error_message=(
-                        f"Field '{name}' has the wrong type at entry {index}: "
-                        f"expected {expected.__name__}, "
-                        f"got {type(data[name]).__name__}"
-                    ),
-                )
-        if isinstance(data.get("details"), str) and not data["details"].strip():
-            return VerificationResult(
-                valid=False,
-                total_entries=index,
-                broken_index=index,
-                error_message=f"details is blank at entry {index}",
-            )
-        extra = set(data) - set(_ENTRY_FIELDS)
-        if extra:
-            return VerificationResult(
-                valid=False,
-                total_entries=index,
-                broken_index=index,
-                error_message=f"Extra fields at entry {index}: {sorted(extra)}",
-            )
-        try:
-            action_enum = AuditAction(data["action"])
-        except ValueError:
-            return VerificationResult(
-                valid=False,
-                total_entries=index,
-                broken_index=index,
-                error_message=(
-                    f"Unknown action '{data['action']}' at entry {index}"
-                ),
-            )
-        if not data["operator_username"].strip():
-            return VerificationResult(
-                valid=False,
-                total_entries=index,
-                broken_index=index,
-                error_message=(
-                    f"operator_username is empty at entry {index}"
-                ),
-            )
-        if action_enum.value in _CASE_ACTIONS:
-            if not isinstance(data.get("case_id"), str) or not data["case_id"].strip():
-                return VerificationResult(
-                    valid=False,
-                    total_entries=index,
-                    broken_index=index,
-                    error_message=(
-                        f"case_id is required for action '{action_enum.value}' "
-                        f"at entry {index}"
-                    ),
-                )
-            if not isinstance(data.get("purpose"), str) or not data["purpose"].strip():
-                return VerificationResult(
-                    valid=False,
-                    total_entries=index,
-                    broken_index=index,
-                    error_message=(
-                        f"purpose is required for action '{action_enum.value}' "
-                        f"at entry {index}"
-                    ),
-                )
-        if not all(isinstance(item, str) for item in data["result_ids"]):
-            return VerificationResult(
-                valid=False,
-                total_entries=index,
-                broken_index=index,
-                error_message=(
-                    f"Field 'result_ids' has the wrong type at entry {index}: "
-                    "expected a list of strings"
-                ),
-            )
+        for check in (
+            _check_entry_types,
+            _check_entry_shape,
+            _check_case_fields,
+            _check_result_ids,
+        ):
+            failed = check(data, index)
+            if failed is not None:
+                return failed
         try:
             return AuditEntry(**data)
         except (TypeError, ValueError) as exc:
-            return VerificationResult(
-                valid=False,
-                total_entries=index,
-                broken_index=index,
-                error_message=f"Invalid entry at {index}: {exc}",
-            )
+            return _invalid_entry(index, f"Invalid entry at {index}: {exc}")
 
     def _load_entries(self) -> list[AuditEntry] | VerificationResult:
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
@@ -754,9 +800,7 @@ class AuditLog:
                     valid=False,
                     total_entries=len(entries),
                     broken_index=len(entries),
-                    error_message=(
-                        f"Log entry {len(entries)} is not valid UTF-8: {exc}"
-                    ),
+                    error_message=(f"Log entry {len(entries)} is not valid UTF-8: {exc}"),
                 )
             parsed = self._parse_entry(text, len(entries))
             if isinstance(parsed, VerificationResult):
@@ -798,111 +842,13 @@ class AuditLog:
         loaded = self._load_entries()
         if isinstance(loaded, VerificationResult):
             return loaded
-        entries = loaded
-
-        if entries:
-            if entries[0].prev_hmac != "":
-                return VerificationResult(
-                    valid=False,
-                    total_entries=len(entries),
-                    broken_index=0,
-                    error_message="First entry has a non-empty prev_hmac",
-                )
-            for index, entry in enumerate(entries):
-                expected = entry.compute_hmac(key)
-                if not _mac_equal(entry.entry_hmac, expected):
-                    return VerificationResult(
-                        valid=False,
-                        total_entries=len(entries),
-                        broken_index=index,
-                        error_message=(
-                            f"Entry {index} HMAC mismatch: "
-                            f"stored={entry.entry_hmac[:16]}..., "
-                            f"computed={expected[:16]}..."
-                        ),
-                    )
-            for index in range(1, len(entries)):
-                expected_prev = entries[index - 1].entry_hmac
-                actual_prev = entries[index].prev_hmac
-                if not _mac_equal(actual_prev, expected_prev):
-                    return VerificationResult(
-                        valid=False,
-                        total_entries=len(entries),
-                        broken_index=index,
-                        error_message=(
-                            f"Chain break at entry {index}: "
-                            f"prev_hmac={actual_prev[:16]}... != "
-                            f"expected={expected_prev[:16]}..."
-                        ),
-                    )
-
-        anchor = self._read_anchor(key)
-        if isinstance(anchor, VerificationResult):
-            anchor.total_entries = len(entries)
-            if entries:
-                anchor.broken_index = len(entries) - 1
-            return anchor
-
-        if not entries:
-            if anchor.entry_count > 0:
-                return VerificationResult(
-                    valid=False,
-                    total_entries=0,
-                    broken_index=0,
-                    error_message=(
-                        "Audit log is empty or truncated but head anchor "
-                        f"count is {anchor.entry_count}"
-                    ),
-                )
-            if anchor.entry_count != 0 or anchor.last_hmac != "":
-                return VerificationResult(
-                    valid=False,
-                    total_entries=0,
-                    broken_index=0,
-                    error_message=(
-                        "Head anchor does not describe an empty log "
-                        f"(count={anchor.entry_count})"
-                    ),
-                )
-            return VerificationResult(
-                valid=True,
-                total_entries=0,
-                error_message="Empty log with a signed count of 0",
-            )
-
-        if anchor.entry_count != len(entries):
-            return VerificationResult(
-                valid=False,
-                total_entries=len(entries),
-                broken_index=len(entries) - 1,
-                error_message=(
-                    "Head anchor count mismatch: "
-                    f"anchor={anchor.entry_count}, actual={len(entries)}"
-                ),
-            )
-        if not _mac_equal(anchor.last_hmac, entries[-1].entry_hmac):
-            return VerificationResult(
-                valid=False,
-                total_entries=len(entries),
-                broken_index=len(entries) - 1,
-                error_message=(
-                    "Head anchor HMAC mismatch: "
-                    f"anchor={anchor.last_hmac[:16]}..., "
-                    f"last_entry={entries[-1].entry_hmac[:16]}..."
-                ),
-            )
-        return VerificationResult(
-            valid=True,
-            total_entries=len(entries),
-            error_message="All entries verified successfully",
-        )
+        chain = _check_entry_chain(loaded, key)
+        if chain is not None:
+            return chain
+        return _check_anchor_against_log(loaded, self._read_anchor(key))
 
     def query_by_operator(self, operator_username: str) -> list[AuditEntry]:
-        return [
-            entry
-            for entry in self.read_all()
-            if entry.operator_username == operator_username
-        ]
+        return [entry for entry in self.read_all() if entry.operator_username == operator_username]
 
     def query_by_action(self, action: str | AuditAction) -> list[AuditEntry]:
         action_str = action.value if isinstance(action, AuditAction) else action

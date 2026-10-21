@@ -1,0 +1,7 @@
+# Planted bad pin with no version comment. Not a workflow.
+name: planted
+jobs:
+  bad:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: evil/action@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

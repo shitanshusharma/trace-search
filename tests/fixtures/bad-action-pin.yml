@@ -1,0 +1,7 @@
+# Planted bad pin. Not a workflow. The validator must reject this SHA.
+name: planted
+jobs:
+  bad:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v4.2.1

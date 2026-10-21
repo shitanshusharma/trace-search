@@ -29,7 +29,7 @@ def run_checker(manifest_data: dict, name: str) -> tuple[int, str]:
             cwd=Path.cwd(),
             capture_output=True,
             text=True,
-            env={'NO_FFMPEG_CHECK': '1', **dict(os.environ)}
+            env={**os.environ}
         )
         return result.returncode, result.stdout
     finally:
@@ -103,7 +103,8 @@ test_cases = {
             "source_url": "http://www.insecam.org/en/view/12345/",
             "sha256": "a" * 64,
             "phash": [f"{i:016x}" for i in range(10)],
-            "use": "SMOKE_ONLY"
+            "use": "SMOKE_ONLY",
+            "path": "tests/fixtures/media/insecam_camera_nyc_001.mp4",
         }
     ]),
 
