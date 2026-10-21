@@ -3,6 +3,11 @@
 This is not a real detector. It finds the flat-colour figures drawn by the
 synthetic smoke generator with an OpenCV threshold and a contour pass. It
 does not load weights. Its boxes are not evidence for any acceptance criterion.
+
+Every blob that clears the threshold is labelled PERSON. That includes the
+generator's obstructions, which are flat colour too. ``_DISTANCE`` and
+``_MIN_AREA`` are fitted to that generator. Do not run this detector on stock
+clips, and do not tune those cutoffs against them.
 """
 
 from __future__ import annotations
@@ -32,11 +37,14 @@ class ScriptedFiguresDetector:
     """SMOKE-wiring stub, not a real detector.
 
     OpenCV threshold plus contours on the flat-colour figures from the smoke
-    generator. The score is a fixed wiring value, not a model confidence.
+    generator. Every blob that clears the threshold is labelled PERSON,
+    including the generator's obstructions. ``_DISTANCE`` and ``_MIN_AREA``
+    are fitted to that generator. Do not run or tune this on stock clips.
+    The score is a fixed wiring value, not a model confidence.
     """
 
     def detect(self, frame: Frame) -> list[Detection]:
-        """Return one person box per flat-colour figure in ``frame``."""
+        """Return one PERSON box per flat-colour blob in ``frame``."""
         image = _uint8_image(frame.image)
         working, ratio = _shrink(image)
         boxes = [_scale_box(box, ratio) for box in _boxes(_foreground_mask(working))]

@@ -138,7 +138,7 @@ The runner calls the camera pipeline with `derived_from='SMOKE'`. That output is
 
 CI runs `scripted-figures` on the 5 synthetic clips only. It does not download weights, and it does not run `yolox` against real weights. `yolox` is local-only.
 
-`scripted-figures` is an OpenCV threshold and contour pass over the synthetic generator's flat-colour figures. It is a SMOKE-wiring stub, not a real detector.
+`scripted-figures` is an OpenCV threshold and contour pass over the synthetic generator's flat-colour figures. It labels every blob that clears the threshold as a person, including the generator's obstructions. The cutoffs are fitted to that generator. It is a SMOKE-wiring stub, not a real detector, and it is not run or tuned on stock clips.
 
 ```bash
 # CI shape: 5 synthetic clips, no weights
