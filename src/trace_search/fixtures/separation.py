@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any, TypedDict
 
 from trace_search.fixtures.content import (
     HAMMING_THRESHOLD,
@@ -157,7 +158,7 @@ def auto_discover_data_files(repo_root: Path) -> list[Path]:
     return found
 
 
-def load_manifest_entries(manifest_path: Path) -> list[dict]:
+def load_manifest_entries(manifest_path: Path) -> list[dict[str, Any]]:
     if not manifest_path.exists():
         raise SeparationCheckError(f"FAIL-CLOSED: manifest not found: {manifest_path}")
     try:
@@ -166,13 +167,20 @@ def load_manifest_entries(manifest_path: Path) -> list[dict]:
         raise SeparationCheckError(
             f"FAIL-CLOSED: cannot read manifest {manifest_path}: {exc}"
         ) from exc
-    entries = manifest.get("entries")
-    if not isinstance(entries, list):
+    raw_entries = manifest.get("entries") if isinstance(manifest, dict) else None
+    if not isinstance(raw_entries, list):
         raise SeparationCheckError("FAIL-CLOSED: manifest has no entries list")
+    entries: list[dict[str, Any]] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            raise SeparationCheckError("FAIL-CLOSED: manifest entry is not an object")
+        entries.append(entry)
     return entries
 
 
-def forbidden_fixtures(entries: list[dict]) -> tuple[dict[str, str], dict[str, list[str]]]:
+def forbidden_fixtures(
+    entries: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, list[str]]]:
     """Map forbidden SHA-256 to fixture id, and SHA-256 to pHashes."""
     sha_to_id: dict[str, str] = {}
     sha_to_phash: dict[str, list[str]] = {}
@@ -303,12 +311,24 @@ def _compare_file_to_forbidden(
     return None, None
 
 
+class SeparationResult(TypedDict):
+    """Result of comparing dataset files to forbidden fixture rows."""
+
+    exact_matches: list[tuple[str, str, str]]
+    near_duplicates: list[tuple[str, str, int]]
+    config_violations: list[str]
+    training_violations: list[str]
+    files_checked: int
+    passed: bool
+    message: str
+
+
 def check_separation(
     manifest_path: Path,
     dataset_paths: list[Path] | None = None,
     hamming_threshold: int = HAMMING_THRESHOLD,
     repo_root: Path | None = None,
-) -> dict:
+) -> SeparationResult:
     """Check dataset files. An explicit empty list is an error.
 
     ``dataset_paths is None`` auto-discovers data files under ``repo_root``.
@@ -358,6 +378,19 @@ def check_separation(
     }
 
 
+class SeparationRunResult(TypedDict):
+    """Result of a named-directory or auto-discovered separation run."""
+
+    datasets_checked: list[str]
+    files_checked: int
+    exact_matches: list[tuple[str, str, str]]
+    near_duplicates: list[tuple[str, str, int]]
+    config_violations: list[str]
+    training_violations: list[str]
+    passed: bool
+    message: str
+
+
 def run_separation_check(
     manifest_path: Path,
     train_dir: Path | None = None,
@@ -366,7 +399,7 @@ def run_separation_check(
     study_dir: Path | None = None,
     hamming_threshold: int = HAMMING_THRESHOLD,
     repo_root: Path | None = None,
-) -> dict:
+) -> SeparationRunResult:
     """Run the check. A named directory that is missing or empty is an error."""
     if repo_root is None:
         repo_root = Path.cwd()

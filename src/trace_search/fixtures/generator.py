@@ -9,6 +9,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 import cv2
 import imagehash
@@ -28,7 +29,7 @@ class PersonFigure:
     velocity_x: float
     velocity_y: float
 
-    def update(self, width: int, height: int):
+    def update(self, width: int, height: int) -> None:
         """Update position with velocity."""
         self.x += self.velocity_x
         self.y += self.velocity_y
@@ -92,7 +93,7 @@ class SyntheticVideoGenerator:
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fourcc = cv2.VideoWriter.fourcc("m", "p", "4", "v")
         writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
 
         if not writer.isOpened():
@@ -138,7 +139,8 @@ class SyntheticVideoGenerator:
             x = self.rng.uniform(0, width - fig_width)
             y = self.rng.uniform(0, height - fig_height)
 
-            color = tuple(int(c) for c in self.rng.randint(80, 200, 3))
+            red, green, blue = (int(channel) for channel in self.rng.randint(80, 200, 3))
+            color = (red, green, blue)
 
             velocity_x = self.rng.uniform(-3, 3)
             velocity_y = self.rng.uniform(-3, 3)
@@ -167,7 +169,8 @@ class SyntheticVideoGenerator:
             x = self.rng.randint(0, width - obs_width)
             y = self.rng.randint(0, height - obs_height)
 
-            color = tuple(int(c) for c in self.rng.randint(60, 120, 3))
+            red, green, blue = (int(channel) for channel in self.rng.randint(60, 120, 3))
+            color = (red, green, blue)
 
             obstructions.append(
                 Obstruction(x=x, y=y, width=obs_width, height=obs_height, color=color)
@@ -226,11 +229,43 @@ class SyntheticVideoGenerator:
             cap.release()
 
 
+class SmokeClipConfig(TypedDict):
+    """One deterministic clip configuration."""
+
+    name: str
+    duration_sec: float
+    num_figures: int
+    background_brightness: float
+    num_obstructions: int
+
+
+class SmokeManifestEntry(TypedDict):
+    """Manifest row produced for one generated clip."""
+
+    name: str
+    version: str
+    type: str
+    license: str
+    source_url: str
+    sha256: str
+    license_version: str
+    date_checked_ist: str
+    phash: list[str]
+    use: str
+    fixture_id: str
+    path: str
+    generator: str
+    generator_version: str
+    generator_license: str
+    seed: str
+    notes: str
+
+
 def generate_smoke_fixtures(
     output_dir: Path,
     base_seed: int = 42,
     num_clips: int = 5,
-) -> list[dict]:
+) -> list[SmokeManifestEntry]:
     """
     Generate a full set of smoke test fixtures.
 
@@ -247,7 +282,7 @@ def generate_smoke_fixtures(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    configs = [
+    configs: list[SmokeClipConfig] = [
         {
             "name": "corridor_normal",
             "duration_sec": 12.0,
@@ -285,7 +320,7 @@ def generate_smoke_fixtures(
         },
     ]
 
-    manifest_entries = []
+    manifest_entries: list[SmokeManifestEntry] = []
 
     for idx, config in enumerate(configs[:num_clips]):
         fixture_id = f"FX-SMOKE-SYN-{idx + 1:03d}"
@@ -307,7 +342,7 @@ def generate_smoke_fixtures(
         sha256 = generator.compute_sha256(output_path)
         phashes = generator.compute_phashes(output_path, num_samples=10)
 
-        manifest_entry = {
+        manifest_entry: SmokeManifestEntry = {
             "name": f"Synthetic smoke clip: {config['name']}",
             "version": "1.0.0",
             "type": "synthetic_clip",

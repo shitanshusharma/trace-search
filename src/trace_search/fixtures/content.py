@@ -56,11 +56,13 @@ def nearest_hamming(left: list[str], right: list[str]) -> int | None:
     """Minimum Hamming distance, or None when either list is empty."""
     if not left or not right:
         return None
-    best = None
+    best: int | None = None
     for a in left:
         for b in right:
             distance = hamming_distance(a, b)
-            if best is None or distance < best:
+            if best is None:
+                best = distance
+            elif distance < best:
                 best = distance
     return best
 
