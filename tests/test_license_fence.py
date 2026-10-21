@@ -156,11 +156,11 @@ _STOCK_NON_SPDX = {
 }
 
 
-def _stock_clip_row(license_id: str, name: str) -> dict:
+def _stock_clip_row(license_id: str, clip_name: str) -> dict:
     """Planted clip row. The path stays inside the temp manifest, not the repo."""
-    payload = f"{name}\n{license_id}\n".encode("ascii")
+    payload = f"{clip_name}\n{license_id}\n".encode("ascii")
     return {
-        "name": name,
+        "name": clip_name,
         "version": "1.0",
         "type": "clip",
         "license": license_id,
