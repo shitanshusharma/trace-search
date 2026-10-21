@@ -56,29 +56,29 @@ def _vint(field: int, value: int) -> bytes:
     return _key(field, 0) + _varint(value)
 
 
-def _tensor(name: str, dims: tuple[int, ...], raw: bytes) -> bytes:
+def _tensor(label: str, dims: tuple[int, ...], raw: bytes) -> bytes:
     body = b"".join(_vint(1, dim) for dim in dims)
     body += _vint(2, 1)
-    body += _text(8, name)
+    body += _text(8, label)
     body += _blob(9, raw)
     return body
 
 
-def _value_info(name: str, dims: tuple[int, ...]) -> bytes:
+def _value_info(label: str, dims: tuple[int, ...]) -> bytes:
     shape = b"".join(_blob(1, _vint(1, dim)) for dim in dims)
     tensor_type = _vint(1, 1) + _blob(2, shape)
-    return _text(1, name) + _blob(2, _blob(1, tensor_type))
+    return _text(1, label) + _blob(2, _blob(1, tensor_type))
 
 
-def _attr_ints(name: str, values: tuple[int, ...]) -> bytes:
-    body = _text(1, name)
+def _attr_ints(label: str, values: tuple[int, ...]) -> bytes:
+    body = _text(1, label)
     body += b"".join(_vint(7, value) for value in values)
     body += _vint(20, 7)
     return body
 
 
-def _attr_int(name: str, value: int) -> bytes:
-    return _text(1, name) + _vint(3, value) + _vint(20, 2)
+def _attr_int(label: str, value: int) -> bytes:
+    return _text(1, label) + _vint(3, value) + _vint(20, 2)
 
 
 def _node(
