@@ -66,6 +66,7 @@ trace-search/
 ├── scripts/                # Build and maintenance scripts
 │   ├── check_licenses.py   # License fence validator
 │   ├── generate_smoke_fixtures.py  # Synthetic video generator (T1)
+│   ├── run_smoke.py                # M1a smoke runner (CI: scripted-figures)
 │   ├── check_separation.py         # Fixture separation checker (T1)
 │   └── demo_audit_log.py   # AC-13 JSON proof
 ├── licenses/               # License manifest and schema
@@ -130,6 +131,38 @@ python3 scripts/generate_smoke_fixtures.py --update-manifest
 # Check separation (smoke vs train/dev/hold)
 python3 scripts/check_separation.py --json
 ```
+
+### Smoke runner (M1a)
+
+The runner calls the camera pipeline with `derived_from='SMOKE'`. That output is not evidence for any acceptance criterion.
+
+CI runs `scripted-figures` on the 5 synthetic clips only. It does not download weights, and it does not run `yolox` against real weights. `yolox` is local-only.
+
+`scripted-figures` is an OpenCV threshold and contour pass over the synthetic generator's flat-colour figures. It is a SMOKE-wiring stub, not a real detector.
+
+```bash
+# CI shape: 5 synthetic clips, no weights
+python scripts/run_smoke.py \
+  --manifest licenses/manifest.json \
+  --clips-dir smoke \
+  --db /tmp/smoke.sqlite \
+  --detector scripted-figures \
+  --min-clips 5
+```
+
+```bash
+# Local only. Weights stay outside the repo. Set --weights or TRACE_SEARCH_YOLOX_WEIGHTS.
+python scripts/run_smoke.py \
+  --manifest /path/outside/the/repo/smoke-manifest.json \
+  --clips-dir /path/outside/the/repo/clips \
+  --db /tmp/smoke.sqlite \
+  --detector yolox \
+  --weights /path/outside/the/repo/yolox_s.onnx \
+  --min-clips 5
+```
+
+Each clip is checked with the fixture guard before it is opened. A clip with no manifest row is refused. The process exits 0 only when at least `--min-clips` clips finish with 0 errors and each of those clips has at least one stored `SMOKE` observation.
+
 
 ## CI Status
 
