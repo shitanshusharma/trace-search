@@ -896,3 +896,509 @@ def test_requirements_txt_missing_numpy_fails(tmp_path):
     )
     assert code == 1, stdout
     assert "numpy: required by requirements.txt but not in manifest" in stdout
+
+
+# ----- OpenCV bundled OpenSSL 1.1.1w and Intel IPP (21 Oct 2026) -----
+
+_OPENSSL_LIBCRYPTO = "opencv_python_headless.libs/libcrypto-337dac8b.so.1.1"
+_OPENSSL_LIBSSL = "opencv_python_headless.libs/libssl-28bef1ac.so.1.1"
+_IPP_FILE = "cv2/cv2.abi3.so"
+_OPENCV_PACKAGE = "opencv-python-headless"
+_OPENCV_VERSION = "4.10.0.84"
+
+
+def _scoped_row(name, license_id, version, bundled_file, **overrides):
+    row = library_entry(name=name, license_id=license_id, version=version)
+    row.update(
+        {
+            "bundled_package": _OPENCV_PACKAGE,
+            "bundled_package_version": _OPENCV_VERSION,
+            "bundled_file": bundled_file,
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+def _openssl_row(**overrides):
+    bundled_file = overrides.pop("bundled_file", _OPENSSL_LIBCRYPTO)
+    version = overrides.pop("version", "1.1.1w")
+    return _scoped_row(
+        "OpenSSL-libcrypto",
+        "OpenSSL",
+        version,
+        bundled_file,
+        **overrides,
+    )
+
+
+def _ipp_row(**overrides):
+    bundled_file = overrides.pop("bundled_file", _IPP_FILE)
+    version = overrides.pop("version", "2021.11.0")
+    return _scoped_row(
+        "Intel IPP ICV",
+        "LicenseRef-Intel-Simplified-Software-License",
+        version,
+        bundled_file,
+        **overrides,
+    )
+
+
+def test_openssl_real_bundled_files_pass():
+    """The two OpenSSL files in the pinned wheel pass. The licence is not global."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    rows = [e for e in manifest["entries"] if e["name"] in {"OpenSSL-libcrypto", "OpenSSL-libssl"}]
+    assert len(rows) == 2
+    assert {e["bundled_file"] for e in rows} == {_OPENSSL_LIBCRYPTO, _OPENSSL_LIBSSL}
+    code, stdout, _ = invoke_main(make_manifest(rows))
+    assert code == 0, stdout
+
+
+def test_ipp_real_bundled_file_passes():
+    """Intel IPP ICV and IW pass only on cv2/cv2.abi3.so in the pinned wheel."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    rows = [e for e in manifest["entries"] if e["name"] in {"Intel IPP ICV", "Intel IPP IW"}]
+    assert len(rows) == 2
+    assert {e["bundled_file"] for e in rows} == {_IPP_FILE}
+    code, stdout, _ = invoke_main(make_manifest(rows))
+    assert code == 0, stdout
+
+
+def test_openssl_fails_in_a_different_package():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="cryptography", license_id="OpenSSL", version="1.1.1w"),
+            _openssl_row(bundled_package="numpy"),
+        ])
+    )
+    assert code == 1, stdout
+    assert stdout.count("license 'OpenSSL' not in allowed list") == 2
+
+
+def test_openssl_fails_for_a_different_version():
+    code, stdout, _ = invoke_main(make_manifest([_openssl_row(version="1.1.1k")]))
+    assert code == 1, stdout
+    assert "OpenSSL-libcrypto" in stdout
+    assert "not in allowed list" in stdout
+
+
+def test_openssl_fails_for_another_opencv_file():
+    code, stdout, _ = invoke_main(
+        make_manifest([_openssl_row(bundled_file="cv2/cv2.abi3.so")])
+    )
+    assert code == 1, stdout
+    assert "license 'OpenSSL' not in allowed list" in stdout
+
+
+def test_ipp_fails_in_a_different_package():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="ipp",
+                license_id="LicenseRef-Intel-Simplified-Software-License",
+                version="2021.11.0",
+            ),
+            _ipp_row(bundled_package="intel-ipp"),
+        ])
+    )
+    assert code == 1, stdout
+    assert stdout.count("not in allowed list") == 2
+
+
+def test_ipp_fails_for_another_opencv_file():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            _ipp_row(bundled_file="opencv_python_headless.libs/libippicv.a")
+        ])
+    )
+    assert code == 1, stdout
+    assert "not in allowed list" in stdout
+
+
+def test_ipp_fails_for_a_different_version():
+    code, stdout, _ = invoke_main(make_manifest([_ipp_row(version="2021.10.0")]))
+    assert code == 1, stdout
+    assert "not in allowed list" in stdout
+
+
+def test_openssl_or_gpl_still_fails_on_a_named_file():
+    """A banned term still fails inside an expression. The exception is not a bypass."""
+    code, stdout, _ = invoke_main(
+        make_manifest([_openssl_row(license="OpenSSL OR GPL-3.0")])
+    )
+    assert code == 1, stdout
+    assert "banned" in stdout.lower()
+    assert "GPL" in stdout
+
+
+def test_openssl_and_ipp_are_not_globally_allowed():
+    assert cl.is_license_allowed("OpenSSL") is False
+    assert cl.is_license_allowed("LicenseRef-Intel-Simplified-Software-License") is False
+    assert "OpenSSL" not in cl.ALLOWED_SPDX
+    assert "LicenseRef-Intel-Simplified-Software-License" not in cl.ALLOWED_SPDX
+    assert "OpenSSL" not in cl.ALLOWED_NON_SPDX
+    assert "LicenseRef-Intel-Simplified-Software-License" not in cl.ALLOWED_NON_SPDX
+
+
+def _real_rows(*names):
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    wanted = set(names)
+    return [e for e in manifest["entries"] if e["name"] in wanted]
+
+
+def test_named_opencv_file_fails_when_sha256_changes():
+    """A manifest row whose sha256 is not the pinned file hash fails."""
+    swapped = []
+    for row in _real_rows(
+        "OpenSSL-libcrypto",
+        "OpenSSL-libssl",
+        "Intel IPP ICV",
+        "Intel IPP IW",
+    ):
+        clone = dict(row)
+        assert clone["sha256"] != "0" * 64
+        clone["sha256"] = "0" * 64
+        swapped.append(clone)
+    assert len(swapped) == 4
+    code, stdout, _ = invoke_main(make_manifest(swapped))
+    assert code == 1, stdout
+    assert stdout.count("not in allowed list") == 4
+    for row in swapped:
+        assert row["name"] in stdout
+
+
+def test_named_opencv_file_fails_for_a_different_row_name():
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    row["name"] = "evil-crypto"
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert "evil-crypto" in stdout
+    assert "not in allowed list" in stdout
+
+
+def test_named_row_mit_and_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="dual", license_id="MIT AND GPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "banned" in stdout.lower()
+    assert "GPL-3.0-only" in stdout
+
+
+def test_ijg_and_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="libjpeg-turbo", license_id="IJG AND GPL-3.0-only")
+        ])
+    )
+    assert code == 1, stdout
+    assert "banned" in stdout.lower()
+    assert "GPL-3.0-only" in stdout
+
+
+def test_ijg_and_unknown_term_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="libjpeg-turbo",
+                license_id="IJG AND BSD-3-Clause AND LicenseRef-Unknown",
+            )
+        ])
+    )
+    assert code == 1, stdout
+    assert "not in allowed list" in stdout
+
+
+def test_ijg_and_bsd_and_zlib_passes():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="libjpeg-turbo",
+                license_id="IJG AND BSD-3-Clause AND Zlib",
+            )
+        ])
+    )
+    assert code == 0, stdout
+
+
+def test_real_libjpeg_turbo_row_passes():
+    rows = _real_rows("libjpeg-turbo")
+    assert len(rows) == 1
+    assert rows[0]["license"] == "IJG AND BSD-3-Clause AND Zlib"
+    code, stdout, _ = invoke_main(make_manifest(rows))
+    assert code == 0, stdout
+
+
+def test_swapped_bundled_binary_fails_installed_closure(tmp_path, monkeypatch):
+    """A different file at the named path fails while the manifest stays pinned."""
+    import hashlib
+
+    rows = _real_rows(
+        "OpenSSL-libcrypto",
+        "OpenSSL-libssl",
+        "Intel IPP ICV",
+        "Intel IPP IW",
+    )
+    libcrypto = next(row for row in rows if row["name"] == "OpenSSL-libcrypto")
+    pinned = libcrypto["sha256"]
+    relative = libcrypto["bundled_file"]
+    assert relative == "opencv_python_headless.libs/libcrypto-337dac8b.so.1.1"
+    assert pinned == "d28a738e776f5f5c17b3577b16b6dfc093132060612769d03cf4048eba10b7aa"
+
+    site_root = tmp_path / "site-packages"
+    target = site_root / relative
+    target.parent.mkdir(parents=True)
+    payload = b"not-the-real-libcrypto"
+    target.write_bytes(payload)
+    actual = hashlib.sha256(payload).hexdigest()
+    assert actual != pinned
+
+    monkeypatch.setattr(cl, "installed_site_roots", lambda: [site_root])
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kwargs: [{"name": "trace-search", "version": "0.1.0", "license": "MIT"}],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest(rows),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert relative in stdout
+    assert actual in stdout
+    assert pinned in stdout
+    assert "does not match" in stdout
+
+
+def _run_installed_closure(rows, tmp_path, monkeypatch, roots):
+    """Run the installed-closure fence against the given site roots."""
+    monkeypatch.setattr(cl, "installed_site_roots", lambda: list(roots))
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kwargs: [{"name": "trace-search", "version": "0.1.0", "license": "MIT"}],
+    )
+    return invoke_main(make_manifest(rows), scan_installed=True, tmp_dir=tmp_path)
+
+
+def test_missing_bundled_file_fails_installed_closure(tmp_path, monkeypatch):
+    """A manifest row whose named file is absent on disk fails closed."""
+    rows = _real_rows("OpenSSL-libssl")
+    row = rows[0]
+    pinned = row["sha256"]
+    relative = row["bundled_file"]
+    site_root = tmp_path / "site-packages"
+    site_root.mkdir()
+    code, stdout, _ = _run_installed_closure(rows, tmp_path, monkeypatch, [site_root])
+    assert code == 1, stdout
+    assert "is missing" in stdout
+    assert relative in stdout
+    assert f"manifest sha256 {pinned}" in stdout
+    assert f"pinned sha256 {pinned}" in stdout
+
+
+def test_swapped_cv2_abi3_fails_installed_closure(tmp_path, monkeypatch):
+    """A different cv2.abi3.so fails both Intel IPP rows."""
+    import hashlib
+
+    rows = _real_rows("Intel IPP ICV", "Intel IPP IW")
+    relative = "cv2/cv2.abi3.so"
+    pinned = rows[0]["sha256"]
+    assert rows[1]["sha256"] == pinned
+    assert {row["bundled_file"] for row in rows} == {relative}
+    site_root = tmp_path / "site-packages"
+    target = site_root / relative
+    target.parent.mkdir(parents=True)
+    payload = b"not-the-real-cv2-abi3"
+    target.write_bytes(payload)
+    actual = hashlib.sha256(payload).hexdigest()
+    assert actual != pinned
+    code, stdout, _ = _run_installed_closure(rows, tmp_path, monkeypatch, [site_root])
+    assert code == 1, stdout
+    assert relative in stdout
+    assert actual in stdout
+    assert pinned in stdout
+    assert "does not match" in stdout
+    assert "Intel IPP ICV" in stdout
+    assert "Intel IPP IW" in stdout
+
+
+def test_two_site_roots_different_digests_fail_installed_closure(tmp_path, monkeypatch):
+    """Two site roots with different bytes for one named file fail closed."""
+    import hashlib
+
+    rows = _real_rows("OpenSSL-libcrypto")
+    relative = rows[0]["bundled_file"]
+    root_a = tmp_path / "site-a"
+    root_b = tmp_path / "site-b"
+    file_a = root_a / relative
+    file_b = root_b / relative
+    file_a.parent.mkdir(parents=True)
+    file_b.parent.mkdir(parents=True)
+    file_a.write_bytes(b"copy-a")
+    file_b.write_bytes(b"copy-b")
+    hash_a = hashlib.sha256(b"copy-a").hexdigest()
+    hash_b = hashlib.sha256(b"copy-b").hexdigest()
+    assert hash_a != hash_b
+    code, stdout, _ = _run_installed_closure(
+        rows, tmp_path, monkeypatch, [root_a, root_b]
+    )
+    assert code == 1, stdout
+    assert relative in stdout
+    assert hash_a in stdout
+    assert hash_b in stdout
+    assert "does not match on-disk sha256" in stdout
+
+
+def test_installed_opencv_bundled_files_match_passes(tmp_path, monkeypatch):
+    """All three named files hashing to the pin passes the installed closure."""
+    rows = _real_rows(
+        "OpenSSL-libcrypto",
+        "OpenSSL-libssl",
+        "Intel IPP ICV",
+        "Intel IPP IW",
+    )
+    pins = {row["bundled_file"]: row["sha256"] for row in rows}
+    assert set(pins) == {
+        "opencv_python_headless.libs/libcrypto-337dac8b.so.1.1",
+        "opencv_python_headless.libs/libssl-28bef1ac.so.1.1",
+        "cv2/cv2.abi3.so",
+    }
+    site_root = tmp_path / "site-packages"
+    for relative in pins:
+        path = site_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"placeholder")
+
+    def fake_sha256(path):
+        return pins[str(Path(path).relative_to(site_root)).replace("\\", "/")]
+
+    monkeypatch.setattr(cl, "sha256_file", fake_sha256)
+    code, stdout, _ = _run_installed_closure(rows, tmp_path, monkeypatch, [site_root])
+    assert code == 0, stdout
+    assert "Checking OpenCV bundled file hashes" in stdout
+    for relative, digest in pins.items():
+        assert f"{relative} sha256 {digest}" in stdout
+    assert "License fence check PASSED" in stdout
+
+
+def test_no_site_roots_rejects_named_exception(tmp_path, monkeypatch):
+    """No site-packages roots: the named OpenCV exception is not applied."""
+    def unavailable():
+        raise AttributeError("getsitepackages")
+
+    monkeypatch.setattr(cl.site, "getsitepackages", unavailable)
+    monkeypatch.setattr(cl.site, "getusersitepackages", lambda: None)
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kwargs: [{"name": "trace-search", "version": "0.1.0", "license": "MIT"}],
+    )
+    assert cl.installed_site_roots() == []
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    code, stdout, stderr = invoke_main(
+        make_manifest([row]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "OpenSSL-libcrypto" in stdout
+    assert "license 'OpenSSL' not in allowed list" in stdout
+    assert "getsitepackages() is unavailable" in stderr
+
+
+def _on_disk_pin(row):
+    """on_disk map whose single digest is this row's pinned sha256."""
+    return {row["bundled_file"]: [row["sha256"]]}
+
+
+def test_real_libcrypto_matching_on_disk_passes(tmp_path, monkeypatch):
+    """The real libcrypto row passes when the installed digest matches the pin."""
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    decision = cl._license_decision(
+        row["license"], row["name"], row, _on_disk_pin(row)
+    )
+    assert decision == (False, True, "")
+
+    site_root = tmp_path / "site-packages"
+    target = site_root / row["bundled_file"]
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"placeholder")
+
+    def fake_sha256(path):
+        relative = str(Path(path).relative_to(site_root)).replace("\\", "/")
+        assert relative == row["bundled_file"]
+        return row["sha256"]
+
+    monkeypatch.setattr(cl, "sha256_file", fake_sha256)
+    code, stdout, _ = _run_installed_closure(
+        [row], tmp_path, monkeypatch, [site_root]
+    )
+    assert code == 0, stdout
+    assert "License fence check PASSED" in stdout
+
+
+def test_real_libcrypto_on_disk_mismatch_fails(tmp_path, monkeypatch):
+    """A different digest at the named libcrypto path fails the exception."""
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    site_root = tmp_path / "site-packages"
+    target = site_root / row["bundled_file"]
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"not-the-real-libcrypto")
+    actual = cl.sha256_file(target)
+    assert actual != row["sha256"]
+    decision = cl._license_decision(
+        row["license"],
+        row["name"],
+        row,
+        {row["bundled_file"]: [actual]},
+    )
+    assert decision == (False, False, "")
+    code, stdout, _ = _run_installed_closure(
+        [row], tmp_path, monkeypatch, [site_root]
+    )
+    assert code == 1, stdout
+    assert "license 'OpenSSL' not in allowed list" in stdout
+    assert "does not match" in stdout
+    assert actual in stdout
+
+
+def test_openssl_or_mit_on_real_libcrypto_row_fails(tmp_path):
+    """OpenSSL OR MIT is compound, so the named exception does not apply."""
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    row["license"] = "OpenSSL OR MIT"
+    decision = cl._license_decision(
+        row["license"], row["name"], row, _on_disk_pin(row)
+    )
+    assert decision == (False, False, "")
+    code, stdout, _ = invoke_main(make_manifest([row]), tmp_dir=tmp_path)
+    assert code == 1, stdout
+    assert "license 'OpenSSL OR MIT' not in allowed list" in stdout
+
+
+def test_unparseable_license_on_exception_row_fails_closed(tmp_path):
+    """An unparseable licence on a named exception row fails closed."""
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    row["license"] = "(MIT OR GPL-3.0-only"
+    decision = cl._license_decision(
+        row["license"], row["name"], row, _on_disk_pin(row)
+    )
+    assert decision == (False, False, cl._UNPARSEABLE)
+    code, stdout, _ = invoke_main(make_manifest([row]), tmp_dir=tmp_path)
+    assert code == 1, stdout
+    assert "unparseable license '(MIT OR GPL-3.0-only'" in stdout
+    assert "banned license '(MIT OR GPL-3.0-only'" not in stdout
+
+
+def test_openssl_semicolon_mit_on_libssl_row_fails(tmp_path):
+    """OpenSSL; MIT on the libssl row is not the named exception."""
+    row = dict(_real_rows("OpenSSL-libssl")[0])
+    row["license"] = "OpenSSL; MIT"
+    decision = cl._license_decision(
+        row["license"], row["name"], row, _on_disk_pin(row)
+    )
+    assert decision == (False, False, "")
+    code, stdout, _ = invoke_main(make_manifest([row]), tmp_dir=tmp_path)
+    assert code == 1, stdout
+    assert "license 'OpenSSL; MIT' not in allowed list" in stdout

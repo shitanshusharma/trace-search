@@ -38,7 +38,17 @@ jobs:
     - name: Lint with ruff
       run: |
         ruff check src/ tests/ scripts/
-    
+
+    - name: Check FFmpeg LGPL compliance
+      run: |
+        python3 -c "
+        from trace_search.ingest.ffmpeg_check import check_ffmpeg_lgpl_compliance
+        passed, message = check_ffmpeg_lgpl_compliance()
+        if not passed:
+            raise AssertionError(f'FFmpeg LGPL compliance check failed: {message}')
+        print(f'✓ {message}')
+        "
+
     - name: Run unit tests
       run: |
         pytest tests/ -v --tb=short

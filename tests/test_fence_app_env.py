@@ -1,7 +1,9 @@
-"""Plant an unmanifested AGPL distribution in the app-lock environment.
+"""Plant an unmanifested AGPL distribution in the app environment.
 
-The licence fence must fail. The test installs requirements-dev.lock into a
-fresh virtualenv and does not uninstall anything before the scan.
+The licence fence must fail. The test installs requirements-dev.lock and
+requirements.txt into a fresh virtualenv and does not uninstall anything
+before the scan. The runtime pin file is required because the manifest
+declares opencv-python-headless, and the fence loads that wheel's libavcodec.
 """
 
 from __future__ import annotations
@@ -73,6 +75,21 @@ def test_unmanifested_agpl_in_app_env_fails_fence(tmp_path: Path) -> None:
         timeout=300,
     )
     assert install.returncode == 0, install.stderr[-4000:]
+    runtime = subprocess.run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--require-hashes",
+            "-r",
+            str(REPO / "requirements.txt"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert runtime.returncode == 0, runtime.stderr[-4000:]
 
     clean = _run_fence(python)
     assert clean.returncode == 0, clean.stdout + clean.stderr
