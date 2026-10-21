@@ -16,9 +16,11 @@ Exit codes:
 """
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
+import site
 import subprocess
 import sys
 from pathlib import Path
@@ -87,8 +89,11 @@ GCC_RUNTIME_EXCEPTION_LICENSES = {
 # LicenseRef-Intel-Simplified-Software-License stay out of ALLOWED_SPDX
 # and ALLOWED_NON_SPDX. A row matches only when the licence string, the
 # library version, the bundling package, that package's version, the file
-# path, the manifest row name, and that file's sha256 all match. A swapped
-# binary at the same path fails. Any other package, version, or file fails.
+# path, the manifest row name, and that file's sha256 all match.
+# The installed-closure scan hashes the file in site-packages. The
+# exception applies only when that on-disk sha256 matches both the
+# manifest row and the pinned value. A missing file or a mismatch fails
+# closed. Any other package, version, file, name, or hash fails.
 OPENCV_BUNDLED_FILE_EXCEPTIONS = (
     {
         'license': 'OpenSSL',
@@ -279,11 +284,17 @@ def is_gcc_runtime_exception(license_str: str, component_name: str) -> bool:
     )
 
 
-def is_opencv_bundled_file_exception(license_str: str, entry: dict | None) -> bool:
+def is_opencv_bundled_file_exception(
+    license_str: str,
+    entry: dict | None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> bool:
     """True only for one named file inside opencv-python-headless 4.10.0.84.
 
     license_str must be the entry's whole licence. A component split out of
     OR, AND, or WITH does not match, so a banned term still fails.
+    When on_disk is set, the installed file's sha256 must match the manifest
+    row and the pinned value. None means the disk check is not running.
     """
     if not isinstance(entry, dict):
         return False
@@ -310,14 +321,143 @@ def is_opencv_bundled_file_exception(license_str: str, entry: dict | None) -> bo
             and name == spec['name']
             and sha256 == spec['sha256']
         ):
-            return True
+            if on_disk is None:
+                return True
+            digests = on_disk.get(bundled_file, [])
+            return digests == [spec['sha256']]
     return False
+
+
+def installed_site_roots() -> list[Path]:
+    """Site-packages directories that can hold the OpenCV wheel files."""
+    roots: list[Path] = []
+    try:
+        roots.extend(Path(path) for path in site.getsitepackages())
+    except Exception:
+        pass
+    try:
+        user_site = site.getusersitepackages()
+    except Exception:
+        user_site = None
+    if user_site:
+        roots.append(Path(user_site))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
+def sha256_file(path: Path) -> str:
+    """SHA-256 hex digest of a file."""
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def hashes_of_installed_file(relative: str, roots: list[Path]) -> list[str]:
+    """Distinct sha256 digests of relative under site-packages roots."""
+    digests: list[str] = []
+    for root in roots:
+        candidate = root / relative
+        if not candidate.is_file():
+            continue
+        digest = sha256_file(candidate)
+        if digest not in digests:
+            digests.append(digest)
+    return digests
+
+
+def _opencv_exception_row(manifest: dict, spec: dict) -> dict | None:
+    """Manifest row for one named-exception spec, ignoring sha256."""
+    for entry in manifest.get('entries', []):
+        package = entry.get('bundled_package', '')
+        if (
+            entry.get('name') == spec['name']
+            and str(entry.get('license', '')).strip() == spec['license']
+            and entry.get('version') == spec['version']
+            and isinstance(package, str)
+            and normalize_package_name(package) == normalize_package_name(spec['package'])
+            and entry.get('bundled_package_version') == spec['package_version']
+            and entry.get('bundled_file') == spec['file']
+        ):
+            return entry
+    return None
+
+
+def collect_opencv_bundled_hashes(
+    manifest: dict,
+    roots: list[Path] | None = None,
+) -> dict[str, list[str]]:
+    """Hash each named OpenCV file that the manifest claims."""
+    if roots is None:
+        roots = installed_site_roots()
+    on_disk: dict[str, list[str]] = {}
+    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+        relative = spec['file']
+        if relative in on_disk:
+            continue
+        if _opencv_exception_row(manifest, spec) is None:
+            continue
+        on_disk[relative] = hashes_of_installed_file(relative, roots)
+    return on_disk
+
+
+def opencv_bundled_hash_violations(
+    manifest: dict,
+    on_disk: dict[str, list[str]] | None,
+) -> tuple[list[str], list[str]]:
+    """Fail closed when an installed named file is missing or has the wrong hash.
+
+    Returns (violations, ok_lines). Each violation names the file and both hashes.
+    """
+    if on_disk is None:
+        return [], []
+    violations: list[str] = []
+    ok_lines: list[str] = []
+    reported_ok: set[str] = set()
+    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+        row = _opencv_exception_row(manifest, spec)
+        if row is None:
+            continue
+        relative = spec['file']
+        name = row.get('name', spec['name'])
+        manifest_hash = row.get('sha256', '')
+        pinned = spec['sha256']
+        digests = on_disk.get(relative, [])
+        if len(digests) >= 2:
+            violations.append(
+                f"{name}: bundled file {relative} on-disk sha256 {digests[0]} "
+                f"does not match on-disk sha256 {digests[1]}"
+            )
+        elif not digests:
+            violations.append(
+                f"{name}: bundled file {relative} is missing "
+                f"(manifest sha256 {manifest_hash}, pinned sha256 {pinned})"
+            )
+        elif digests[0] != manifest_hash or digests[0] != pinned:
+            violations.append(
+                f"{name}: bundled file {relative} on-disk sha256 {digests[0]} "
+                f"does not match manifest sha256 {manifest_hash} "
+                f"and pinned sha256 {pinned}"
+            )
+        elif relative not in reported_ok:
+            reported_ok.add(relative)
+            ok_lines.append(f"{relative} sha256 {digests[0]}")
+    return violations, ok_lines
 
 
 def is_license_banned(
     license_str: str,
     component_name: str = '',
     entry: dict | None = None,
+    on_disk: dict[str, list[str]] | None = None,
 ) -> tuple[bool, str]:
     """
     Check if a license string is banned.
@@ -336,7 +476,7 @@ def is_license_banned(
         return False, ""
 
     # Named OpenCV file exception: full licence string only, before the split.
-    if is_opencv_bundled_file_exception(license_str, entry):
+    if is_opencv_bundled_file_exception(license_str, entry, on_disk):
         return False, ""
 
     # Split on '; ' (pip-licenses format) and SPDX operators
@@ -363,6 +503,7 @@ def is_license_allowed(
     license_str: str,
     component_name: str = '',
     entry: dict | None = None,
+    on_disk: dict[str, list[str]] | None = None,
 ) -> bool:
     """
     Check if a license is in the allowed list.
@@ -380,7 +521,7 @@ def is_license_allowed(
     if is_gcc_runtime_exception(license_str, component_name):
         return True
 
-    if is_opencv_bundled_file_exception(license_str, entry):
+    if is_opencv_bundled_file_exception(license_str, entry, on_disk):
         return True
 
     # Handle '; ' separated licenses (pip-licenses format)
@@ -412,7 +553,10 @@ def is_license_allowed(
     return False
 
 
-def check_manifest_licenses(manifest: dict) -> list[str]:
+def check_manifest_licenses(
+    manifest: dict,
+    on_disk: dict[str, list[str]] | None = None,
+) -> list[str]:
     """Check manifest entries for banned or unrecognized licenses and generator licenses."""
     violations = []
 
@@ -421,10 +565,10 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
         name = entry.get('name', 'unknown')
         entry_type = entry.get('type', '')
 
-        is_banned, reason = is_license_banned(license_str, name, entry)
+        is_banned, reason = is_license_banned(license_str, name, entry, on_disk)
         if is_banned:
             violations.append(f"{name}: banned license '{license_str}' ({reason})")
-        elif not is_license_allowed(license_str, name, entry):
+        elif not is_license_allowed(license_str, name, entry, on_disk):
             violations.append(
                 f"{name}: license '{license_str}' not in allowed list "
                 "(must be exact SPDX or approved non-SPDX)"
@@ -795,8 +939,12 @@ def main(argv: list[str] | None = None) -> int:
         print("✓ Schema is valid")
     print()
 
+    on_disk = None
+    if args.scan_installed:
+        on_disk = collect_opencv_bundled_hashes(manifest)
+
     print("=== Checking manifest licenses ===")
-    manifest_violations = check_manifest_licenses(manifest)
+    manifest_violations = check_manifest_licenses(manifest, on_disk=on_disk)
     if manifest_violations:
         for violation in manifest_violations:
             print(f"ERROR: {violation}")
@@ -865,6 +1013,18 @@ def main(argv: list[str] | None = None) -> int:
                 if not install_violations and not missing:
                     print("✓ All installed packages are clean and in manifest")
         print()
+
+        if on_disk:
+            print("=== Checking OpenCV bundled file hashes ===")
+            hash_violations, hash_ok = opencv_bundled_hash_violations(manifest, on_disk)
+            for violation in hash_violations:
+                print(f"ERROR: {violation}")
+                all_violations.append(violation)
+            for line in hash_ok:
+                print(f"✓ {line}")
+            if not hash_violations:
+                print("✓ Installed OpenCV bundled files match the manifest and the pin")
+            print()
 
     ffmpeg_status = 'NOT_A_DEPENDENCY'
     if args.check_ffmpeg:

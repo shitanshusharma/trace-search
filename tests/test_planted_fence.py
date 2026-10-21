@@ -867,7 +867,7 @@ def _real_rows(*names):
 
 
 def test_named_opencv_file_fails_when_sha256_changes():
-    """A swapped binary at the same path is a different hash and fails."""
+    """A manifest row whose sha256 is not the pinned file hash fails."""
     swapped = []
     for row in _real_rows(
         "OpenSSL-libcrypto",
@@ -947,3 +947,47 @@ def test_real_libjpeg_turbo_row_passes():
     assert rows[0]["license"] == "IJG AND BSD-3-Clause AND Zlib"
     code, stdout, _ = invoke_main(make_manifest(rows))
     assert code == 0, stdout
+
+
+def test_swapped_bundled_binary_fails_installed_closure(tmp_path, monkeypatch):
+    """A different file at the named path fails while the manifest stays pinned."""
+    import hashlib
+
+    import scripts.check_licenses as cl
+
+    rows = _real_rows(
+        "OpenSSL-libcrypto",
+        "OpenSSL-libssl",
+        "Intel IPP ICV",
+        "Intel IPP IW",
+    )
+    libcrypto = next(row for row in rows if row["name"] == "OpenSSL-libcrypto")
+    pinned = libcrypto["sha256"]
+    relative = libcrypto["bundled_file"]
+    assert relative == "opencv_python_headless.libs/libcrypto-337dac8b.so.1.1"
+    assert pinned == "d28a738e776f5f5c17b3577b16b6dfc093132060612769d03cf4048eba10b7aa"
+
+    site_root = tmp_path / "site-packages"
+    target = site_root / relative
+    target.parent.mkdir(parents=True)
+    payload = b"not-the-real-libcrypto"
+    target.write_bytes(payload)
+    actual = hashlib.sha256(payload).hexdigest()
+    assert actual != pinned
+
+    monkeypatch.setattr(cl, "installed_site_roots", lambda: [site_root])
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kwargs: [{"name": "trace-search", "version": "0.1.0", "license": "MIT"}],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest(rows),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert relative in stdout
+    assert actual in stdout
+    assert pinned in stdout
+    assert "does not match" in stdout
