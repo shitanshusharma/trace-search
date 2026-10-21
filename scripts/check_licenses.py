@@ -86,27 +86,45 @@ GCC_RUNTIME_EXCEPTION_LICENSES = {
 # These are not global allowlist entries. OpenSSL and
 # LicenseRef-Intel-Simplified-Software-License stay out of ALLOWED_SPDX
 # and ALLOWED_NON_SPDX. A row matches only when the licence string, the
-# library version, the bundling package, that package's version, and the
-# file path all match. Any other package, version, or file still fails.
+# library version, the bundling package, that package's version, the file
+# path, the manifest row name, and that file's sha256 all match. A swapped
+# binary at the same path fails. Any other package, version, or file fails.
 OPENCV_BUNDLED_FILE_EXCEPTIONS = (
     {
         'license': 'OpenSSL',
         'version': '1.1.1w',
         'package': 'opencv-python-headless',
         'package_version': '4.10.0.84',
-        'files': {
-            'opencv_python_headless.libs/libcrypto-337dac8b.so.1.1',
-            'opencv_python_headless.libs/libssl-28bef1ac.so.1.1',
-        },
+        'name': 'OpenSSL-libcrypto',
+        'file': 'opencv_python_headless.libs/libcrypto-337dac8b.so.1.1',
+        'sha256': 'd28a738e776f5f5c17b3577b16b6dfc093132060612769d03cf4048eba10b7aa',
+    },
+    {
+        'license': 'OpenSSL',
+        'version': '1.1.1w',
+        'package': 'opencv-python-headless',
+        'package_version': '4.10.0.84',
+        'name': 'OpenSSL-libssl',
+        'file': 'opencv_python_headless.libs/libssl-28bef1ac.so.1.1',
+        'sha256': 'cedc4cdd914b92099831b6684ea346aa3ff2720ae7eb86ba59af4d8bae805a65',
     },
     {
         'license': 'LicenseRef-Intel-Simplified-Software-License',
         'version': '2021.11.0',
         'package': 'opencv-python-headless',
         'package_version': '4.10.0.84',
-        'files': {
-            'cv2/cv2.abi3.so',
-        },
+        'name': 'Intel IPP ICV',
+        'file': 'cv2/cv2.abi3.so',
+        'sha256': '72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78',
+    },
+    {
+        'license': 'LicenseRef-Intel-Simplified-Software-License',
+        'version': '2021.11.0',
+        'package': 'opencv-python-headless',
+        'package_version': '4.10.0.84',
+        'name': 'Intel IPP IW',
+        'file': 'cv2/cv2.abi3.so',
+        'sha256': '72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78',
     },
 )
 
@@ -276,7 +294,9 @@ def is_opencv_bundled_file_exception(license_str: str, entry: dict | None) -> bo
     package = entry.get('bundled_package', '')
     package_version = entry.get('bundled_package_version', '')
     bundled_file = entry.get('bundled_file', '')
-    fields = (version, package, package_version, bundled_file)
+    name = entry.get('name', '')
+    sha256 = entry.get('sha256', '')
+    fields = (version, package, package_version, bundled_file, name, sha256)
     if not all(isinstance(value, str) and value for value in fields):
         return False
     package_norm = normalize_package_name(package)
@@ -286,7 +306,9 @@ def is_opencv_bundled_file_exception(license_str: str, entry: dict | None) -> bo
             and version == spec['version']
             and package_norm == normalize_package_name(spec['package'])
             and package_version == spec['package_version']
-            and bundled_file in spec['files']
+            and bundled_file == spec['file']
+            and name == spec['name']
+            and sha256 == spec['sha256']
         ):
             return True
     return False

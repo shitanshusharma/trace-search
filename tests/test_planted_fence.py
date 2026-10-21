@@ -858,3 +858,92 @@ def test_openssl_and_ipp_are_not_globally_allowed():
     assert "LicenseRef-Intel-Simplified-Software-License" not in cl.ALLOWED_SPDX
     assert "OpenSSL" not in cl.ALLOWED_NON_SPDX
     assert "LicenseRef-Intel-Simplified-Software-License" not in cl.ALLOWED_NON_SPDX
+
+
+def _real_rows(*names):
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    wanted = set(names)
+    return [e for e in manifest["entries"] if e["name"] in wanted]
+
+
+def test_named_opencv_file_fails_when_sha256_changes():
+    """A swapped binary at the same path is a different hash and fails."""
+    swapped = []
+    for row in _real_rows(
+        "OpenSSL-libcrypto",
+        "OpenSSL-libssl",
+        "Intel IPP ICV",
+        "Intel IPP IW",
+    ):
+        clone = dict(row)
+        assert clone["sha256"] != "0" * 64
+        clone["sha256"] = "0" * 64
+        swapped.append(clone)
+    assert len(swapped) == 4
+    code, stdout, _ = invoke_main(make_manifest(swapped))
+    assert code == 1, stdout
+    assert stdout.count("not in allowed list") == 4
+    for row in swapped:
+        assert row["name"] in stdout
+
+
+def test_named_opencv_file_fails_for_a_different_row_name():
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    row["name"] = "evil-crypto"
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert "evil-crypto" in stdout
+    assert "not in allowed list" in stdout
+
+
+def test_mit_and_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="dual", license_id="MIT AND GPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "banned" in stdout.lower()
+    assert "GPL-3.0-only" in stdout
+
+
+def test_ijg_and_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="libjpeg-turbo", license_id="IJG AND GPL-3.0-only")
+        ])
+    )
+    assert code == 1, stdout
+    assert "banned" in stdout.lower()
+    assert "GPL-3.0-only" in stdout
+
+
+def test_ijg_and_unknown_term_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="libjpeg-turbo",
+                license_id="IJG AND BSD-3-Clause AND LicenseRef-Unknown",
+            )
+        ])
+    )
+    assert code == 1, stdout
+    assert "not in allowed list" in stdout
+
+
+def test_ijg_and_bsd_and_zlib_passes():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="libjpeg-turbo",
+                license_id="IJG AND BSD-3-Clause AND Zlib",
+            )
+        ])
+    )
+    assert code == 0, stdout
+
+
+def test_real_libjpeg_turbo_row_passes():
+    rows = _real_rows("libjpeg-turbo")
+    assert len(rows) == 1
+    assert rows[0]["license"] == "IJG AND BSD-3-Clause AND Zlib"
+    code, stdout, _ = invoke_main(make_manifest(rows))
+    assert code == 0, stdout
