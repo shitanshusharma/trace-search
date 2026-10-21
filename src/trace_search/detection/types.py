@@ -62,4 +62,3 @@ class Detector(Protocol):
 
     def detect(self, frame: Frame) -> list[Detection]:
         """Return the detections in one frame."""
-        ...
