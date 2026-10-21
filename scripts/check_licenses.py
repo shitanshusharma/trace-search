@@ -16,9 +16,11 @@ Exit codes:
 """
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
+import site
 import subprocess
 import sys
 from pathlib import Path
@@ -79,6 +81,58 @@ GCC_RUNTIME_EXCEPTION_LICENSES = {
     'GCC Runtime Library Exception',
 }
 
+# Named exceptions for files inside the pinned opencv-python-headless wheel.
+# Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST: "allow OpenSSL and Intel IPP
+# as narrow named exceptions for the OpenCV-bundled files only."
+# Counsel confirmation required before release.
+# These are not global allowlist entries. OpenSSL and
+# LicenseRef-Intel-Simplified-Software-License stay out of ALLOWED_SPDX
+# and ALLOWED_NON_SPDX. A row matches only when the licence string, the
+# library version, the bundling package, that package's version, the file
+# path, the manifest row name, and that file's sha256 all match.
+# The installed-closure scan hashes the file in site-packages. The
+# exception applies only when that on-disk sha256 matches both the
+# manifest row and the pinned value. A missing file or a mismatch fails
+# closed. Any other package, version, file, name, or hash fails.
+OPENCV_BUNDLED_FILE_EXCEPTIONS = (
+    {
+        'license': 'OpenSSL',
+        'version': '1.1.1w',
+        'package': 'opencv-python-headless',
+        'package_version': '4.10.0.84',
+        'name': 'OpenSSL-libcrypto',
+        'file': 'opencv_python_headless.libs/libcrypto-337dac8b.so.1.1',
+        'sha256': 'd28a738e776f5f5c17b3577b16b6dfc093132060612769d03cf4048eba10b7aa',
+    },
+    {
+        'license': 'OpenSSL',
+        'version': '1.1.1w',
+        'package': 'opencv-python-headless',
+        'package_version': '4.10.0.84',
+        'name': 'OpenSSL-libssl',
+        'file': 'opencv_python_headless.libs/libssl-28bef1ac.so.1.1',
+        'sha256': 'cedc4cdd914b92099831b6684ea346aa3ff2720ae7eb86ba59af4d8bae805a65',
+    },
+    {
+        'license': 'LicenseRef-Intel-Simplified-Software-License',
+        'version': '2021.11.0',
+        'package': 'opencv-python-headless',
+        'package_version': '4.10.0.84',
+        'name': 'Intel IPP ICV',
+        'file': 'cv2/cv2.abi3.so',
+        'sha256': '72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78',
+    },
+    {
+        'license': 'LicenseRef-Intel-Simplified-Software-License',
+        'version': '2021.11.0',
+        'package': 'opencv-python-headless',
+        'package_version': '4.10.0.84',
+        'name': 'Intel IPP IW',
+        'file': 'cv2/cv2.abi3.so',
+        'sha256': '72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78',
+    },
+)
+
 # Exact allowed SPDX identifiers (case-sensitive for SPDX compliance)
 ALLOWED_SPDX = {
     'MIT',
@@ -98,7 +152,20 @@ ALLOWED_SPDX = {
     '0BSD',
     'HPND',
     'MIT-CMU',
+    'IJG',  # Independent JPEG Group; libjpeg-turbo ships IJG AND BSD-3-Clause AND Zlib
 }
+
+# OpenSSL and LicenseRef-Intel-Simplified-Software-License are not
+# allowlisted here. See OPENCV_BUNDLED_FILE_EXCEPTIONS.
+
+# (normalized package name, exact pip-licenses string) -> SPDX id.
+# The license text is exact, including case, and only that package is rewritten.
+PIP_LICENSES_TO_SPDX = {
+    ('imagehash', '2-clause BSD License'): 'BSD-2-Clause',
+}
+
+# Parse failures that do not match a banned pattern. Still fail closed.
+_UNPARSEABLE = "unparseable license"
 
 # Also allow common non-SPDX forms
 ALLOWED_NON_SPDX = {
@@ -229,87 +296,476 @@ def is_gcc_runtime_exception(license_str: str, component_name: str) -> bool:
     )
 
 
-def is_license_banned(license_str: str, component_name: str = '') -> tuple[bool, str]:
+def is_opencv_bundled_file_exception(
+    license_str: str,
+    entry: dict | None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> bool:
+    """True only for one named file inside opencv-python-headless 4.10.0.84.
+
+    license_str must be the entry's whole licence. A component split out of
+    OR, AND, or WITH does not match, so a banned term still fails.
+    When on_disk is set, the installed file's sha256 must match the manifest
+    row and the pinned value. None means the disk check is not running.
     """
-    Check if a license string is banned.
-
-    Splits on '; ' (pip-licenses format), SPDX OR/AND/WITH, and checks each component.
-    Allows GCC Runtime Library Exception for specific GCC runtime libraries only.
-    Returns (is_banned, reason).
-    """
-    if not license_str or not license_str.strip():
-        return True, "empty license"
-
-    # Named GCC exception: check the full expression BEFORE splitting on WITH.
-    if is_gcc_runtime_exception(license_str, component_name):
-        return False, ""
-
-    # Split on '; ' (pip-licenses format) and SPDX operators
-    all_components = []
-    for part in license_str.split(';'):
-        part = part.strip()
-        if part:
-            spdx_components = re.split(r'\s+(?:OR|AND|WITH)\s+', part)
-            all_components.extend(spdx_components)
-
-    for comp in all_components:
-        comp = comp.strip().strip('()')
-        if not comp:
-            continue
-
-        for pattern in BANNED_LICENSE_PATTERNS:
-            if re.search(pattern, comp, re.IGNORECASE):
-                return True, f"banned pattern '{pattern}' in '{comp}'"
-
-    return False, ""
-
-
-def is_license_allowed(license_str: str, component_name: str = '') -> bool:
-    """
-    Check if a license is in the allowed list.
-
-    Handles '; ' (pip-licenses format) and SPDX expressions.
-    For AND/';' expressions: ALL components must be allowed.
-    For OR expressions: at least one component must be allowed.
-    Allows GCC Runtime Library Exception for specific GCC runtime libraries.
-    """
-    license_str = license_str.strip()
-    if not license_str:
+    if not isinstance(entry, dict):
         return False
-
-    if is_gcc_runtime_exception(license_str, component_name):
-        return True
-
-    # Handle '; ' separated licenses (pip-licenses format)
-    # Treat as AND - all must be allowed
-    if '; ' in license_str:
-        parts = [p.strip() for p in license_str.split('; ')]
-        return all(is_license_allowed(p, component_name) for p in parts if p)
-
-    # Check SPDX identifiers (case-sensitive)
-    if license_str in ALLOWED_SPDX:
-        return True
-
-    # Check non-SPDX forms (case-insensitive)
-    license_upper = license_str.upper()
-    for allowed in ALLOWED_NON_SPDX:
-        if license_upper == allowed.upper():
-            return True
-
-    # Handle SPDX OR expression - at least one must be allowed
-    if ' OR ' in license_str:
-        components = [c.strip() for c in license_str.split(' OR ')]
-        return any(is_license_allowed(c, component_name) for c in components if c)
-
-    # Handle SPDX AND expression - all must be allowed
-    if ' AND ' in license_str:
-        components = [c.strip() for c in license_str.split(' AND ')]
-        return all(is_license_allowed(c, component_name) for c in components if c)
-
+    raw_license = entry.get('license', '')
+    if not isinstance(raw_license, str) or license_str.strip() != raw_license.strip():
+        return False
+    version = entry.get('version', '')
+    package = entry.get('bundled_package', '')
+    package_version = entry.get('bundled_package_version', '')
+    bundled_file = entry.get('bundled_file', '')
+    name = entry.get('name', '')
+    sha256 = entry.get('sha256', '')
+    fields = (version, package, package_version, bundled_file, name, sha256)
+    if not all(isinstance(value, str) and value for value in fields):
+        return False
+    package_norm = normalize_package_name(package)
+    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+        if (
+            license_str.strip() == spec['license']
+            and version == spec['version']
+            and package_norm == normalize_package_name(spec['package'])
+            and package_version == spec['package_version']
+            and bundled_file == spec['file']
+            and name == spec['name']
+            and sha256 == spec['sha256']
+        ):
+            if on_disk is None:
+                return True
+            digests = on_disk.get(bundled_file, [])
+            return digests == [spec['sha256']]
     return False
 
 
-def check_manifest_licenses(manifest: dict) -> list[str]:
+def installed_site_roots() -> list[Path]:
+    """Site-packages directories that can hold the OpenCV wheel files."""
+    roots: list[Path] = []
+    try:
+        roots.extend(Path(path) for path in site.getsitepackages())
+    except AttributeError:
+        print(
+            'warning: site.getsitepackages() is unavailable; '
+            'named OpenCV bundled-file exceptions fail closed',
+            file=sys.stderr,
+        )
+    try:
+        user_site = site.getusersitepackages()
+    except Exception:
+        user_site = None
+    if user_site:
+        roots.append(Path(user_site))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
+def sha256_file(path: Path) -> str:
+    """SHA-256 hex digest of a file."""
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def hashes_of_installed_file(relative: str, roots: list[Path]) -> list[str]:
+    """Distinct sha256 digests of relative under site-packages roots."""
+    digests: list[str] = []
+    for root in roots:
+        candidate = root / relative
+        if not candidate.is_file():
+            continue
+        digest = sha256_file(candidate)
+        if digest not in digests:
+            digests.append(digest)
+    return digests
+
+
+def _opencv_exception_row(manifest: dict, spec: dict) -> dict | None:
+    """Manifest row for one named-exception spec, ignoring sha256."""
+    for entry in manifest.get('entries', []):
+        package = entry.get('bundled_package', '')
+        if (
+            entry.get('name') == spec['name']
+            and str(entry.get('license', '')).strip() == spec['license']
+            and entry.get('version') == spec['version']
+            and isinstance(package, str)
+            and normalize_package_name(package) == normalize_package_name(spec['package'])
+            and entry.get('bundled_package_version') == spec['package_version']
+            and entry.get('bundled_file') == spec['file']
+        ):
+            return entry
+    return None
+
+
+def collect_opencv_bundled_hashes(
+    manifest: dict,
+    roots: list[Path] | None = None,
+) -> dict[str, list[str]]:
+    """Hash each named OpenCV file that the manifest claims."""
+    if roots is None:
+        roots = installed_site_roots()
+    on_disk: dict[str, list[str]] = {}
+    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+        relative = spec['file']
+        if relative in on_disk:
+            continue
+        if _opencv_exception_row(manifest, spec) is None:
+            continue
+        on_disk[relative] = hashes_of_installed_file(relative, roots)
+    return on_disk
+
+
+def opencv_bundled_hash_violations(
+    manifest: dict,
+    on_disk: dict[str, list[str]] | None,
+) -> tuple[list[str], list[str]]:
+    """Fail closed when an installed named file is missing or has the wrong hash.
+
+    Returns (violations, ok_lines). Each violation names the file and both hashes.
+    """
+    if on_disk is None:
+        return [], []
+    violations: list[str] = []
+    ok_lines: list[str] = []
+    reported_ok: set[str] = set()
+    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+        row = _opencv_exception_row(manifest, spec)
+        if row is None:
+            continue
+        relative = spec['file']
+        name = row.get('name', spec['name'])
+        manifest_hash = row.get('sha256', '')
+        pinned = spec['sha256']
+        digests = on_disk.get(relative, [])
+        if len(digests) >= 2:
+            violations.append(
+                f"{name}: bundled file {relative} on-disk sha256 {digests[0]} "
+                f"does not match on-disk sha256 {digests[1]}"
+            )
+        elif not digests:
+            violations.append(
+                f"{name}: bundled file {relative} is missing "
+                f"(manifest sha256 {manifest_hash}, pinned sha256 {pinned})"
+            )
+        elif digests[0] != manifest_hash or digests[0] != pinned:
+            violations.append(
+                f"{name}: bundled file {relative} on-disk sha256 {digests[0]} "
+                f"does not match manifest sha256 {manifest_hash} "
+                f"and pinned sha256 {pinned}"
+            )
+        elif relative not in reported_ok:
+            reported_ok.add(relative)
+            ok_lines.append(f"{relative} sha256 {digests[0]}")
+    return violations, ok_lines
+
+
+class SpdxParseError(Exception):
+    """An SPDX expression could not be parsed. Callers fail closed."""
+
+
+_TOKEN_RE = re.compile(r"\(|\)|[A-Za-z0-9][A-Za-z0-9.+-]*")
+_OPERATORS = {"AND", "OR", "WITH"}
+
+
+def _tokenize_spdx(expr: str) -> list[str]:
+    tokens: list[str] = []
+    pos = 0
+    length = len(expr)
+    while pos < length:
+        if expr[pos].isspace():
+            pos += 1
+            continue
+        match = _TOKEN_RE.match(expr, pos)
+        if not match:
+            raise SpdxParseError(f"unexpected character {expr[pos]!r}")
+        tokens.append(match.group(0))
+        pos = match.end()
+    if not tokens:
+        raise SpdxParseError("empty SPDX expression")
+    return tokens
+
+
+class _SpdxParser:
+    """SPDX license expression: OR is loosest, then AND, then WITH, plus parentheses."""
+
+    def __init__(self, tokens: list[str]):
+        self.tokens = tokens
+        self.index = 0
+
+    def peek(self) -> str | None:
+        if self.index >= len(self.tokens):
+            return None
+        return self.tokens[self.index]
+
+    def eat(self, expected: str | None = None) -> str:
+        token = self.peek()
+        if token is None:
+            raise SpdxParseError("unexpected end of SPDX expression")
+        if expected is not None and token != expected:
+            raise SpdxParseError(f"expected {expected}")
+        self.index += 1
+        return token
+
+    def parse(self):
+        node = self._parse_or()
+        if self.peek() is not None:
+            raise SpdxParseError("trailing tokens in SPDX expression")
+        return node
+
+    def _parse_or(self):
+        node = self._parse_and()
+        parts = [node]
+        while self.peek() == "OR":
+            self.eat("OR")
+            parts.append(self._parse_and())
+        if len(parts) == 1:
+            return node
+        return ("OR", parts)
+
+    def _parse_and(self):
+        node = self._parse_with()
+        parts = [node]
+        while self.peek() == "AND":
+            self.eat("AND")
+            parts.append(self._parse_with())
+        if len(parts) == 1:
+            return node
+        return ("AND", parts)
+
+    def _parse_with(self):
+        node = self._parse_primary()
+        if self.peek() != "WITH":
+            return node
+        self.eat("WITH")
+        exception = self._parse_primary()
+        if not isinstance(node, str) or not isinstance(exception, str):
+            raise SpdxParseError("WITH applies only to a license id and an exception id")
+        return ("WITH", node, exception)
+
+    def _parse_primary(self):
+        token = self.peek()
+        if token is None:
+            raise SpdxParseError("unexpected end of SPDX expression")
+        if token == "(":
+            self.eat("(")
+            node = self._parse_or()
+            if self.peek() != ")":
+                raise SpdxParseError("unbalanced parenthesis")
+            self.eat(")")
+            return node
+        if token in _OPERATORS or token == ")":
+            raise SpdxParseError(f"unexpected token {token}")
+        return self.eat()
+
+
+def _parse_spdx(expr: str):
+    return _SpdxParser(_tokenize_spdx(expr)).parse()
+
+
+def _id_matches_banned(license_id: str) -> tuple[bool, str]:
+    for pattern in BANNED_LICENSE_PATTERNS:
+        if re.search(pattern, license_id, re.IGNORECASE):
+            return True, f"banned pattern '{pattern}' in '{license_id}'"
+    return False, ""
+
+
+def _id_is_allowed(license_id: str) -> bool:
+    if license_id in ALLOWED_SPDX:
+        return True
+    folded = license_id.upper()
+    return any(folded == allowed.upper() for allowed in ALLOWED_NON_SPDX)
+
+
+def _is_exact_non_spdx(license_str: str) -> bool:
+    folded = license_str.upper()
+    return any(folded == allowed.upper() for allowed in ALLOWED_NON_SPDX)
+
+
+def _eval_spdx(node, component_name: str) -> tuple[bool, bool, str]:
+    """Return (banned, allowed, reason). A WITH node is allowed only for the GCC exception."""
+    if isinstance(node, str):
+        banned, reason = _id_matches_banned(node)
+        if banned:
+            return True, False, reason
+        if _id_is_allowed(node):
+            return False, True, ""
+        return False, False, ""
+
+    kind = node[0]
+    if kind == "AND":
+        results = [_eval_spdx(child, component_name) for child in node[1]]
+        for banned, _allowed, reason in results:
+            if banned:
+                return True, False, reason
+        if all(allowed for _banned, allowed, _reason in results):
+            return False, True, ""
+        return False, False, ""
+
+    if kind == "OR":
+        # PRD §3: a banned term fails the row even inside OR.
+        # OR passes only when every term is allowed (GCC exception included).
+        results = [_eval_spdx(child, component_name) for child in node[1]]
+        for banned, _allowed, reason in results:
+            if banned:
+                return True, False, reason
+        if all(allowed for _banned, allowed, _reason in results):
+            return False, True, ""
+        return False, False, ""
+
+    if kind == "WITH":
+        license_id, exception_id = node[1], node[2]
+        expression = f"{license_id} WITH {exception_id}"
+        if is_gcc_runtime_exception(expression, component_name):
+            return False, True, ""
+        banned, reason = _id_matches_banned(license_id)
+        if banned:
+            return True, False, reason
+        return False, False, ""
+
+    raise SpdxParseError("unknown SPDX node")
+
+
+def _is_single_bare_license_term(license_str: str) -> bool:
+    """True for one licence id, with no OR, AND, or WITH around it."""
+    try:
+        tokens = _tokenize_spdx(license_str)
+    except SpdxParseError:
+        return False
+    return (
+        len(tokens) == 1
+        and tokens[0] not in _OPERATORS
+        and tokens[0] not in {"(", ")"}
+    )
+
+
+def _license_decision(
+    license_str: str,
+    component_name: str = '',
+    entry: dict | None = None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> tuple[bool, bool, str]:
+    """
+    Classify one license string.
+
+    Returns (banned, allowed, reason). Unparseable text is not banned; it still
+    fails closed. ';' is the pip-licenses conjunction: every part must be allowed.
+    AND and OR both require every term to be allowed. A banned term fails either
+    operator. WITH is allowed only for the named GCC runtime exception.
+
+    A single bare term is allowed first when it matches
+    OPENCV_BUNDLED_FILE_EXCEPTIONS. OR, AND, and WITH skip that exception and
+    use the parser below unchanged.
+    """
+    license_str = license_str.strip()
+    if not license_str:
+        return True, False, "empty license"
+
+    if _is_single_bare_license_term(license_str) and is_opencv_bundled_file_exception(
+        license_str, entry, on_disk
+    ):
+        return False, True, ""
+
+    license_str = PIP_LICENSES_TO_SPDX.get(
+        (normalize_package_name(component_name), license_str),
+        license_str,
+    )
+
+    if is_gcc_runtime_exception(license_str, component_name):
+        return False, True, ""
+
+    if _is_exact_non_spdx(license_str):
+        return False, True, ""
+
+    if ";" in license_str:
+        parts = [part.strip() for part in license_str.split(";")]
+        decisions = [
+            _license_decision(part, component_name, entry, on_disk) for part in parts
+        ]
+        pending = ""
+        for banned, allowed, reason in decisions:
+            if banned:
+                return True, False, reason
+            if not allowed and reason and not pending:
+                pending = reason
+        if all(allowed for _banned, allowed, _reason in decisions):
+            return False, True, ""
+        return False, False, pending
+
+    try:
+        node = _parse_spdx(license_str)
+    except SpdxParseError:
+        banned, reason = _id_matches_banned(license_str)
+        if banned:
+            return True, False, reason
+        return False, False, _UNPARSEABLE
+
+    return _eval_spdx(node, component_name)
+
+
+def _license_failure(
+    license_str: str,
+    component_name: str = '',
+    entry: dict | None = None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> str | None:
+    """Phrase for a failing license, or None when it is allowed."""
+    banned, allowed, reason = _license_decision(
+        license_str, component_name, entry, on_disk
+    )
+    if banned:
+        return f"banned license '{license_str}' ({reason})"
+    if not allowed:
+        if reason == _UNPARSEABLE:
+            return f"unparseable license '{license_str}'"
+        return (
+            f"license '{license_str}' not in allowed list "
+            "(must be exact SPDX or approved non-SPDX)"
+        )
+    return None
+
+
+def is_license_banned(
+    license_str: str,
+    component_name: str = '',
+    entry: dict | None = None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> tuple[bool, str]:
+    """Return whether the license matched a banned pattern, and why."""
+    banned, _allowed, reason = _license_decision(
+        license_str, component_name, entry, on_disk
+    )
+    if banned:
+        return True, reason
+    return False, ""
+
+
+def is_license_allowed(
+    license_str: str,
+    component_name: str = '',
+    entry: dict | None = None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> bool:
+    """Return whether every required SPDX term is on the allowlist."""
+    _banned, allowed, _reason = _license_decision(
+        license_str, component_name, entry, on_disk
+    )
+    return allowed
+
+
+def check_manifest_licenses(
+    manifest: dict,
+    on_disk: dict[str, list[str]] | None = None,
+) -> list[str]:
     """Check manifest entries for banned or unrecognized licenses and generator licenses."""
     violations = []
 
@@ -318,14 +774,9 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
         name = entry.get('name', 'unknown')
         entry_type = entry.get('type', '')
 
-        is_banned, reason = is_license_banned(license_str, name)
-        if is_banned:
-            violations.append(f"{name}: banned license '{license_str}' ({reason})")
-        elif not is_license_allowed(license_str, name):
-            violations.append(
-                f"{name}: license '{license_str}' not in allowed list "
-                "(must be exact SPDX or approved non-SPDX)"
-            )
+        failure = _license_failure(license_str, name, entry, on_disk)
+        if failure:
+            violations.append(f"{name}: {failure}")
 
         # generator_license uses the same allowlist / SPDX parser as packages.
         # Applies to every row that carries a generator: synthetic_clip,
@@ -339,13 +790,19 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
                     f"{name}: {entry_type} missing required generator_license field"
                 )
             else:
-                gen_is_banned, gen_reason = is_license_banned(generator_license)
-                if gen_is_banned:
+                gen_banned, _gen_allowed, gen_reason = _license_decision(
+                    generator_license
+                )
+                if gen_banned:
                     violations.append(
                         f"{name}: generator_license '{generator_license}' is banned "
                         f"({gen_reason})"
                     )
-                elif not is_license_allowed(generator_license):
+                elif gen_reason == _UNPARSEABLE:
+                    violations.append(
+                        f"{name}: generator_license '{generator_license}' is unparseable"
+                    )
+                elif not _gen_allowed:
                     violations.append(
                         f"{name}: generator_license '{generator_license}' not in allowed list"
                     )
@@ -489,38 +946,43 @@ def check_installed_packages(
     direct_deps parameter is ignored - kept for compatibility.
 
     Exempts the project's own package (trace-search) explicitly.
+    A library row matches only when the normalised name and the exact
+    installed version both match. A stale version fails closed.
     """
     del direct_deps  # unused; full-closure scan
     violations = []
     missing = []
 
-    manifest_packages = {}
+    manifest_by_name: dict[str, list[dict]] = {}
     for entry in manifest.get('entries', []):
         if entry.get('type') == 'library':
             norm_name = entry.get('name', '').lower().replace('_', '-')
-            manifest_packages[norm_name] = entry
+            manifest_by_name.setdefault(norm_name, []).append(entry)
 
     for pkg in installed:
         name = pkg['name']
-        version = pkg['version']
+        version = str(pkg['version']).strip()
         license_str = pkg['license']
         norm_name = name.lower().replace('_', '-')
 
         if norm_name == 'trace-search':
             continue
 
-        if norm_name not in manifest_packages:
+        rows = manifest_by_name.get(norm_name)
+        if not rows:
             missing.append(f"{name} ({version}): installed but not in manifest")
+        else:
+            manifest_versions = [str(row.get('version', '')).strip() for row in rows]
+            if version not in manifest_versions:
+                listed = ", ".join(manifest_versions)
+                violations.append(
+                    f"{name}: installed version {version} does not match "
+                    f"manifest version {listed}"
+                )
 
-        is_banned, reason = is_license_banned(license_str, name)
-        if is_banned:
-            violations.append(
-                f"{name} ({version}): banned license '{license_str}' ({reason})"
-            )
-        elif not is_license_allowed(license_str, name):
-            violations.append(
-                f"{name} ({version}): license '{license_str}' not in allowed list"
-            )
+        failure = _license_failure(license_str, name)
+        if failure:
+            violations.append(f"{name} ({version}): {failure}")
 
     return violations, missing
 
@@ -529,7 +991,8 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
     """
     Check FFmpeg via the opencv wheel's bundled libavcodec.
 
-    Distribution names come from ffmpeg_check.OPENCV_FFMPEG_DISTRIBUTIONS.
+    Wheel names are matched by ffmpeg_check.is_opencv_ffmpeg_distribution,
+    which is the only normalisation of OPENCV_FFMPEG_DISTRIBUTIONS.
     System ffmpeg is not a project dependency. When none of those wheels
     is declared, the status is NOT_A_DEPENDENCY.
 
@@ -692,8 +1155,12 @@ def main(argv: list[str] | None = None) -> int:
         print("✓ Schema is valid")
     print()
 
+    on_disk = None
+    if args.scan_installed:
+        on_disk = collect_opencv_bundled_hashes(manifest)
+
     print("=== Checking manifest licenses ===")
-    manifest_violations = check_manifest_licenses(manifest)
+    manifest_violations = check_manifest_licenses(manifest, on_disk=on_disk)
     if manifest_violations:
         for violation in manifest_violations:
             print(f"ERROR: {violation}")
@@ -762,6 +1229,18 @@ def main(argv: list[str] | None = None) -> int:
                 if not install_violations and not missing:
                     print("✓ All installed packages are clean and in manifest")
         print()
+
+        if on_disk:
+            print("=== Checking OpenCV bundled file hashes ===")
+            hash_violations, hash_ok = opencv_bundled_hash_violations(manifest, on_disk)
+            for violation in hash_violations:
+                print(f"ERROR: {violation}")
+                all_violations.append(violation)
+            for line in hash_ok:
+                print(f"✓ {line}")
+            if not hash_violations:
+                print("✓ Installed OpenCV bundled files match the manifest and the pin")
+            print()
 
     ffmpeg_status = 'NOT_A_DEPENDENCY'
     if args.check_ffmpeg:

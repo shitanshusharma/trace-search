@@ -35,6 +35,7 @@ This project maintains **strict license hygiene** for commercial use:
 
 - **Banned licenses:** AGPL, GPL, NC (Non-Commercial), unknown/unrecognized
 - **GCC Runtime Library Exception:** The single GPL-family exception is GCC runtime libraries (`libgfortran`, `libquadmath`, `libgcc_s`, `libstdc++`) with the GCC Runtime Library Exception (`GPL-3.0 WITH GCC-exception-3.1`), which are required runtime components
+- **OpenCV bundled files (21 Oct 2026, 7:45 AM IST):** OpenSSL 1.1.1w (`OpenSSL`) on `libcrypto-337dac8b.so.1.1` and `libssl-28bef1ac.so.1.1`, and Intel IPP 2021.11.0 (`LicenseRef-Intel-Simplified-Software-License`) on `cv2/cv2.abi3.so`, only inside opencv-python-headless 4.10.0.84. Counsel confirmation required before release. These are not global allowlist entries
 - **Banned components:** Ultralytics (AGPL), boxmot (AGPL), InsightFace/ArcFace, OpenGait
 - **Banned datasets:** Market-1501, MSMT17, DukeMTMC, CUHK03, CASIA-B, GREW, Gait3D, Objects365-trained weights
 
@@ -58,12 +59,14 @@ trace-search/
 │   ├── api/                # Search and query API
 │   ├── ui/                 # Web UI (site map, route view, clips)
 │   ├── fixtures/           # Synthetic fixture generation + separation guards (T1)
+│   ├── audit/              # Append-only HMAC audit log (T8, AC-13)
 │   └── common/             # Shared utilities
 ├── tests/                  # Unit and integration tests
 ├── scripts/                # Build and maintenance scripts
 │   ├── check_licenses.py   # License fence validator
 │   ├── generate_smoke_fixtures.py  # Synthetic video generator (T1)
-│   └── check_separation.py         # Fixture separation checker (T1)
+│   ├── check_separation.py         # Fixture separation checker (T1)
+│   └── demo_audit_log.py   # AC-13 JSON proof
 ├── licenses/               # License manifest and schema
 │   ├── manifest.json       # Machine-readable license manifest
 │   └── manifest_schema.json
@@ -129,7 +132,14 @@ python3 scripts/check_separation.py --json
 
 ## CI Status
 
-The pipeline is lint, unit tests, the licence fence, and a separate fixture-separation job. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+The CI pipeline runs on every push and PR:
+1. **Lint** with ruff
+2. **Unit tests** with pytest
+3. **Clean worktree** — fails if `git status --porcelain` is not empty after pytest
+4. **License fence check** - fails on any AGPL/GPL/NC/unknown license or banned component
+5. **CI tools banned-licence check** — separate venv from `requirements-ci.lock`
+6. **AC-13 demo** — `python scripts/demo_audit_log.py --json`
+7. **Fixture separation** — separate job. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 The licence fence is expected to fail on two rows this PR does not own: ImageHash's installed string `2-clause BSD License`, and numpy 2.2.0 missing from the manifest (PR #6 owns that row). The PR body records the CI run for the current head.
 
@@ -145,11 +155,21 @@ This is a **multi-task build** (T0–T10). Each task = one cloud agent / one PR.
 - ⏳ **T5:** ReID (OSNet, train from scratch)
 - ⏳ **T6:** Cross-camera matching + route
 - ⏳ **T7:** Web UI + auth
-- ⏳ **T8:** Audit log
+- ⏳ **T8:** Audit log (HMAC chain and signed head anchor; see below)
 - ⏳ **T9:** Retention + purge
 - ⏳ **T10:** Zero-face guarantee
 
 See [trace-search-cut01-plan.md](docs/trace-search-cut01-plan.md) for the full task breakdown.
+
+## Audit log (AC-13)
+
+The audit log records operator username, IST time, action, query, case ID, purpose, an optional `details` note, and result ids. It is an HMAC-SHA256 chain. Canonical JSON is `json.dumps(..., sort_keys=True, separators=(",", ":"))`. A signed head anchor at `<log_path>.head` stores the last HMAC and the entry count. `initialize()` writes a signed count-0 anchor for a new log. `append()` checks that anchor under the lock and raises when it does not match the tail. A missing, unsigned, or mismatched anchor fails `verify()`. `verify()` takes a shared lock on the same lock file and returns `valid=False` for non-UTF-8 bytes and for a blank `details` string.
+
+The key comes only from `TRACE_AUDIT_HMAC_KEY` or from an explicit key file outside the configured audit directory. There is no default key. `verify()` never creates a key. `init_hmac_key()` is the only function that creates one. `AUDIT_LOG_DIR` and `is_audit_path()` (exported from `trace_search.audit`) are the default path and the purge-exemption check. `is_audit_path()` matches the resolved configured directory only, not every folder named `audit_logs`.
+
+An attacker who holds the key and deletes both the log and the anchor is not detectable on this host. An attacker without the key who restores an older copy of both the log and the anchor also passes `verify()`. Logs written before `details` existed fail HMAC verification, because the canonical payload now includes `"details": null`. External anchoring is out of scope for Cut 01. The 1-year purge checkpoint is T9. Audit retention is 365 days.
+
+`tests/test_audit_log.py` is 55 tests, all under `tmp_path`. The full suite is 277 tests. Details and a sample proof are in [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md).
 
 ## Privacy and Ethics
 
