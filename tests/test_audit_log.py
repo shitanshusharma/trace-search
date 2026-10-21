@@ -316,8 +316,10 @@ class TestActionValidation:
 
     def test_action_string_and_enum(self, tmp_path):
         log = _create_audit_log(tmp_path)
-        assert log.append("user1", AuditAction.LOGIN).action == "login"
-        assert log.append("user1", "login").action == "login"
+        enum_entry = log.append("user1", AuditAction.LOGIN)
+        assert enum_entry.action == "login"
+        string_entry = log.append("user1", "login")
+        assert string_entry.action == "login"
 
     def test_search_view_export_require_case_id_and_purpose(self, tmp_path):
         log = _create_audit_log(tmp_path)
