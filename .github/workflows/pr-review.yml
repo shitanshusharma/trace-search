@@ -28,7 +28,7 @@ jobs:
         persist-credentials: false
     
     - name: Wait for other checks
-      uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+      uses: lewagon/wait-on-check-action@369769072fe522a3a8a85c03c96af1e5242a1994 # v1.9.1
       with:
         ref: ${{ github.event.pull_request.head.sha }}
         running-workflow-name: 'review / pr-summary'
@@ -127,7 +127,7 @@ jobs:
     - name: Create or update PR comment
       env:
         COMMENT_BODY: ${{ steps.aggregate.outputs.result }}
-      uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4.0.0
+      uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
       with:
         comment-id: ${{ steps.find-comment.outputs.comment-id }}
         issue-number: ${{ github.event.pull_request.number }}
