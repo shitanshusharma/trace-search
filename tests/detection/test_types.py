@@ -65,9 +65,10 @@ def test_valid_detection_keeps_each_field() -> None:
     assert found.box == (1.0, 2.0, 11.0, 22.0)
     assert found.score == 0.0
 
-    edges = _detection(score=1.0, box=(0, 0, 1, 1))
+    edges = _detection(score=1.0, box=(0, 0, 1, 1), frame_number=0)
     assert edges.score == 1.0
     assert edges.box == (0, 0, 1, 1)
+    assert edges.frame_number == 0
 
 
 def test_detection_is_frozen() -> None:
@@ -93,6 +94,8 @@ def test_detection_is_frozen() -> None:
         ({"score": math.nan},),
         ({"score": math.inf},),
         ({"score": -math.inf},),
+        ({"frame_number": -1},),
+        ({"camera_id": ""},),
     ],
     ids=[
         "x2-equal-x1",
@@ -109,6 +112,8 @@ def test_detection_is_frozen() -> None:
         "score-nan",
         "score-inf",
         "score-neg-inf",
+        "frame-number-negative",
+        "camera-id-empty",
     ],
 )
 def test_invalid_detection_raises_value_error(kwargs: dict[str, object]) -> None:
