@@ -8,14 +8,9 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "python"
     commit-message:
       prefix: "deps"
       include: "scope"
-    reviewers:
-      - "shitanshusharma"
     ignore:
       # Major version updates require manual review
       - dependency-name: "*"
@@ -28,14 +23,18 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "github-actions"
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
+      other-actions:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "github/codeql-action*"
     commit-message:
       prefix: "ci"
       include: "scope"
-    reviewers:
-      - "shitanshusharma"
 
   # npm dependencies (when UI exists)
   - package-ecosystem: "npm"
@@ -44,14 +43,9 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "npm"
     commit-message:
       prefix: "deps"
       include: "scope"
-    reviewers:
-      - "shitanshusharma"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
