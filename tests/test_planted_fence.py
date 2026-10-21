@@ -991,3 +991,119 @@ def test_swapped_bundled_binary_fails_installed_closure(tmp_path, monkeypatch):
     assert actual in stdout
     assert pinned in stdout
     assert "does not match" in stdout
+
+
+def _run_installed_closure(rows, tmp_path, monkeypatch, roots):
+    """Run the installed-closure fence against the given site roots."""
+    import scripts.check_licenses as cl
+
+    monkeypatch.setattr(cl, "installed_site_roots", lambda: list(roots))
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kwargs: [{"name": "trace-search", "version": "0.1.0", "license": "MIT"}],
+    )
+    return invoke_main(make_manifest(rows), scan_installed=True, tmp_dir=tmp_path)
+
+
+def test_missing_bundled_file_fails_installed_closure(tmp_path, monkeypatch):
+    """A manifest row whose named file is absent on disk fails closed."""
+    rows = _real_rows("OpenSSL-libssl")
+    row = rows[0]
+    pinned = row["sha256"]
+    relative = row["bundled_file"]
+    site_root = tmp_path / "site-packages"
+    site_root.mkdir()
+    code, stdout, _ = _run_installed_closure(rows, tmp_path, monkeypatch, [site_root])
+    assert code == 1, stdout
+    assert "is missing" in stdout
+    assert relative in stdout
+    assert f"manifest sha256 {pinned}" in stdout
+    assert f"pinned sha256 {pinned}" in stdout
+
+
+def test_swapped_cv2_abi3_fails_installed_closure(tmp_path, monkeypatch):
+    """A different cv2.abi3.so fails both Intel IPP rows."""
+    import hashlib
+
+    rows = _real_rows("Intel IPP ICV", "Intel IPP IW")
+    relative = "cv2/cv2.abi3.so"
+    pinned = rows[0]["sha256"]
+    assert rows[1]["sha256"] == pinned
+    assert {row["bundled_file"] for row in rows} == {relative}
+    site_root = tmp_path / "site-packages"
+    target = site_root / relative
+    target.parent.mkdir(parents=True)
+    payload = b"not-the-real-cv2-abi3"
+    target.write_bytes(payload)
+    actual = hashlib.sha256(payload).hexdigest()
+    assert actual != pinned
+    code, stdout, _ = _run_installed_closure(rows, tmp_path, monkeypatch, [site_root])
+    assert code == 1, stdout
+    assert relative in stdout
+    assert actual in stdout
+    assert pinned in stdout
+    assert "does not match" in stdout
+    assert "Intel IPP ICV" in stdout
+    assert "Intel IPP IW" in stdout
+
+
+def test_two_site_roots_different_digests_fail_installed_closure(tmp_path, monkeypatch):
+    """Two site roots with different bytes for one named file fail closed."""
+    import hashlib
+
+    rows = _real_rows("OpenSSL-libcrypto")
+    relative = rows[0]["bundled_file"]
+    root_a = tmp_path / "site-a"
+    root_b = tmp_path / "site-b"
+    file_a = root_a / relative
+    file_b = root_b / relative
+    file_a.parent.mkdir(parents=True)
+    file_b.parent.mkdir(parents=True)
+    file_a.write_bytes(b"copy-a")
+    file_b.write_bytes(b"copy-b")
+    hash_a = hashlib.sha256(b"copy-a").hexdigest()
+    hash_b = hashlib.sha256(b"copy-b").hexdigest()
+    assert hash_a != hash_b
+    code, stdout, _ = _run_installed_closure(
+        rows, tmp_path, monkeypatch, [root_a, root_b]
+    )
+    assert code == 1, stdout
+    assert relative in stdout
+    assert hash_a in stdout
+    assert hash_b in stdout
+    assert "does not match on-disk sha256" in stdout
+
+
+def test_installed_opencv_bundled_files_match_passes(tmp_path, monkeypatch):
+    """All three named files hashing to the pin passes the installed closure."""
+    import scripts.check_licenses as cl
+
+    rows = _real_rows(
+        "OpenSSL-libcrypto",
+        "OpenSSL-libssl",
+        "Intel IPP ICV",
+        "Intel IPP IW",
+    )
+    pins = {row["bundled_file"]: row["sha256"] for row in rows}
+    assert set(pins) == {
+        "opencv_python_headless.libs/libcrypto-337dac8b.so.1.1",
+        "opencv_python_headless.libs/libssl-28bef1ac.so.1.1",
+        "cv2/cv2.abi3.so",
+    }
+    site_root = tmp_path / "site-packages"
+    for relative in pins:
+        path = site_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"placeholder")
+
+    def fake_sha256(path):
+        return pins[str(Path(path).relative_to(site_root)).replace("\\", "/")]
+
+    monkeypatch.setattr(cl, "sha256_file", fake_sha256)
+    code, stdout, _ = _run_installed_closure(rows, tmp_path, monkeypatch, [site_root])
+    assert code == 0, stdout
+    assert "Checking OpenCV bundled file hashes" in stdout
+    for relative, digest in pins.items():
+        assert f"{relative} sha256 {digest}" in stdout
+    assert "License fence check PASSED" in stdout
