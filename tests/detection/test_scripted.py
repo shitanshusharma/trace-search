@@ -57,7 +57,12 @@ def test_scripted_detector_satisfies_detector_protocol() -> None:
 
 
 def test_same_script_returns_identical_lists_on_two_runs() -> None:
-    handbag = _detection(det_class=DetClass.HANDBAG, score=0.55)
+    handbag = _detection(
+        camera_id="cam-b",
+        frame_number=0,
+        det_class=DetClass.HANDBAG,
+        score=0.55,
+    )
     script = {("cam-b", 0): (handbag,)}
     detector = ScriptedDetector(script)
     frame = _frame("cam-b", 0, timestamp_seconds=9.0)
