@@ -9,7 +9,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Any
 
 import cv2
 import imagehash
@@ -229,7 +229,8 @@ class SyntheticVideoGenerator:
             cap.release()
 
 
-class SmokeClipConfig(TypedDict):
+@dataclass(frozen=True)
+class SmokeClipConfig:
     """One deterministic clip configuration."""
 
     clip_label: str
@@ -239,37 +240,50 @@ class SmokeClipConfig(TypedDict):
     num_obstructions: int
 
 
-# The manifest schema key is "name". A class attribute would trip the
-# identity-field rule, so this row uses the functional TypedDict form.
-SmokeManifestEntry = TypedDict(
-    "SmokeManifestEntry",
-    {
-        "name": str,
-        "version": str,
-        "type": str,
-        "license": str,
-        "source_url": str,
-        "sha256": str,
-        "license_version": str,
-        "date_checked_ist": str,
-        "phash": list[str],
-        "use": str,
-        "fixture_id": str,
-        "path": str,
-        "generator": str,
-        "generator_version": str,
-        "generator_license": str,
-        "seed": str,
-        "notes": str,
-    },
-)
+def manifest_row(
+    entry: SmokeClipConfig,
+    *,
+    fixture_id: str,
+    sha256: str,
+    phashes: list[str],
+    base_seed: int,
+    offset: int,
+) -> dict[str, Any]:
+    """Build one manifest object. The schema key is the literal name field."""
+    label = entry.clip_label
+    stored_config = {
+        "name": entry.clip_label,
+        "duration_sec": entry.duration_sec,
+        "num_figures": entry.num_figures,
+        "background_brightness": entry.background_brightness,
+        "num_obstructions": entry.num_obstructions,
+    }
+    return {
+        "name": f"Synthetic smoke clip: {label}",
+        "version": "1.0.0",
+        "type": "synthetic_clip",
+        "license": "MIT",
+        "source_url": "https://github.com/shitanshusharma/trace-search",
+        "sha256": sha256,
+        "license_version": "N/A (synthetic)",
+        "date_checked_ist": "2026-10-20",
+        "phash": phashes,
+        "use": "SMOKE_ONLY",
+        "fixture_id": fixture_id,
+        "path": f"smoke/{fixture_id}_{label}.mp4",
+        "generator": "SyntheticVideoGenerator",
+        "generator_version": "1.0.0",
+        "generator_license": "MIT",
+        "seed": json.dumps({"base_seed": base_seed, "offset": offset, "config": stored_config}),
+        "notes": f"Deterministic synthetic clip for smoke testing. Config: {label}",
+    }
 
 
 def generate_smoke_fixtures(
     output_dir: Path,
     base_seed: int = 42,
     num_clips: int = 5,
-) -> list[SmokeManifestEntry]:
+) -> list[dict[str, Any]]:
     """
     Generate a full set of smoke test fixtures.
 
@@ -286,100 +300,78 @@ def generate_smoke_fixtures(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    configs: list[SmokeClipConfig] = [
-        {
-            "clip_label": "corridor_normal",
-            "duration_sec": 12.0,
-            "num_figures": 3,
-            "background_brightness": 1.0,
-            "num_obstructions": 2,
-        },
-        {
-            "clip_label": "entrance_lowlight",
-            "duration_sec": 10.0,
-            "num_figures": 2,
-            "background_brightness": 0.3,
-            "num_obstructions": 1,
-        },
-        {
-            "clip_label": "hallway_crowded",
-            "duration_sec": 15.0,
-            "num_figures": 5,
-            "background_brightness": 0.85,
-            "num_obstructions": 3,
-        },
-        {
-            "clip_label": "parking_sparse",
-            "duration_sec": 8.0,
-            "num_figures": 2,
-            "background_brightness": 0.95,
-            "num_obstructions": 1,
-        },
-        {
-            "clip_label": "lobby_occlusion",
-            "duration_sec": 14.0,
-            "num_figures": 4,
-            "background_brightness": 0.75,
-            "num_obstructions": 4,
-        },
+    configs = [
+        SmokeClipConfig(
+            clip_label="corridor_normal",
+            duration_sec=12.0,
+            num_figures=3,
+            background_brightness=1.0,
+            num_obstructions=2,
+        ),
+        SmokeClipConfig(
+            clip_label="entrance_lowlight",
+            duration_sec=10.0,
+            num_figures=2,
+            background_brightness=0.3,
+            num_obstructions=1,
+        ),
+        SmokeClipConfig(
+            clip_label="hallway_crowded",
+            duration_sec=15.0,
+            num_figures=5,
+            background_brightness=0.85,
+            num_obstructions=3,
+        ),
+        SmokeClipConfig(
+            clip_label="parking_sparse",
+            duration_sec=8.0,
+            num_figures=2,
+            background_brightness=0.95,
+            num_obstructions=1,
+        ),
+        SmokeClipConfig(
+            clip_label="lobby_occlusion",
+            duration_sec=14.0,
+            num_figures=4,
+            background_brightness=0.75,
+            num_obstructions=4,
+        ),
     ]
 
-    manifest_entries: list[SmokeManifestEntry] = []
+    manifest_entries: list[dict[str, Any]] = []
 
     for idx, config in enumerate(configs[:num_clips]):
         fixture_id = f"FX-SMOKE-SYN-{idx + 1:03d}"
-        output_path = output_dir / f"{fixture_id}_{config['clip_label']}.mp4"
+        output_path = output_dir / f"{fixture_id}_{config.clip_label}.mp4"
 
         generator = SyntheticVideoGenerator(seed=base_seed + idx)
 
         generator.generate_clip(
             output_path=output_path,
-            duration_sec=config["duration_sec"],
+            duration_sec=config.duration_sec,
             fps=30,
             width=1920,
             height=1080,
-            num_figures=config["num_figures"],
-            background_brightness=config["background_brightness"],
-            num_obstructions=config["num_obstructions"],
+            num_figures=config.num_figures,
+            background_brightness=config.background_brightness,
+            num_obstructions=config.num_obstructions,
         )
 
         sha256 = generator.compute_sha256(output_path)
         phashes = generator.compute_phashes(output_path, num_samples=10)
-
-        label = config["clip_label"]
-        # The committed seed stores this label under "name". That key is part
-        # of the manifest bytes, so the dump keeps it.
-        stored_config = {
-            "name": label,
-            "duration_sec": config["duration_sec"],
-            "num_figures": config["num_figures"],
-            "background_brightness": config["background_brightness"],
-            "num_obstructions": config["num_obstructions"],
-        }
-        manifest_entry: SmokeManifestEntry = {
-            "name": f"Synthetic smoke clip: {label}",
-            "version": "1.0.0",
-            "type": "synthetic_clip",
-            "license": "MIT",
-            "source_url": "https://github.com/shitanshusharma/trace-search",
-            "sha256": sha256,
-            "license_version": "N/A (synthetic)",
-            "date_checked_ist": "2026-10-20",
-            "phash": phashes,
-            "use": "SMOKE_ONLY",
-            "fixture_id": fixture_id,
-            "path": f"smoke/{fixture_id}_{label}.mp4",
-            "generator": "SyntheticVideoGenerator",
-            "generator_version": "1.0.0",
-            "generator_license": "MIT",
-            "seed": json.dumps({"base_seed": base_seed, "offset": idx, "config": stored_config}),
-            "notes": f"Deterministic synthetic clip for smoke testing. Config: {label}",
-        }
-
-        manifest_entries.append(manifest_entry)
+        manifest_entries.append(
+            manifest_row(
+                config,
+                fixture_id=fixture_id,
+                sha256=sha256,
+                phashes=phashes,
+                base_seed=base_seed,
+                offset=idx,
+            )
+        )
 
         print(f"Generated {fixture_id}: {output_path.name}")
         print(f"  SHA-256: {sha256}")
-        print(f"  Duration: {config['duration_sec']}s, {config['num_figures']} figures")
+        print(f"  Duration: {config.duration_sec}s, {config.num_figures} figures")
 
     return manifest_entries
