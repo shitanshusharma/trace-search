@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 
 def _pins(text: str) -> dict[str, str]:
     pins = {}
@@ -17,20 +19,37 @@ def _pins(text: str) -> dict[str, str]:
     return pins
 
 
-def test_runtime_rows_match_pins_and_numpy_is_absent():
-    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
-    requirements = Path("requirements.txt").read_text(encoding="utf-8")
-    pins = _pins(requirements)
-    numpy_pins = _pins(Path("requirements-numpy.txt").read_text(encoding="utf-8"))
-    by_name = {
+def _library_by_name(manifest: dict) -> dict[str, dict]:
+    return {
         entry["name"].lower().replace("_", "-"): entry
         for entry in manifest["entries"]
         if entry.get("type") == "library"
     }
-    assert "numpy" not in pins
-    assert numpy_pins["numpy"] == "2.2.0"
-    assert "-r requirements-numpy.txt" in requirements
-    assert "numpy" not in by_name
+
+
+def _numpy_library_rows(manifest: dict) -> list[dict]:
+    return [
+        entry
+        for entry in manifest["entries"]
+        if entry.get("type") == "library" and entry["name"].lower().replace("_", "-") == "numpy"
+    ]
+
+
+def _assert_numpy_row_matches_requirements(requirements: str, manifest: dict) -> None:
+    pins = _pins(requirements)
+    rows = _numpy_library_rows(manifest)
+    assert len(rows) == 1
+    assert rows[0]["version"] == pins["numpy"]
+    assert not Path("requirements-numpy.txt").exists()
+
+
+def test_runtime_rows_match_pins_and_numpy_matches_pin():
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    requirements = Path("requirements.txt").read_text(encoding="utf-8")
+    pins = _pins(requirements)
+    _assert_numpy_row_matches_requirements(requirements, manifest)
+    assert pins["numpy"] == "1.26.4"
+    by_name = _library_by_name(manifest)
     expected = {
         "pillow": "MIT-CMU",
         "imagehash": "BSD-2-Clause",
@@ -48,3 +67,16 @@ def test_runtime_rows_match_pins_and_numpy_is_absent():
     assert "cp311" in by_name["pillow"]["notes"]
     assert "cp311" in by_name["scipy"]["notes"]
     assert "cp311" in by_name["pywavelets"]["notes"]
+
+
+def test_planted_numpy_2_2_0_in_requirements_fails():
+    """A requirements.txt pin of numpy==2.2.0 does not match the 1.26.4 row."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    requirements = Path("requirements.txt").read_text(encoding="utf-8")
+    planted = requirements.replace("numpy==1.26.4", "numpy==2.2.0", 1)
+    assert planted != requirements
+    with pytest.raises(AssertionError, match=r"1\.26\.4") as caught:
+        _assert_numpy_row_matches_requirements(planted, manifest)
+    assert "2.2.0" in str(caught.value)
+    assert Path("requirements.txt").read_text(encoding="utf-8") == requirements
+    assert not Path("requirements-numpy.txt").exists()
