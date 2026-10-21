@@ -22,12 +22,11 @@ assigned in order. One ``ByteTracker`` instance is one camera.
 
 Argument defaults:
 
-- ``high_thresh`` 0.6. The paper's detection score threshold tau. A box
-  scores high when its score is greater than this value, matching the
-  paper's ``score > tau`` split. A box at the threshold is low-score.
-- ``low_thresh`` 0.1. Boxes below this are dropped. A box in
-  ``[low_thresh, high_thresh]`` is matched in the second stage only. The
-  paper's occlusion example still associates a box scored 0.1.
+- ``high_thresh`` 0.6. A box is high-score when its score is greater than
+  or equal to this value, so a box at the threshold can start a track.
+- ``low_thresh`` 0.1. A box is low-score when its score is greater than this
+  value and it is not high-score. A box at ``low_thresh`` is dropped. A
+  low-score box is matched in the second stage only and never starts a track.
 - ``match_iou`` 0.2. The paper rejects a pair whose IoU is smaller than 0.2.
 - ``max_age_frames`` 30. The paper keeps a lost tracklet for 30 frames.
   The track is deleted once it has been unmatched for more frames than this.
@@ -36,13 +35,13 @@ Argument defaults:
   immediately. An unconfirmed track is deleted on its first miss.
 """
 
-import importlib
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
+from scipy.optimize import linear_sum_assignment  # type: ignore[import-untyped]
 
 from trace_search.attributes.attributes import Box
 from trace_search.detection.types import DetClass, Detection
@@ -242,11 +241,15 @@ def _pairwise_iou(tracks: Sequence[Box], detections: Sequence[Box]) -> npt.NDArr
 def _linear_sum_assignment(cost: npt.NDArray[np.float64]) -> tuple[list[int], list[int]]:
     """Hungarian assignment from ``scipy.optimize.linear_sum_assignment``.
 
-    scipy 1.17.1 ships no ``py.typed`` marker, so a direct import is untyped
-    under ``mypy --strict``.
+    The name is imported at module scope. ``importlib`` would hide that import
+    from the project-rules and semgrep fences. scipy 1.17.1 ships no
+    ``py.typed`` marker, so the import line ignores ``import-untyped``.
+
+    A cost matrix with no rows or no columns has no assignment.
     """
-    optimize = importlib.import_module("scipy.optimize")
-    row_ind, col_ind = optimize.linear_sum_assignment(cost)
+    if cost.shape[0] == 0 or cost.shape[1] == 0:
+        return [], []
+    row_ind, col_ind = linear_sum_assignment(cost)
     return (
         [int(index) for index in row_ind.tolist()],
         [int(index) for index in col_ind.tolist()],
@@ -288,9 +291,9 @@ def _split_scores(
     for detection in detections:
         if detection.det_class is not det_class:
             continue
-        if detection.score > high_thresh:
+        if detection.score >= high_thresh:
             high.append(detection)
-        elif detection.score >= low_thresh:
+        elif detection.score > low_thresh:
             low.append(detection)
     return high, low
 

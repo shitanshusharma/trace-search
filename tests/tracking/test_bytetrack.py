@@ -4,8 +4,10 @@ Every sequence is scripted here (FX-CODE style). No image, clip, or weight
 file is read.
 """
 
+import math
 from collections.abc import Sequence
 
+import numpy as np
 import pytest
 
 from trace_search.detection import DetClass, Detection
@@ -16,6 +18,7 @@ from trace_search.tracking.bytetrack import (
     DEFAULT_MATCH_IOU,
     DEFAULT_MAX_AGE_FRAMES,
     DEFAULT_MIN_HITS,
+    _linear_sum_assignment,
 )
 
 _WIDTH = 40.0
@@ -249,6 +252,135 @@ def test_match_rejects_pairs_below_match_iou() -> None:
     back = tracker.update([_detection(2, origin), _detection(2, far)])
     assert _ids_for(back, origin) == [first[0].track_id]
     assert _ids_for(back, far) == [first[0].track_id + 1]
+
+
+def test_linear_sum_assignment_covers_known_rectangular_and_empty_costs() -> None:
+    known = np.array(
+        [[4.0, 1.0, 3.0], [2.0, 0.0, 5.0], [3.0, 2.0, 2.0]],
+        dtype=np.float64,
+    )
+    rows, cols = _linear_sum_assignment(known)
+    assert rows == [0, 1, 2]
+    assert cols == [1, 0, 2]
+    assert all(type(index) is int for index in rows + cols)
+
+    rectangular = np.array([[4.0, 1.0, 3.0], [2.0, 0.0, 5.0]], dtype=np.float64)
+    rows, cols = _linear_sum_assignment(rectangular)
+    assert rows == [0, 1]
+    assert cols == [1, 0]
+    assert all(type(index) is int for index in rows + cols)
+
+    for shape in ((0, 0), (0, 3), (2, 0)):
+        rows, cols = _linear_sum_assignment(np.zeros(shape, dtype=np.float64))
+        assert rows == []
+        assert cols == []
+
+
+def test_crossing_ids_follow_motion_when_detection_order_is_reversed() -> None:
+    """After the boxes meet, the input list is reversed. Ids follow the motion."""
+    tracker = ByteTracker()
+    opening = _crossing(0)
+    before = tracker.update(opening)
+    right_id = _ids_for(before, opening[0].box)[0]
+    left_id = _ids_for(before, opening[1].box)[0]
+    assert right_id != left_id
+    for frame in range(1, 30):
+        ordered = _crossing(frame)
+        fed = list(reversed(ordered)) if frame > 15 else ordered
+        observations = tracker.update(fed)
+        if ordered[0].box == ordered[1].box:
+            assert frame == 15
+            assert {obs.track_id for obs in observations} == {right_id, left_id}
+            continue
+        assert _ids_for(observations, ordered[0].box) == [right_id]
+        assert _ids_for(observations, ordered[1].box) == [left_id]
+
+
+def test_coasting_keeps_id_when_a_moving_box_returns_on_its_predicted_path() -> None:
+    """A constant-velocity box that vanishes for a few frames keeps id 1.
+
+    The gap is shorter than ``max_age_frames``. The box returns where that
+    velocity puts it.
+    """
+    speed = 4.0
+    seen = 8
+    gap = 4
+    assert gap < DEFAULT_MAX_AGE_FRAMES
+    tracker = ByteTracker()
+
+    def center(frame: int) -> tuple[float, float, float, float]:
+        return _box(40.0 + speed * frame, 80.0)
+
+    for frame in range(seen):
+        observations = tracker.update([_detection(frame, center(frame))])
+        assert [obs.track_id for obs in observations] == [1]
+    for frame in range(seen, seen + gap):
+        assert tracker.update([]) == []
+    returned = seen + gap
+    observations = tracker.update([_detection(returned, center(returned))])
+    assert [obs.track_id for obs in observations] == [1]
+    assert observations[0].box == center(returned)
+
+
+def test_score_equal_to_high_thresh_can_start_a_track() -> None:
+    box = _box(70.0, 60.0)
+    started = ByteTracker().update([_detection(0, box, score=DEFAULT_HIGH_THRESH)])
+    assert [obs.track_id for obs in started] == [1]
+    assert started[0].score == DEFAULT_HIGH_THRESH
+
+
+def test_score_at_low_thresh_is_dropped_and_just_above_is_low() -> None:
+    box = _box(70.0, 60.0)
+    just_above = math.nextafter(DEFAULT_LOW_THRESH, 1.0)
+
+    assert ByteTracker().update([_detection(0, box, score=DEFAULT_LOW_THRESH)]) == []
+    assert ByteTracker().update([_detection(0, box, score=just_above)]) == []
+
+    held = ByteTracker()
+    started = held.update([_detection(0, box, score=0.95)])
+    assert [obs.track_id for obs in started] == [1]
+    assert held.update([_detection(1, box, score=DEFAULT_LOW_THRESH)]) == []
+    extended = held.update([_detection(2, box, score=just_above)])
+    assert [obs.track_id for obs in extended] == [1]
+    assert extended[0].score == just_above
+
+
+def test_update_output_is_sorted_by_track_id() -> None:
+    first_box = _box(40.0, 50.0)
+    second_box = _box(40.0, 220.0)
+    tracker = ByteTracker()
+    opened = tracker.update(
+        [
+            _detection(0, first_box, score=0.95),
+            _detection(0, second_box, score=0.95),
+        ]
+    )
+    assert [obs.track_id for obs in opened] == [1, 2]
+    # The high box matches track 2 in pass 1. The low box matches track 1
+    # in pass 2. Pass order would emit 2 then 1; the result is sorted.
+    observations = tracker.update(
+        [
+            _detection(1, second_box, score=0.95),
+            _detection(1, first_box, score=(DEFAULT_LOW_THRESH + DEFAULT_HIGH_THRESH) / 2.0),
+        ]
+    )
+    assert [obs.track_id for obs in observations] == [1, 2]
+    assert observations[0].box == first_box
+    assert observations[1].box == second_box
+
+
+def test_low_score_pass_does_not_take_a_track_matched_in_the_first_pass() -> None:
+    origin = _box(100.0, 100.0)
+    shifted = _box(120.0, 100.0)
+    tracker = ByteTracker()
+    started = tracker.update([_detection(0, origin, score=0.95)])
+    assert [obs.track_id for obs in started] == [1]
+    high = _detection(1, shifted, score=0.95)
+    low = _detection(1, origin, score=(DEFAULT_LOW_THRESH + DEFAULT_HIGH_THRESH) / 2.0)
+    observations = tracker.update([high, low])
+    assert [obs.track_id for obs in observations] == [1]
+    assert observations[0].box == shifted
+    assert observations[0].score == high.score
 
 
 def test_bad_parameters_raise_value_error() -> None:
