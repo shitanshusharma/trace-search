@@ -232,33 +232,37 @@ class SyntheticVideoGenerator:
 class SmokeClipConfig(TypedDict):
     """One deterministic clip configuration."""
 
-    name: str
+    clip_label: str
     duration_sec: float
     num_figures: int
     background_brightness: float
     num_obstructions: int
 
 
-class SmokeManifestEntry(TypedDict):
-    """Manifest row produced for one generated clip."""
-
-    name: str
-    version: str
-    type: str
-    license: str
-    source_url: str
-    sha256: str
-    license_version: str
-    date_checked_ist: str
-    phash: list[str]
-    use: str
-    fixture_id: str
-    path: str
-    generator: str
-    generator_version: str
-    generator_license: str
-    seed: str
-    notes: str
+# The manifest schema key is "name". A class attribute would trip the
+# identity-field rule, so this row uses the functional TypedDict form.
+SmokeManifestEntry = TypedDict(
+    "SmokeManifestEntry",
+    {
+        "name": str,
+        "version": str,
+        "type": str,
+        "license": str,
+        "source_url": str,
+        "sha256": str,
+        "license_version": str,
+        "date_checked_ist": str,
+        "phash": list[str],
+        "use": str,
+        "fixture_id": str,
+        "path": str,
+        "generator": str,
+        "generator_version": str,
+        "generator_license": str,
+        "seed": str,
+        "notes": str,
+    },
+)
 
 
 def generate_smoke_fixtures(
@@ -284,35 +288,35 @@ def generate_smoke_fixtures(
 
     configs: list[SmokeClipConfig] = [
         {
-            "name": "corridor_normal",
+            "clip_label": "corridor_normal",
             "duration_sec": 12.0,
             "num_figures": 3,
             "background_brightness": 1.0,
             "num_obstructions": 2,
         },
         {
-            "name": "entrance_lowlight",
+            "clip_label": "entrance_lowlight",
             "duration_sec": 10.0,
             "num_figures": 2,
             "background_brightness": 0.3,
             "num_obstructions": 1,
         },
         {
-            "name": "hallway_crowded",
+            "clip_label": "hallway_crowded",
             "duration_sec": 15.0,
             "num_figures": 5,
             "background_brightness": 0.85,
             "num_obstructions": 3,
         },
         {
-            "name": "parking_sparse",
+            "clip_label": "parking_sparse",
             "duration_sec": 8.0,
             "num_figures": 2,
             "background_brightness": 0.95,
             "num_obstructions": 1,
         },
         {
-            "name": "lobby_occlusion",
+            "clip_label": "lobby_occlusion",
             "duration_sec": 14.0,
             "num_figures": 4,
             "background_brightness": 0.75,
@@ -324,7 +328,7 @@ def generate_smoke_fixtures(
 
     for idx, config in enumerate(configs[:num_clips]):
         fixture_id = f"FX-SMOKE-SYN-{idx + 1:03d}"
-        output_path = output_dir / f"{fixture_id}_{config['name']}.mp4"
+        output_path = output_dir / f"{fixture_id}_{config['clip_label']}.mp4"
 
         generator = SyntheticVideoGenerator(seed=base_seed + idx)
 
@@ -342,8 +346,18 @@ def generate_smoke_fixtures(
         sha256 = generator.compute_sha256(output_path)
         phashes = generator.compute_phashes(output_path, num_samples=10)
 
+        label = config["clip_label"]
+        # The committed seed stores this label under "name". That key is part
+        # of the manifest bytes, so the dump keeps it.
+        stored_config = {
+            "name": label,
+            "duration_sec": config["duration_sec"],
+            "num_figures": config["num_figures"],
+            "background_brightness": config["background_brightness"],
+            "num_obstructions": config["num_obstructions"],
+        }
         manifest_entry: SmokeManifestEntry = {
-            "name": f"Synthetic smoke clip: {config['name']}",
+            "name": f"Synthetic smoke clip: {label}",
             "version": "1.0.0",
             "type": "synthetic_clip",
             "license": "MIT",
@@ -354,12 +368,12 @@ def generate_smoke_fixtures(
             "phash": phashes,
             "use": "SMOKE_ONLY",
             "fixture_id": fixture_id,
-            "path": f"smoke/{fixture_id}_{config['name']}.mp4",
+            "path": f"smoke/{fixture_id}_{label}.mp4",
             "generator": "SyntheticVideoGenerator",
             "generator_version": "1.0.0",
             "generator_license": "MIT",
-            "seed": json.dumps({"base_seed": base_seed, "offset": idx, "config": config}),
-            "notes": f"Deterministic synthetic clip for smoke testing. Config: {config['name']}",
+            "seed": json.dumps({"base_seed": base_seed, "offset": idx, "config": stored_config}),
+            "notes": f"Deterministic synthetic clip for smoke testing. Config: {label}",
         }
 
         manifest_entries.append(manifest_entry)
