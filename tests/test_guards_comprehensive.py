@@ -10,6 +10,7 @@ from tests.media_helpers import write_mp4v_variant
 from trace_search.fixtures.generator import SyntheticVideoGenerator
 from trace_search.fixtures.guards import (
     FixtureSeparationError,
+    FixtureUseTag,
     LoaderContext,
     check_fixture_allowed,
     validate_dataset_for_context,
@@ -251,19 +252,17 @@ def test_hash_exception_is_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         validate_dataset_for_context([clip], manifest, LoaderContext.TRAINING)
 
 
-@pytest.mark.parametrize("use", ["CODE_TEST", "HOLD", "TRAIN", "DEV"])
-def test_smoke_test_refuses_anything_but_smoke_only(tmp_path: Path, use: str):
+def test_smoke_test_refuses_every_tag_except_smoke_only(tmp_path: Path):
     clip = tmp_path / "tagged.mp4"
     gen = _clip(clip, 601)
-    manifest = _manifest(
-        tmp_path,
-        gen.compute_sha256(clip),
-        gen.compute_phashes(clip),
-        "FX-TAGGED-001",
-        use,
-    )
-    with pytest.raises(FixtureSeparationError, match=use):
-        check_fixture_allowed(clip, LoaderContext.SMOKE_TEST, manifest)
+    sha = gen.compute_sha256(clip)
+    phashes = gen.compute_phashes(clip)
+    refused = [tag for tag in FixtureUseTag if tag is not FixtureUseTag.SMOKE_ONLY]
+    assert {tag.value for tag in refused} >= {"CODE_TEST", "TRAIN", "DEV", "HOLD"}
+    for tag in refused:
+        manifest = _manifest(tmp_path, sha, phashes, "FX-TAGGED-001", tag.value)
+        with pytest.raises(FixtureSeparationError, match=tag.value):
+            check_fixture_allowed(clip, LoaderContext.SMOKE_TEST, manifest)
 
 
 def test_smoke_test_allows_smoke_only(tmp_path: Path):

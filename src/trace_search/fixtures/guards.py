@@ -47,12 +47,6 @@ FORBIDDEN_TAGS_BY_CONTEXT = {
     LoaderContext.TRAINING: {FixtureUseTag.SMOKE_ONLY, FixtureUseTag.CODE_TEST},
     LoaderContext.EVALUATION: {FixtureUseTag.SMOKE_ONLY, FixtureUseTag.CODE_TEST},
     LoaderContext.STUDY: {FixtureUseTag.SMOKE_ONLY, FixtureUseTag.CODE_TEST},
-    LoaderContext.SMOKE_TEST: {
-        FixtureUseTag.CODE_TEST,
-        FixtureUseTag.TRAIN,
-        FixtureUseTag.DEV,
-        FixtureUseTag.HOLD,
-    },
 }
 
 
@@ -140,6 +134,17 @@ def _deny_unidentified_smoke(file_path: Path, context: LoaderContext) -> None:
     )
 
 
+def _allow_smoke_only(file_path: Path, use_tag: FixtureUseTag, fixture_id: str) -> None:
+    """SMOKE_TEST is an allow-list: only SMOKE_ONLY may be loaded."""
+    if use_tag is FixtureUseTag.SMOKE_ONLY:
+        return
+    raise FixtureSeparationError(
+        f"Fixture {file_path} identified as {fixture_id} with use tag {use_tag.value} "
+        f"is FORBIDDEN in {LoaderContext.SMOKE_TEST.value} context "
+        "(identified by SHA-256 or pHash)."
+    )
+
+
 def _enforce(
     file_path: Path,
     context: LoaderContext,
@@ -151,6 +156,9 @@ def _enforce(
         _deny_unidentified_smoke(file_path, context)
         return
     use_tag, fixture_id = identified
+    if context is LoaderContext.SMOKE_TEST:
+        _allow_smoke_only(file_path, use_tag, fixture_id)
+        return
     forbidden = FORBIDDEN_TAGS_BY_CONTEXT.get(context, set())
     if use_tag in forbidden:
         raise FixtureSeparationError(
