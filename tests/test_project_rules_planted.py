@@ -1157,3 +1157,147 @@ def test_media_file_allow_entry_still_checks_manifest():
             text=True,
         )
         assert matched.returncode == 0, matched.stdout + matched.stderr
+
+
+def _manifest_with(entry: dict) -> str:
+    return json.dumps({"manifest_version": "1.0", "entries": [entry]})
+
+
+def _synthetic_entry(**overrides: object) -> dict:
+    import hashlib
+
+    payload = b"synthetic-bytes"
+    entry = {
+        "name": "Synthetic smoke clip: planted",
+        "version": "1.0.0",
+        "type": "synthetic_clip",
+        "license": "MIT",
+        "source_url": "https://github.com/shitanshusharma/trace-search",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "license_version": "N/A (synthetic)",
+        "date_checked_ist": "2026-10-20",
+        "phash": [f"{index:016x}" for index in range(10)],
+        "use": "SMOKE_ONLY",
+        "fixture_id": "FX-SMOKE-SYN-099",
+        "path": "smoke/FX-SMOKE-SYN-099_planted.mp4",
+        "generator": "SyntheticVideoGenerator",
+        "generator_version": "1.0.0",
+        "generator_license": "MIT",
+        "seed": json.dumps({"base_seed": 42, "offset": 0, "config": {}}),
+        "notes": "planted",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_planted_nonsynthetic_missing_media_fails():
+    """A clip row that is not a generated smoke clip still fails when the file is missing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(
+            Path(tmpdir),
+            {
+                "licenses/manifest.json": _clip_manifest("fixtures/absent.mp4", "ab" * 32),
+            },
+        )
+    assert result.returncode == 1
+    assert "fixtures/absent.mp4" in result.stdout
+    assert "missing" in result.stdout.lower()
+
+
+def test_planted_synthetic_without_smoke_only_fails():
+    """A synthetic row whose use is not SMOKE_ONLY is not skipped."""
+    entry = _synthetic_entry(use="CODE_TEST", path="smoke/FX-SMOKE-SYN-099_planted.mp4")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(
+            Path(tmpdir),
+            {"licenses/manifest.json": _manifest_with(entry)},
+        )
+    assert result.returncode == 1
+    assert "smoke/FX-SMOKE-SYN-099_planted.mp4" in result.stdout
+    assert "missing" in result.stdout.lower()
+
+
+def test_planted_malformed_synthetic_sha_fails():
+    """A generated smoke row with a bad sha256 fails the structure check."""
+    entry = _synthetic_entry(sha256="not-a-sha")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(
+            Path(tmpdir),
+            {"licenses/manifest.json": _manifest_with(entry)},
+        )
+    assert result.returncode == 1
+    assert "64 lowercase hex" in result.stdout
+    assert "missing" not in result.stdout.lower()
+
+
+def test_planted_synthetic_path_outside_smoke_fails():
+    """SMOKE_ONLY is not enough when the path leaves smoke/."""
+    entry = _synthetic_entry(path="clips/FX-SMOKE-SYN-099_planted.mp4")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _run(
+            Path(tmpdir),
+            {"licenses/manifest.json": _manifest_with(entry)},
+        )
+    assert result.returncode == 1
+    assert "clips/FX-SMOKE-SYN-099_planted.mp4" in result.stdout
+    assert "missing" in result.stdout.lower()
+
+
+def test_planted_tracked_smoke_clip_fails():
+    """A clip that git tracks under smoke/ fails even when the directory is gitignored."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=tmppath, check=True, capture_output=True)
+        (tmppath / ".gitignore").write_text("smoke/\n")
+        clip = tmppath / "smoke" / "clip.mp4"
+        clip.parent.mkdir()
+        clip.write_bytes(b"tracked-smoke-clip")
+        subprocess.run(
+            ["git", "add", "-f", "--", "smoke/clip.mp4"],
+            cwd=tmppath,
+            check=True,
+            capture_output=True,
+        )
+        (tmppath / "licenses").mkdir()
+        (tmppath / "licenses" / "manifest.json").write_text(
+            json.dumps({"manifest_version": "1.0", "entries": []})
+        )
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 1
+    assert "Tracked media file: smoke/clip.mp4" in result.stdout
+
+
+def test_planted_tracked_clip_under_tests_fails():
+    """A clip git tracks under tests/ fails. The suffix match is case-insensitive."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=tmppath, check=True, capture_output=True)
+        (tmppath / ".gitignore").write_text("smoke/\n")
+        clip = tmppath / "tests" / "clip.MP4"
+        clip.parent.mkdir()
+        clip.write_bytes(b"tracked-tests-clip")
+        subprocess.run(
+            ["git", "add", "--", "tests/clip.MP4"],
+            cwd=tmppath,
+            check=True,
+            capture_output=True,
+        )
+        (tmppath / "licenses").mkdir()
+        (tmppath / "licenses" / "manifest.json").write_text(
+            json.dumps({"manifest_version": "1.0", "entries": []})
+        )
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+        result = subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 1
+    assert "Tracked media file: tests/clip.MP4" in result.stdout

@@ -7,7 +7,7 @@ name = "trace-search"
 version = "0.1.0"
 description = "Anonymous same-day cross-camera person route reconstruction for forensic search (code-only prototype)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.13"
 license = {text = "MIT"}
 authors = [
     {name = "Shitanshu Sharma"}
@@ -15,6 +15,10 @@ authors = [
 dependencies = [
     "numpy==1.26.4",
     "opencv-python-headless==4.10.0.84",
+    "Pillow==13.0.0",
+    "imagehash==4.3.2",
+    "PyWavelets==1.9.0",
+    "scipy==1.17.1",
 ]
 
 [project.optional-dependencies]
