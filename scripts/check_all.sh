@@ -93,6 +93,11 @@ python scripts/check_licenses.py --requirements=requirements.txt --requirements=
 echo "✅ License fence passed"
 echo ""
 
+echo "→ CI tools banned licences (.venv-ci; no prune)..."
+PYTHONPATH=src:. .venv-ci/bin/python -m scripts.check_ci_licenses
+echo "✅ CI tools banned-licence check passed"
+echo ""
+
 echo "════════════════════════════════════════════════════════════════"
 echo "✅ ALL CHECKS PASSED!"
 echo "════════════════════════════════════════════════════════════════"

@@ -70,6 +70,8 @@ security:
 	python scripts/check_project_rules.py
 	@echo "→ License fence..."
 	python scripts/check_licenses.py --requirements=requirements-dev.txt
+	@echo "→ CI tools banned licences..."
+	PYTHONPATH=src:. .venv-ci/bin/python -m scripts.check_ci_licenses
 
 check: lint types test complexity security
 	@echo "✅ All checks passed!"

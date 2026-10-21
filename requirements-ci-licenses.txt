@@ -1,5 +1,9 @@
-# Informational licence list for requirements-ci.lock.
-# Not a manifest. These packages are not installed in the licence-fence environment.
+# Informational pip-licenses dump for requirements-ci.lock.
+# Not a manifest, and not an allowlist. AC-01 does not cover this lock.
+# The gate is scripts/check_ci_licenses.py (banned terms only, fail closed).
+# face and peewee show UNKNOWN here because the wheels have no licence metadata.
+# The check warns for face==26.0.1 (BSD-3-Clause) and peewee==3.19.0 (MIT)
+# after reading the upstream LICENSE files. Any other unknown fails.
 # Columns: name, version, licence
 annotated-types==0.8.0	MIT
 anyio==4.15.1	MIT

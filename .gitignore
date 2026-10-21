@@ -23,6 +23,7 @@ wheels/
 # Virtual environments
 venv/
 .venv-ci/
+.venv-ci-fence/
 ENV/
 env/
 
