@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         print(_BANNER)
         detector = _build_detector(args.detector, args.weights)
         return _run_all(args, detector)
-    except (FileNotFoundError, ValueError, OSError) as exc:
+    except (FileNotFoundError, ValueError, OSError, ImportError) as exc:
         print(f"error: {type(exc).__name__}: {exc}")
         return 1
 

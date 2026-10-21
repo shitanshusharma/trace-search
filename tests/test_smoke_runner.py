@@ -471,3 +471,36 @@ def test_yolox_without_weights_errors_before_onnxruntime(
     assert "local-only" in output
     assert "imported onnxruntime" not in output
     assert "InferenceSession" not in output
+
+
+def test_yolox_import_error_is_an_error_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+
+    def _tracking_import(module: str, *args: object, **kwargs: object) -> object:
+        if module == "trace_search.detection.yolox_detector":
+            raise ImportError("onnxruntime missing")
+        return real_import(module, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _tracking_import)
+    code, output = _run(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--clips-dir",
+            str(tmp_path),
+            "--db",
+            str(tmp_path / "smoke.sqlite"),
+            "--detector",
+            "yolox",
+            "--weights",
+            str(tmp_path / "weights.onnx"),
+            "--min-clips",
+            "1",
+        ]
+    )
+    assert code == 1, output
+    assert "error: ImportError: onnxruntime missing" in output
+    assert "Traceback" not in output
