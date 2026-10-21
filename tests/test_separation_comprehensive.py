@@ -43,27 +43,33 @@ def _manifest(
     fixture_id: str,
     use: str = "SMOKE_ONLY",
 ) -> None:
-    path.write_text(json.dumps({
-        "manifest_version": "1.0",
-        "last_updated_ist": "2026-10-20",
-        "entries": [{
-            "name": "fixture",
-            "version": "1.0.0",
-            "type": "synthetic_clip",
-            "license": "MIT",
-            "source_url": "https://example.com",
-            "sha256": sha,
-            "license_version": "N/A",
-            "date_checked_ist": "2026-10-20",
-            "phash": phashes,
-            "use": use,
-            "fixture_id": fixture_id,
-            "generator": "SyntheticVideoGenerator",
-            "generator_version": "1.0.0",
-            "generator_license": "MIT",
-            "seed": "1",
-        }],
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "manifest_version": "1.0",
+                "last_updated_ist": "2026-10-20",
+                "entries": [
+                    {
+                        "name": "fixture",
+                        "version": "1.0.0",
+                        "type": "synthetic_clip",
+                        "license": "MIT",
+                        "source_url": "https://example.com",
+                        "sha256": sha,
+                        "license_version": "N/A",
+                        "date_checked_ist": "2026-10-20",
+                        "phash": phashes,
+                        "use": use,
+                        "fixture_id": fixture_id,
+                        "generator": "SyntheticVideoGenerator",
+                        "generator_version": "1.0.0",
+                        "generator_license": "MIT",
+                        "seed": "1",
+                    }
+                ],
+            }
+        )
+    )
 
 
 def test_near_duplicate_reencoded_mp4v_flagged(tmp_path: Path):
@@ -300,11 +306,15 @@ def test_reencoded_dat_is_near_duplicate(tmp_path: Path):
 def test_separation_fail_closed_zero_files(tmp_path: Path):
     """Explicit empty input fails. The scan stays inside the temp tree."""
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "manifest_version": "1.0",
-        "last_updated_ist": "2026-10-20",
-        "entries": [],
-    }))
+    manifest.write_text(
+        json.dumps(
+            {
+                "manifest_version": "1.0",
+                "last_updated_ist": "2026-10-20",
+                "entries": [],
+            }
+        )
+    )
     with pytest.raises(SeparationCheckError, match="0 dataset files"):
         check_separation(manifest, [], repo_root=tmp_path)
 
@@ -408,18 +418,24 @@ def test_manifest_without_forbidden_rows_fails(tmp_path: Path):
     clip.parent.mkdir()
     _clip(clip, seed=12)
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "manifest_version": "1.0",
-        "last_updated_ist": "2026-10-20",
-        "entries": [{
-            "name": "Pillow",
-            "version": "13.0.0",
-            "type": "library",
-            "license": "MIT-CMU",
-            "source_url": "https://pypi.org/project/Pillow/",
-            "sha256": "a" * 64,
-        }],
-    }))
+    manifest.write_text(
+        json.dumps(
+            {
+                "manifest_version": "1.0",
+                "last_updated_ist": "2026-10-20",
+                "entries": [
+                    {
+                        "name": "Pillow",
+                        "version": "13.0.0",
+                        "type": "library",
+                        "license": "MIT-CMU",
+                        "source_url": "https://pypi.org/project/Pillow/",
+                        "sha256": "a" * 64,
+                    }
+                ],
+            }
+        )
+    )
     with pytest.raises(SeparationCheckError, match="no SMOKE_ONLY or CODE_TEST"):
         check_separation(manifest, [clip], repo_root=tmp_path)
 
@@ -458,10 +474,7 @@ def test_optimizer_that_does_not_read_smoke_passes(tmp_path: Path):
         "FX-SMOKE-SYN-009",
     )
     (tmp_path / "step_once.py").write_text(
-        "def train():\n"
-        "    for _ in range(1):\n"
-        "        loss.backward()\n"
-        "        optimizer.step()\n"
+        "def train():\n    for _ in range(1):\n        loss.backward()\n        optimizer.step()\n"
     )
     result = run_separation_check(manifest, repo_root=tmp_path)
     assert result["passed"] is True

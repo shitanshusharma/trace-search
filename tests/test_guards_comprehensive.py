@@ -34,25 +34,31 @@ def _clip(path: Path, seed: int) -> SyntheticVideoGenerator:
 
 def _manifest(directory: Path, sha: str, phashes: list[str], fixture_id: str, use: str) -> Path:
     path = directory / "manifest.json"
-    path.write_text(json.dumps({
-        "manifest_version": "1.0",
-        "last_updated_ist": "2026-10-20",
-        "entries": [{
-            "name": "fixture",
-            "version": "1.0.0",
-            "type": "synthetic_clip",
-            "license": "MIT",
-            "source_url": "https://example.com",
-            "sha256": sha,
-            "phash": phashes,
-            "use": use,
-            "fixture_id": fixture_id,
-            "generator": "Test",
-            "generator_version": "1.0",
-            "generator_license": "MIT",
-            "seed": "1",
-        }],
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "manifest_version": "1.0",
+                "last_updated_ist": "2026-10-20",
+                "entries": [
+                    {
+                        "name": "fixture",
+                        "version": "1.0.0",
+                        "type": "synthetic_clip",
+                        "license": "MIT",
+                        "source_url": "https://example.com",
+                        "sha256": sha,
+                        "phash": phashes,
+                        "use": use,
+                        "fixture_id": fixture_id,
+                        "generator": "Test",
+                        "generator_version": "1.0",
+                        "generator_license": "MIT",
+                        "seed": "1",
+                    }
+                ],
+            }
+        )
+    )
     return path
 
 
@@ -60,8 +66,11 @@ def test_loader_rejects_renamed_copy(tmp_path: Path):
     original = tmp_path / "original.mp4"
     gen = _clip(original, 123)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(original),
-        gen.compute_phashes(original), "FX-SMOKE-SYN-999", "SMOKE_ONLY",
+        tmp_path,
+        gen.compute_sha256(original),
+        gen.compute_phashes(original),
+        "FX-SMOKE-SYN-999",
+        "SMOKE_ONLY",
     )
     renamed = tmp_path / "totally_different_name.mp4"
     renamed.write_bytes(original.read_bytes())
@@ -73,8 +82,11 @@ def test_loader_rejects_symlink(tmp_path: Path):
     original = tmp_path / "original.mp4"
     gen = _clip(original, 456)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(original),
-        gen.compute_phashes(original), "FX-SMOKE-SYN-998", "SMOKE_ONLY",
+        tmp_path,
+        gen.compute_sha256(original),
+        gen.compute_phashes(original),
+        "FX-SMOKE-SYN-998",
+        "SMOKE_ONLY",
     )
     link = tmp_path / "linked.mp4"
     os.symlink(original, link)
@@ -88,8 +100,11 @@ def test_loader_rejects_relative_path(tmp_path: Path):
     clip = smoke / "FX-SMOKE-SYN-997.mp4"
     gen = _clip(clip, 789)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(clip),
-        gen.compute_phashes(clip), "FX-SMOKE-SYN-997", "SMOKE_ONLY",
+        tmp_path,
+        gen.compute_sha256(clip),
+        gen.compute_phashes(clip),
+        "FX-SMOKE-SYN-997",
+        "SMOKE_ONLY",
     )
     train.mkdir()
     relative = train / ".." / "smoke" / "FX-SMOKE-SYN-997.mp4"
@@ -101,8 +116,11 @@ def test_loader_rejects_uppercase_extension(tmp_path: Path):
     original = tmp_path / "test.MP4"
     gen = _clip(original, 111)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(original),
-        gen.compute_phashes(original), "FX-SMOKE-SYN-996", "SMOKE_ONLY",
+        tmp_path,
+        gen.compute_sha256(original),
+        gen.compute_phashes(original),
+        "FX-SMOKE-SYN-996",
+        "SMOKE_ONLY",
     )
     with pytest.raises(FixtureSeparationError, match="FORBIDDEN"):
         check_fixture_allowed(original, LoaderContext.STUDY, manifest)
@@ -113,8 +131,11 @@ def test_code_test_rejected_in_every_scored_context(tmp_path: Path, context: Loa
     clip = tmp_path / "FX-CODE-001.mp4"
     gen = _clip(clip, 222)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(clip),
-        gen.compute_phashes(clip), "FX-CODE-001", "CODE_TEST",
+        tmp_path,
+        gen.compute_sha256(clip),
+        gen.compute_phashes(clip),
+        "FX-CODE-001",
+        "CODE_TEST",
     )
     with pytest.raises(FixtureSeparationError, match="CODE_TEST"):
         validate_dataset_for_context([clip], manifest, context)
@@ -125,8 +146,11 @@ def test_reencoded_smoke_rejected_in_every_scored_context(tmp_path: Path, contex
     original = tmp_path / "original.mp4"
     gen = _clip(original, 42)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(original),
-        gen.compute_phashes(original), "FX-SMOKE-SYN-042", "SMOKE_ONLY",
+        tmp_path,
+        gen.compute_sha256(original),
+        gen.compute_phashes(original),
+        "FX-SMOKE-SYN-042",
+        "SMOKE_ONLY",
     )
     variant = tmp_path / "train" / "variant.mp4"
     write_mp4v_variant(original, variant, scale=0.5)
@@ -139,15 +163,21 @@ def test_loader_rejects_unknown_use_tag(tmp_path: Path):
     clip = tmp_path / "test.mp4"
     gen = _clip(clip, 333)
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "entries": [{
-            "name": "bad",
-            "sha256": gen.compute_sha256(clip),
-            "phash": gen.compute_phashes(clip),
-            "use": "UNKNOWN_TAG",
-            "fixture_id": "FX-BAD-001",
-        }]
-    }))
+    manifest.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "name": "bad",
+                        "sha256": gen.compute_sha256(clip),
+                        "phash": gen.compute_phashes(clip),
+                        "use": "UNKNOWN_TAG",
+                        "fixture_id": "FX-BAD-001",
+                    }
+                ]
+            }
+        )
+    )
     with pytest.raises(FixtureSeparationError, match="Unknown use tag"):
         check_fixture_allowed(clip, LoaderContext.TRAINING, manifest)
 
@@ -156,8 +186,11 @@ def test_loader_rejects_unknown_context(tmp_path: Path):
     clip = tmp_path / "test.mp4"
     gen = _clip(clip, 444)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(clip),
-        gen.compute_phashes(clip), "FX-TRAIN-001", "TRAIN",
+        tmp_path,
+        gen.compute_sha256(clip),
+        gen.compute_phashes(clip),
+        "FX-TRAIN-001",
+        "TRAIN",
     )
     with pytest.raises(FixtureSeparationError, match="Unknown context"):
         check_fixture_allowed(clip, "invalid_context", manifest)
@@ -167,13 +200,19 @@ def test_missing_manifest_entry_sha_is_denied(tmp_path: Path):
     clip = tmp_path / "test.mp4"
     _clip(clip, 445)
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "entries": [{
-            "name": "incomplete",
-            "use": "SMOKE_ONLY",
-            "fixture_id": "FX-SMOKE-SYN-100",
-        }]
-    }))
+    manifest.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "name": "incomplete",
+                        "use": "SMOKE_ONLY",
+                        "fixture_id": "FX-SMOKE-SYN-100",
+                    }
+                ]
+            }
+        )
+    )
     with pytest.raises(FixtureSeparationError, match="no SHA-256"):
         validate_dataset_for_context([clip], manifest, LoaderContext.TRAINING)
 
@@ -182,8 +221,11 @@ def test_missing_file_is_denied(tmp_path: Path):
     clip = tmp_path / "present.mp4"
     gen = _clip(clip, 446)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(clip),
-        gen.compute_phashes(clip), "FX-TRAIN-002", "TRAIN",
+        tmp_path,
+        gen.compute_sha256(clip),
+        gen.compute_phashes(clip),
+        "FX-TRAIN-002",
+        "TRAIN",
     )
     missing = tmp_path / "missing.mp4"
     with pytest.raises(FixtureSeparationError, match="missing file"):
@@ -194,8 +236,11 @@ def test_hash_exception_is_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     clip = tmp_path / "present.mp4"
     gen = _clip(clip, 447)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(clip),
-        gen.compute_phashes(clip), "FX-TRAIN-003", "TRAIN",
+        tmp_path,
+        gen.compute_sha256(clip),
+        gen.compute_phashes(clip),
+        "FX-TRAIN-003",
+        "TRAIN",
     )
 
     def _boom(_path: Path) -> str:
@@ -210,9 +255,10 @@ def test_loader_allows_train_in_training(tmp_path: Path):
     clip = tmp_path / "train.mp4"
     gen = _clip(clip, 555)
     manifest = _manifest(
-        tmp_path, gen.compute_sha256(clip),
-        gen.compute_phashes(clip), "FX-TRAIN-001", "TRAIN",
+        tmp_path,
+        gen.compute_sha256(clip),
+        gen.compute_phashes(clip),
+        "FX-TRAIN-001",
+        "TRAIN",
     )
-    validate_dataset_for_context(
-        [clip], manifest, LoaderContext.TRAINING
-    )
+    validate_dataset_for_context([clip], manifest, LoaderContext.TRAINING)

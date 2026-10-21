@@ -86,9 +86,7 @@ def load_manifest_fixtures(manifest_path: Path) -> dict[str, tuple[FixtureUseTag
         fixture_id = str(entry.get("fixture_id") or "unknown")
         phashes = entry.get("phash") or []
         if not isinstance(phashes, list):
-            raise FixtureSeparationError(
-                f"FAIL-CLOSED: pHash list for {fixture_id} is not a list"
-            )
+            raise FixtureSeparationError(f"FAIL-CLOSED: pHash list for {fixture_id} is not a list")
         fixtures[sha] = (use_tag, fixture_id, [str(item) for item in phashes])
     return fixtures
 
@@ -130,9 +128,7 @@ def _enforce(
     manifest_fixtures: dict[str, tuple[FixtureUseTag, str, list[str]]],
     hamming_threshold: int,
 ) -> None:
-    identified = identify_fixture_by_content(
-        file_path, manifest_fixtures, hamming_threshold
-    )
+    identified = identify_fixture_by_content(file_path, manifest_fixtures, hamming_threshold)
     if identified is None:
         return
     use_tag, fixture_id = identified

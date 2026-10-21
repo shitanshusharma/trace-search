@@ -45,9 +45,7 @@ def sha256_file(path: Path) -> str:
 def hamming_distance(hash1: str, hash2: str) -> int:
     """Bit distance between two equal-length hex hashes."""
     if len(hash1) != len(hash2):
-        raise ContentCheckError(
-            f"pHash length mismatch: {len(hash1)} != {len(hash2)}"
-        )
+        raise ContentCheckError(f"pHash length mismatch: {len(hash1)} != {len(hash2)}")
     try:
         return (int(hash1, 16) ^ int(hash2, 16)).bit_count()
     except ValueError as exc:
@@ -182,14 +180,10 @@ def perceptual_hashes(path: Path) -> list[str]:
     suffix = path.suffix.lower()
     errors: list[Exception] = []
     try_video = (
-        suffix in VIDEO_EXTENSIONS
-        or suffix in OPAQUE_EXTENSIONS
-        or looks_like_video(prefix)
+        suffix in VIDEO_EXTENSIONS or suffix in OPAQUE_EXTENSIONS or looks_like_video(prefix)
     )
     try_image = (
-        suffix in IMAGE_EXTENSIONS
-        or suffix in OPAQUE_EXTENSIONS
-        or looks_like_image(prefix)
+        suffix in IMAGE_EXTENSIONS or suffix in OPAQUE_EXTENSIONS or looks_like_image(prefix)
     )
 
     if try_video:

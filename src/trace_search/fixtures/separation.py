@@ -68,6 +68,7 @@ SKIP_ROOT_DIRS = {
 CODE_ROOTS = {"src", "tests", "scripts", "docs", "licenses"}
 CODE_SCAN_SKIP = {"tests", "licenses", ".git", ".venv", "venv", "node_modules", "__pycache__"}
 
+
 def _training_pattern(*parts: str) -> re.Pattern[str]:
     """Join a pattern so this file does not contain the token it searches for."""
     return re.compile("".join(parts))
@@ -182,9 +183,7 @@ def forbidden_fixtures(entries: list[dict]) -> tuple[dict[str, str], dict[str, l
         fixture_id = entry.get("fixture_id") or "unknown"
         sha = entry.get("sha256")
         if not isinstance(sha, str) or len(sha) != 64:
-            raise SeparationCheckError(
-                f"FAIL-CLOSED: {fixture_id} is {use_tag} but has no SHA-256"
-            )
+            raise SeparationCheckError(f"FAIL-CLOSED: {fixture_id} is {use_tag} but has no SHA-256")
         phashes = entry.get("phash")
         if not isinstance(phashes, list) or not phashes:
             raise SeparationCheckError(
@@ -193,9 +192,7 @@ def forbidden_fixtures(entries: list[dict]) -> tuple[dict[str, str], dict[str, l
         sha_to_id[sha] = fixture_id
         sha_to_phash[sha] = [str(item) for item in phashes]
     if not sha_to_id:
-        raise SeparationCheckError(
-            "FAIL-CLOSED: manifest has no SMOKE_ONLY or CODE_TEST rows"
-        )
+        raise SeparationCheckError("FAIL-CLOSED: manifest has no SMOKE_ONLY or CODE_TEST rows")
     return sha_to_id, sha_to_phash
 
 
@@ -377,4 +374,3 @@ def run_separation_check(
         "passed": result["passed"],
         "message": result.get("message", ""),
     }
-

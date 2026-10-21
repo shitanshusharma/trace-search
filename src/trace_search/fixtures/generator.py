@@ -92,7 +92,7 @@ class SyntheticVideoGenerator:
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
 
         if not writer.isOpened():
@@ -114,13 +114,7 @@ class SyntheticVideoGenerator:
                     w, h = int(figure.width), int(figure.height)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), figure.color, -1)
                     head_radius = w // 4
-                    cv2.circle(
-                        frame,
-                        (x + w // 2, y + head_radius),
-                        head_radius,
-                        figure.color,
-                        -1
-                    )
+                    cv2.circle(frame, (x + w // 2, y + head_radius), head_radius, figure.color, -1)
 
                 for obs in obstructions:
                     cv2.rectangle(
@@ -128,16 +122,14 @@ class SyntheticVideoGenerator:
                         (obs.x, obs.y),
                         (obs.x + obs.width, obs.y + obs.height),
                         obs.color,
-                        -1
+                        -1,
                     )
 
                 writer.write(frame)
         finally:
             writer.release()
 
-    def _create_figures(
-        self, num_figures: int, width: int, height: int
-    ) -> list[PersonFigure]:
+    def _create_figures(self, num_figures: int, width: int, height: int) -> list[PersonFigure]:
         """Create moving person-like figures."""
         figures = []
         for _ in range(num_figures):
@@ -331,12 +323,8 @@ def generate_smoke_fixtures(
             "generator": "SyntheticVideoGenerator",
             "generator_version": "1.0.0",
             "generator_license": "MIT",
-            "seed": json.dumps({
-                "base_seed": base_seed,
-                "offset": idx,
-                "config": config
-            }),
-            "notes": f"Deterministic synthetic clip for smoke testing. Config: {config['name']}"
+            "seed": json.dumps({"base_seed": base_seed, "offset": idx, "config": config}),
+            "notes": f"Deterministic synthetic clip for smoke testing. Config: {config['name']}",
         }
 
         manifest_entries.append(manifest_entry)

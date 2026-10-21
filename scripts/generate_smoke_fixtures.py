@@ -16,9 +16,7 @@ from trace_search.fixtures.generator import generate_smoke_fixtures
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Generate synthetic smoke test fixtures"
-    )
+    parser = argparse.ArgumentParser(description="Generate synthetic smoke test fixtures")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -89,7 +87,8 @@ def main():
             }
 
             new_entries = [
-                entry for entry in manifest_entries
+                entry
+                for entry in manifest_entries
                 if entry["fixture_id"] not in existing_fixture_ids
             ]
 

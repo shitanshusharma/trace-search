@@ -277,8 +277,7 @@ def test_regenerate_lowlight_matches_manifest_bytes():
     """Same seed regenerates FX-SMOKE-SYN-002 byte-for-byte against the manifest."""
     manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
     entry = next(
-        item for item in manifest["entries"]
-        if item.get("fixture_id") == "FX-SMOKE-SYN-002"
+        item for item in manifest["entries"] if item.get("fixture_id") == "FX-SMOKE-SYN-002"
     )
     seed = json.loads(entry["seed"])
     config = seed["config"]
@@ -311,7 +310,8 @@ def test_smoke_store_is_gitignored_and_untracked():
     assert "*.avi" in gitignore
     tracked = subprocess.check_output(["git", "ls-files"], text=True)
     media = [
-        line for line in tracked.splitlines()
+        line
+        for line in tracked.splitlines()
         if line.endswith((".mp4", ".avi", ".mov", ".mkv", ".webm"))
     ]
     assert media == []
@@ -322,10 +322,7 @@ def test_t1_manifest_has_smoke_entries():
     manifest_path = Path("licenses/manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    smoke_entries = [
-        e for e in manifest["entries"]
-        if e.get("use") == "SMOKE_ONLY"
-    ]
+    smoke_entries = [e for e in manifest["entries"] if e.get("use") == "SMOKE_ONLY"]
 
     assert len(smoke_entries) >= 5, f"Should have ≥5 SMOKE_ONLY entries, found {len(smoke_entries)}"
 

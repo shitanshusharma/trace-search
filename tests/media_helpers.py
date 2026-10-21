@@ -16,9 +16,7 @@ def write_mp4v_variant(source: Path, dest: Path, scale: float = 0.5) -> None:
     new_w = max(2, int(width * scale) // 2 * 2)
     new_h = max(2, int(height * scale) // 2 * 2)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(dest), cv2.VideoWriter_fourcc(*"mp4v"), fps, (new_w, new_h)
-    )
+    writer = cv2.VideoWriter(str(dest), cv2.VideoWriter_fourcc(*"mp4v"), fps, (new_w, new_h))
     if not writer.isOpened():
         cap.release()
         raise RuntimeError(f"Failed to open mp4v writer for {dest}")

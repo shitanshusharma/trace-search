@@ -101,7 +101,7 @@ def main():
     print("=" * 60)
     print()
     print(f"Manifest: {args.manifest}")
-    datasets_str = ', '.join(results['datasets_checked']) or 'none'
+    datasets_str = ", ".join(results["datasets_checked"]) or "none"
     print(f"Datasets checked: {datasets_str}")
     print(f"Files checked: {results['files_checked']}")
 
