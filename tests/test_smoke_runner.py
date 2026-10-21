@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import re
 import subprocess
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -12,10 +13,12 @@ from pathlib import Path
 import pytest
 
 from scripts.run_smoke import main
+from trace_search.detection.types import DetClass
 from trace_search.fixtures.generator import SyntheticVideoGenerator, generate_smoke_fixtures
 from trace_search.fixtures.guards import LoaderContext, check_fixture_allowed
 from trace_search.ingest.file_ingest import FileVideoSource
 from trace_search.tracking.store import TrackStore
+from trace_search.tracking.types import TrackObservation
 
 _REPO = Path(__file__).resolve().parents[1]
 
@@ -41,6 +44,12 @@ def _smoke_files() -> set[Path]:
 def _write_manifest(path: Path, entries: list[dict[str, object]]) -> None:
     document = {"manifest_version": "1.0", "last_updated_ist": "2026-10-21", "entries": entries}
     path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _printed_run_id(output: str) -> str:
+    match = re.search(r"run_id=([0-9a-fA-F-]{36})", output)
+    assert match is not None, output
+    return match.group(1)
 
 
 def _run(argv: list[str]) -> tuple[int, str]:
@@ -107,14 +116,16 @@ def test_scripted_figures_on_five_synthetic_clips(
     assert "5 clips" in output
     assert "0 errors" in output
     assert len(guarded) == 5
+    run_id = _printed_run_id(output)
+    assert run_id != "smoke"
     store = TrackStore(db)
-    assert store.count(derived_from="SMOKE") > 0
+    assert store.count(run_id=run_id, derived_from="SMOKE") > 0
     for fixture_id in fixture_ids:
         assert fixture_id in output
         assert "frames=" in output
         assert "detections=" in output
         assert "tracks=" in output
-        assert store.count(camera_id=fixture_id, derived_from="SMOKE") > 0
+        assert store.count(camera_id=fixture_id, run_id=run_id, derived_from="SMOKE") > 0
     assert _porcelain() == before_status
     assert _smoke_files() == before_smoke
 
@@ -198,6 +209,77 @@ def test_planted_non_smoke_tag_exits_1(tmp_path: Path, use: str, seed: int) -> N
     assert use in output
     assert "FORBIDDEN" in output
     assert TrackStore(db).count(derived_from="SMOKE") == 0
+
+
+def test_reused_db_ignores_earlier_smoke_rows(tmp_path: Path) -> None:
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    blank = clips / "blank.mp4"
+    generator = SyntheticVideoGenerator(seed=19)
+    generator.generate_clip(
+        blank,
+        duration_sec=0.4,
+        fps=10,
+        width=320,
+        height=240,
+        num_figures=0,
+        num_obstructions=0,
+    )
+    fixture_id = "FX-SMOKE-SYN-BLANK"
+    manifest = tmp_path / "manifest.json"
+    _write_manifest(
+        manifest,
+        [
+            {
+                "use": "SMOKE_ONLY",
+                "type": "synthetic_clip",
+                "sha256": generator.compute_sha256(blank),
+                "phash": [],
+                "fixture_id": fixture_id,
+            }
+        ],
+    )
+    db = tmp_path / "smoke.sqlite"
+    TrackStore(db).write(
+        "earlier-run",
+        fixture_id,
+        "SMOKE",
+        [
+            TrackObservation(
+                camera_id=fixture_id,
+                track_id=1,
+                det_class=DetClass.PERSON,
+                frame_number=0,
+                timestamp_seconds=0.0,
+                box=(1.0, 1.0, 20.0, 40.0),
+                score=0.9,
+            )
+        ],
+    )
+
+    code, output = _run(
+        [
+            "--manifest",
+            str(manifest),
+            "--clips-dir",
+            str(clips),
+            "--db",
+            str(db),
+            "--detector",
+            "scripted-figures",
+            "--min-clips",
+            "1",
+        ]
+    )
+
+    assert code == 1, output
+    assert "no persisted SMOKE observations" in output
+    assert "FixtureSeparationError" not in output
+    run_id = _printed_run_id(output)
+    assert run_id != "earlier-run"
+    store = TrackStore(db)
+    assert store.count(camera_id=fixture_id, run_id="earlier-run", derived_from="SMOKE") == 1
+    assert store.count(camera_id=fixture_id, run_id=run_id, derived_from="SMOKE") == 0
 
 
 def test_planted_clip_without_a_manifest_row_exits_1(tmp_path: Path) -> None:

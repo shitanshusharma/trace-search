@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +33,6 @@ from trace_search.tracking.bytetrack import ByteTracker
 from trace_search.tracking.store import TrackStore
 
 _DERIVED_FROM = "SMOKE"
-_RUN_ID = "smoke"
 _YOLOX_ENV = "TRACE_SEARCH_YOLOX_WEIGHTS"
 _BANNER = "SMOKE: not evidence for any AC"
 _DESCRIPTION = (
@@ -142,7 +142,13 @@ def _report_clip(fixture_id: str, stats: RunStats) -> None:
     print(f"{fixture_id} frames={stats.frames} detections={stats.detections} tracks={stats.tracks}")
 
 
-def _run_clip(path: Path, manifest: Path, detector: Detector, store: TrackStore) -> None:
+def _run_clip(
+    path: Path,
+    manifest: Path,
+    detector: Detector,
+    store: TrackStore,
+    run_id: str,
+) -> None:
     fixture_id = _require_fixture(path, manifest)
     source = FileVideoSource(camera_id=fixture_id, file_path=path, start_timestamp=0.0)
     stats_by_camera = run_cameras(
@@ -150,20 +156,26 @@ def _run_clip(path: Path, manifest: Path, detector: Detector, store: TrackStore)
         detector,
         _new_tracker,
         store,
-        _RUN_ID,
+        run_id,
         fixture_id,
         _DERIVED_FROM,
     )
     stats = stats_by_camera[fixture_id]
     _report_clip(fixture_id, stats)
-    recorded = store.count(camera_id=fixture_id, derived_from=_DERIVED_FROM)
+    recorded = store.count(camera_id=fixture_id, run_id=run_id, derived_from=_DERIVED_FROM)
     if recorded < 1:
         raise RuntimeError(f"{fixture_id} has no persisted SMOKE observations")
 
 
-def _attempt(path: Path, manifest: Path, detector: Detector, store: TrackStore) -> bool:
+def _attempt(
+    path: Path,
+    manifest: Path,
+    detector: Detector,
+    store: TrackStore,
+    run_id: str,
+) -> bool:
     try:
-        _run_clip(path, manifest, detector, store)
+        _run_clip(path, manifest, detector, store, run_id)
     except Exception as exc:
         print(f"error: {type(exc).__name__}: {exc}")
         return False
@@ -180,11 +192,13 @@ def _finish(ran: int, errors: int, min_clips: int) -> int:
 
 
 def _run_all(args: _Args, detector: Detector) -> int:
+    run_id = str(uuid.uuid4())
+    print(f"run_id={run_id}")
     store = TrackStore(args.db)
     ran = 0
     errors = 0
     for path in _clip_paths(args.clips_dir):
-        if _attempt(path, args.manifest, detector, store):
+        if _attempt(path, args.manifest, detector, store, run_id):
             ran += 1
         else:
             errors += 1

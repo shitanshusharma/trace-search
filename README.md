@@ -161,7 +161,7 @@ python scripts/run_smoke.py \
   --min-clips 5
 ```
 
-Each clip is checked with the fixture guard before the pipeline opens it. The smoke guard allows the clip only when its manifest row is tagged SMOKE_ONLY. A missing row is refused, and so is a row tagged CODE_TEST, TRAIN, DEV, or HOLD. The process exits 0 only when at least `--min-clips` clips finish with 0 errors and each of those clips has at least one stored `SMOKE` observation.
+Each clip is checked with the fixture guard before the pipeline opens it. The smoke guard allows the clip only when its manifest row is tagged SMOKE_ONLY. A missing row is refused, and so is a row tagged CODE_TEST, TRAIN, DEV, or HOLD. Each invocation prints its own `run_id` and counts only the `SMOKE` rows written under that id. The process exits 0 only when at least `--min-clips` clips finish with 0 errors and each of those clips has at least one observation from this invocation.
 
 
 ## CI Status
