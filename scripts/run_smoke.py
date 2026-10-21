@@ -6,6 +6,10 @@
 and is never run against real weights in CI. This script does not download
 weights. Rows are stored with ``derived_from='SMOKE'``. SMOKE output is not
 evidence for any acceptance criterion.
+
+``--purge --db PATH`` deletes those SMOKE rows and does not run detection.
+It does not take a manifest, clips, or a detector, and it does not delete
+files or rows with any other ``derived_from`` value.
 """
 
 from __future__ import annotations
@@ -54,25 +58,78 @@ class _Args:
     min_clips: int
 
 
-def _parse(argv: list[str] | None) -> _Args:
+@dataclass(frozen=True)
+class _PurgeArgs:
+    db: Path
+
+
+# A smoke run owns these flags. ``--purge`` refuses every one of them.
+_PURGE_EXCLUSIVE: tuple[tuple[str, str], ...] = (
+    ("manifest", "--manifest"),
+    ("clips_dir", "--clips-dir"),
+    ("detector", "--detector"),
+    ("weights", "--weights"),
+    ("min_clips", "--min-clips"),
+)
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=_DESCRIPTION)
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--clips-dir", type=Path, required=True)
-    parser.add_argument("--db", type=Path, required=True)
-    parser.add_argument("--detector", choices=("scripted-figures", "yolox"), required=True)
+    parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="Delete SMOKE rows from --db and exit. Exclusive with a smoke run.",
+    )
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--clips-dir", type=Path)
+    parser.add_argument("--db", type=Path)
+    parser.add_argument("--detector", choices=("scripted-figures", "yolox"))
     parser.add_argument("--weights", type=Path)
-    parser.add_argument("--min-clips", type=int, default=5)
-    parsed = parser.parse_args(argv)
+    parser.add_argument(
+        "--min-clips",
+        type=int,
+        default=None,
+        help="Minimum successful clips for a smoke run (default: 5).",
+    )
+    return parser
+
+
+def _require_db(parsed: argparse.Namespace) -> Path:
+    if parsed.db is None:
+        raise ValueError("--db is required")
+    return Path(str(parsed.db))
+
+
+def _reject_purge_extras(parsed: argparse.Namespace) -> None:
+    present = [flag for attr, flag in _PURGE_EXCLUSIVE if getattr(parsed, attr) is not None]
+    if present:
+        joined = ", ".join(present)
+        raise ValueError(f"--purge cannot be combined with {joined}")
+
+
+def _parse_run(parsed: argparse.Namespace, db: Path) -> _Args:
+    if parsed.manifest is None or parsed.clips_dir is None or parsed.detector is None:
+        raise ValueError("a smoke run requires --manifest, --clips-dir, and --detector")
     weights = parsed.weights
     weight_path = Path(str(weights)) if weights is not None else None
+    min_clips = 5 if parsed.min_clips is None else int(parsed.min_clips)
     return _Args(
         manifest=Path(str(parsed.manifest)),
         clips_dir=Path(str(parsed.clips_dir)),
-        db=Path(str(parsed.db)),
+        db=db,
         detector=str(parsed.detector),
         weights=weight_path,
-        min_clips=int(parsed.min_clips),
+        min_clips=min_clips,
     )
+
+
+def _parse(argv: list[str] | None) -> _Args | _PurgeArgs:
+    parsed = _parser().parse_args(argv)
+    db = _require_db(parsed)
+    if bool(parsed.purge):
+        _reject_purge_extras(parsed)
+        return _PurgeArgs(db=db)
+    return _parse_run(parsed, db)
 
 
 def _require_yolox_weights(weights: Path | None) -> Path:
@@ -198,6 +255,16 @@ def _attempt(
     return True
 
 
+def _purge(db: Path) -> int:
+    """Delete SMOKE rows. This does not open clips or delete any file."""
+    store = TrackStore(db)
+    deleted = store.delete_where(derived_from="SMOKE")
+    remaining = store.count(derived_from="SMOKE")
+    print(f"deleted: {deleted}")
+    print(f"SMOKE rows remaining: {remaining}")
+    return 0
+
+
 def _finish(ran: int, errors: int, min_clips: int) -> int:
     print(f"{ran} clips, {errors} errors")
     if errors != 0 or ran < min_clips:
@@ -222,9 +289,12 @@ def _run_all(args: _Args, detector: Detector) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run every clip in ``--clips-dir`` and return the process status."""
+    """Run every clip in ``--clips-dir``, or delete SMOKE rows with ``--purge``."""
     try:
         args = _parse(argv)
+        if isinstance(args, _PurgeArgs):
+            print(_BANNER)
+            return _purge(args.db)
         if args.min_clips < 1:
             raise ValueError("--min-clips must be at least 1")
         print(_BANNER)

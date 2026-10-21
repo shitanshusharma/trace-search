@@ -508,3 +508,137 @@ def test_yolox_import_error_is_an_error_line(
     assert code == 1, output
     assert "error: ImportError: onnxruntime missing" in output
     assert "Traceback" not in output
+
+
+def _kept_code_row() -> TrackObservation:
+    return TrackObservation(
+        camera_id="FX-CODE-KEEP",
+        track_id=7,
+        det_class=DetClass.PERSON,
+        frame_number=3,
+        timestamp_seconds=0.1,
+        box=(2.0, 4.0, 30.0, 50.0),
+        score=0.8,
+    )
+
+
+def _invoke(argv: list[str]) -> tuple[int, str]:
+    """Call ``main`` and turn an argparse ``SystemExit`` into a status code."""
+    stdout = StringIO()
+    stderr = StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        try:
+            code = main(argv)
+        except SystemExit as exc:
+            status = exc.code
+            code = status if isinstance(status, int) else 1
+    return code, stdout.getvalue() + stderr.getvalue()
+
+
+def test_purge_deletes_only_smoke_rows_from_the_t3_9_run(tmp_path: Path) -> None:
+    """Plant CODE_TEST, run the 5-clip smoke path, then purge SMOKE rows."""
+    clips = tmp_path / "clips"
+    entries = generate_smoke_fixtures(clips, base_seed=42, num_clips=5)
+    manifest = tmp_path / "manifest.json"
+    _write_manifest(manifest, entries)
+    db = tmp_path / "smoke.sqlite"
+    kept = _kept_code_row()
+    TrackStore(db).write("code-run", "FX-CODE-KEEP", "CODE_TEST", [kept])
+    code_before = TrackStore(db).count(derived_from="CODE_TEST")
+    assert code_before == 1
+    before_status = _porcelain()
+    before_smoke = _smoke_files()
+    clip_files = sorted(path for path in clips.iterdir() if path.is_file())
+    assert len(clip_files) == 5
+
+    code, output = _run(
+        [
+            "--manifest",
+            str(manifest),
+            "--clips-dir",
+            str(clips),
+            "--db",
+            str(db),
+            "--detector",
+            "scripted-figures",
+            "--min-clips",
+            "5",
+        ]
+    )
+
+    assert code == 0, output
+    assert "5 clips" in output
+    assert "0 errors" in output
+    store = TrackStore(db)
+    smoke_before = store.count(derived_from="SMOKE")
+    assert smoke_before > 0
+    assert store.count(derived_from="CODE_TEST") == code_before
+    assert store.read("FX-CODE-KEEP", "code-run") == [kept]
+
+    code, output = _invoke(["--purge", "--db", str(db)])
+
+    assert code == 0, output
+    assert "SMOKE rows remaining: 0" in output
+    match = re.search(r"^deleted: (\d+)$", output, re.MULTILINE)
+    assert match is not None, output
+    assert int(match.group(1)) == smoke_before
+    store = TrackStore(db)
+    assert store.count(derived_from="SMOKE") == 0
+    assert store.count(derived_from="CODE_TEST") == code_before
+    assert store.read("FX-CODE-KEEP", "code-run") == [kept]
+    assert sorted(path for path in clips.iterdir() if path.is_file()) == clip_files
+    assert manifest.is_file()
+    assert _porcelain() == before_status
+    assert _smoke_files() == before_smoke
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--manifest", "manifest.json"),
+        ("--clips-dir", "clips"),
+        ("--detector", "scripted-figures"),
+        ("--weights", "weights.onnx"),
+        ("--min-clips", "1"),
+    ],
+)
+def test_purge_is_exclusive_with_a_smoke_run(tmp_path: Path, flag: str, value: str) -> None:
+    db = tmp_path / "smoke.sqlite"
+    kept = _kept_code_row()
+    smoke = TrackObservation(
+        camera_id="FX-SMOKE-KEEP",
+        track_id=1,
+        det_class=DetClass.PERSON,
+        frame_number=0,
+        timestamp_seconds=0.0,
+        box=(1.0, 1.0, 8.0, 12.0),
+        score=0.4,
+    )
+    store = TrackStore(db)
+    store.write("smoke-run", "FX-SMOKE-KEEP", "SMOKE", [smoke])
+    store.write("code-run", "FX-CODE-KEEP", "CODE_TEST", [kept])
+    smoke_before = store.count(derived_from="SMOKE")
+    code_before = store.count(derived_from="CODE_TEST")
+    token = value if flag in {"--detector", "--min-clips"} else str(tmp_path / value)
+    argv = ["--purge", "--db", str(db), flag, token]
+
+    code, output = _invoke(argv)
+
+    assert code != 0, output
+    assert "--purge cannot be combined with" in output
+    assert flag in output
+    assert "run_id=" not in output
+    assert "SMOKE rows remaining:" not in output
+    store = TrackStore(db)
+    assert store.count(derived_from="SMOKE") == smoke_before
+    assert store.count(derived_from="CODE_TEST") == code_before
+    assert store.read("FX-SMOKE-KEEP", "smoke-run") == [smoke]
+    assert store.read("FX-CODE-KEEP", "code-run") == [kept]
+
+
+def test_purge_without_db_exits_nonzero() -> None:
+    code, output = _invoke(["--purge"])
+    assert code != 0
+    assert "--db is required" in output
+    assert "SMOKE rows remaining:" not in output
+    assert "Traceback" not in output
