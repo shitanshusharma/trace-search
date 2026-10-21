@@ -117,6 +117,66 @@ def test_sha_pin_without_version_comment_fails(tmp_path):
     assert "vX.Y.Z" in repo_errors[0]
 
 
+def _pin_api(url):
+    if "/commits/" in url:
+        sha = url.rstrip("/").rsplit("/", 1)[-1]
+        return 200, {"sha": sha}
+    if "/compare/" in url:
+        return 200, {"status": "identical"}
+    return 500, {"message": "unexpected"}
+
+
+def _pin_remote(_owner, _repo, tag):
+    known = {"v3.27.0": PEELED, "v4.2.1": GOOD}
+    sha = known[tag]
+    return f"{sha}\trefs/tags/{tag}\n"
+
+
+def test_mixed_codeql_action_shas_fail(tmp_path):
+    """One codeql-action step on another SHA must fail, the way PR #13 did."""
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "codeql.yml").write_text(
+        "\n".join(
+            [
+                f"uses: github/codeql-action/init@{PEELED} # v3.27.0",
+                f"uses: github/codeql-action/autobuild@{PEELED} # v3.27.0",
+                f"uses: github/codeql-action/analyze@{GOOD} # v4.2.1",
+            ]
+        )
+        + "\n"
+    )
+    (workflows / "security.yml").write_text(
+        f"uses: github/codeql-action/upload-sarif@{PEELED} # v3.27.0\n"
+    )
+
+    errors = validate_repo(tmp_path, _pin_api, _pin_remote)
+    assert errors
+    text = "\n".join(errors)
+    assert f".github/workflows/codeql.yml:1 github/codeql-action/init@{PEELED}" in text
+    assert f".github/workflows/codeql.yml:2 github/codeql-action/autobuild@{PEELED}" in text
+    assert f".github/workflows/codeql.yml:3 github/codeql-action/analyze@{GOOD}" in text
+    assert f".github/workflows/security.yml:1 github/codeql-action/upload-sarif@{PEELED}" in text
+
+
+def test_same_sha_for_one_action_passes(tmp_path):
+    """Sub-paths of one action may repeat a SHA. A different action may not share it."""
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "codeql.yml").write_text(
+        "\n".join(
+            [
+                f"uses: github/codeql-action/init@{PEELED} # v3.27.0",
+                f"uses: github/codeql-action/analyze@{PEELED} # v3.27.0",
+                f"uses: actions/checkout@{GOOD} # v4.2.1",
+            ]
+        )
+        + "\n"
+    )
+
+    assert validate_repo(tmp_path, _pin_api, _pin_remote) == []
+
+
 def test_comment_without_v_and_mutable_tag_fail():
     sha = "b" * 40
     _pins, no_v = scan_uses(f"uses: evil/action@{sha} # 1.0.0\n", "w.yml")
