@@ -17,12 +17,13 @@ class ScriptedDetector:
     """
 
     def __init__(self, script: Mapping[tuple[str, int], Sequence[Detection]]) -> None:
-        """Keep the script used by ``detect``.
+        """Keep a copy of the script used by ``detect``.
 
         Args:
             script: Detections keyed by ``(camera_id, frame_number)``.
+                Later changes to the caller's mapping do not change ``detect``.
         """
-        self._script = script
+        self._script = dict(script)
 
     def detect(self, frame: Frame) -> list[Detection]:
         """Return the scripted detections for this frame.
