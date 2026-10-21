@@ -215,6 +215,59 @@ def test_renamed_clip_under_eval_and_cased_roots_fails(tmp_path: Path, relative:
     assert any(item[1] == "FX-SMOKE-SYN-034" for item in result["exact_matches"])
 
 
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "evals/clip.txt",
+        "holdouts/clip.txt",
+        "studies/clip.txt",
+        "Trains/clip.bin",
+    ],
+)
+def test_renamed_clip_under_plural_data_roots_fails(tmp_path: Path, relative: str):
+    """Plural store names are data roots, including mixed case and a non-media suffix."""
+    original = tmp_path / "smoke" / "clip.mp4"
+    original.parent.mkdir()
+    gen = _clip(original, seed=79)
+    manifest = tmp_path / "manifest.json"
+    _manifest(
+        manifest,
+        gen.compute_sha256(original),
+        gen.compute_phashes(original, num_samples=10),
+        "FX-SMOKE-SYN-079",
+    )
+    leaked = tmp_path / relative
+    leaked.parent.mkdir(parents=True)
+    leaked.write_bytes(original.read_bytes())
+
+    result = run_separation_check(manifest, repo_root=tmp_path)
+    assert result["passed"] is False
+    assert result["files_checked"] >= 1
+    assert any(item[1] == "FX-SMOKE-SYN-079" for item in result["exact_matches"])
+
+
+def test_tests_directory_stays_a_code_root(tmp_path: Path):
+    """A renamed clip under tests/ is not a dataset. files_checked stays 0."""
+    original = tmp_path / "smoke" / "clip.mp4"
+    original.parent.mkdir()
+    gen = _clip(original, seed=80)
+    manifest = tmp_path / "manifest.json"
+    _manifest(
+        manifest,
+        gen.compute_sha256(original),
+        gen.compute_phashes(original, num_samples=10),
+        "FX-SMOKE-SYN-080",
+    )
+    leaked = tmp_path / "tests" / "clip.txt"
+    leaked.parent.mkdir(parents=True)
+    leaked.write_bytes(original.read_bytes())
+
+    result = run_separation_check(manifest, repo_root=tmp_path)
+    assert result["passed"] is True
+    assert result["exact_matches"] == []
+    assert result["files_checked"] == 0
+
+
 def test_clean_tree_passes(tmp_path: Path):
     """A tree with only the smoke store and source files passes."""
     original = tmp_path / "smoke" / "clip.mp4"

@@ -6,7 +6,8 @@ by pHash (Hamming distance <= 8). Source files are not data. The top-level
 anywhere else, including ``data/train/smoke/`` or a ``.dat`` rename, is.
 
 Training, eval, val, holdout, test, and study roots are matched
-case-insensitively (``eval/``, ``Data/Train/``, ``TRAIN/``). Every file under
+case-insensitively, including the plurals evals, holdouts, studies, and trains
+(``eval/``, ``evals/``, ``Data/Train/``, ``TRAIN/``). Every file under
 those roots is content-hashed, whatever its suffix.
 
 Fail closed:
@@ -42,14 +43,18 @@ DATA_DIR_NAMES = {
     "datasets",
     "dev",
     "eval",
+    "evals",
     "evaluation",
     "fixtures",
     "hold",
     "holdout",
+    "holdouts",
+    "studies",
     "study",
     "test",
     "train",
     "training",
+    "trains",
     "val",
     "validation",
 }
@@ -118,9 +123,11 @@ def _skipped_store_or_tooling(path: Path, repo_root: Path) -> bool:
 def _in_training_root(parts: tuple[str, ...]) -> bool:
     """True for files under a training, eval, val, holdout, test, or study root.
 
-    Names are compared case-insensitively, so ``Data/Train`` and ``TRAIN``
-    match. ``src/`` and the other code roots are excluded so the package
-    directory named ``fixtures`` is not treated as a dataset.
+    Names are compared case-insensitively, so ``Data/Train``, ``TRAIN``, and
+    ``Trains`` match. Plurals ``evals``, ``holdouts``, ``studies``, and
+    ``trains`` match too. ``datasets`` is already included. ``tests/`` stays a
+    code root, and ``src/`` is excluded so the package directory named
+    ``fixtures`` is not treated as a dataset.
     """
     if len(parts) < 2 or parts[0] in CODE_ROOTS:
         return False
