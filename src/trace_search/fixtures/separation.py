@@ -203,6 +203,40 @@ def _read_text(path: Path) -> str:
         raise SeparationCheckError(f"FAIL-CLOSED: cannot read {path}: {exc}") from exc
 
 
+def _outside_training_scan(path: Path, repo_root: Path, manifest_path: Path | None) -> bool:
+    """True when this path is not a training-job or playlist candidate."""
+    if not path.is_file():
+        return True
+    parts = _relative_parts(path, repo_root)
+    if not parts or parts[0] in CODE_SCAN_SKIP or parts[0] in SKIP_ROOT_DIRS:
+        return True
+    if any(part in {"__pycache__", ".git"} for part in parts):
+        return True
+    if manifest_path is not None and path.resolve() == Path(manifest_path).resolve():
+        return True
+    return False
+
+
+def _violation_for_scanned_file(path: Path) -> str | None:
+    """Return the violation for one Python or config file, or None."""
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        text = _read_text(path)
+        trains = any(pattern.search(text) for pattern in TRAINING_PATTERNS)
+        reads_smoke = any(pattern.search(text) for pattern in SMOKE_READ_PATTERNS)
+        if trains and reads_smoke:
+            return (
+                f"{path}: training step (gradient or optimizer, including a 1-step loop) "
+                "can read SMOKE_ONLY or CODE_TEST data"
+            )
+        return None
+    if suffix in {".yaml", ".yml", ".json"}:
+        text = _read_text(path)
+        if any(pattern.search(text) for pattern in SMOKE_READ_PATTERNS):
+            return f"{path}: config or playlist references SMOKE_ONLY or CODE_TEST data"
+    return None
+
+
 def find_training_job_violations(repo_root: Path, manifest_path: Path | None = None) -> list[str]:
     """Training code that can read SMOKE_ONLY or CODE_TEST data.
 
@@ -216,32 +250,57 @@ def find_training_job_violations(repo_root: Path, manifest_path: Path | None = N
 
     violations: list[str] = []
     for path in repo_root.rglob("*"):
-        if not path.is_file():
+        if _outside_training_scan(path, repo_root, manifest_path):
             continue
-        parts = _relative_parts(path, repo_root)
-        if not parts or parts[0] in CODE_SCAN_SKIP or parts[0] in SKIP_ROOT_DIRS:
-            continue
-        if any(part in {"__pycache__", ".git"} for part in parts):
-            continue
-        if manifest_path is not None and path.resolve() == Path(manifest_path).resolve():
-            continue
-        suffix = path.suffix.lower()
-        if suffix == ".py":
-            text = _read_text(path)
-            trains = any(pattern.search(text) for pattern in TRAINING_PATTERNS)
-            reads_smoke = any(pattern.search(text) for pattern in SMOKE_READ_PATTERNS)
-            if trains and reads_smoke:
-                violations.append(
-                    f"{path}: training step (gradient or optimizer, including a 1-step loop) "
-                    "can read SMOKE_ONLY or CODE_TEST data"
-                )
-        elif suffix in {".yaml", ".yml", ".json"}:
-            text = _read_text(path)
-            if any(pattern.search(text) for pattern in SMOKE_READ_PATTERNS):
-                violations.append(
-                    f"{path}: config or playlist references SMOKE_ONLY or CODE_TEST data"
-                )
+        violation = _violation_for_scanned_file(path)
+        if violation is not None:
+            violations.append(violation)
     return violations
+
+
+def _resolve_dataset_paths(
+    dataset_paths: list[Path] | None, repo_root: Path
+) -> tuple[list[Path], bool]:
+    """Copy an explicit file list, or discover files. Empty input is an error."""
+    if dataset_paths is None:
+        return auto_discover_data_files(repo_root), True
+    paths = list(dataset_paths)
+    if len(paths) == 0:
+        raise SeparationCheckError(
+            "FAIL-CLOSED: 0 dataset files. Pass data files or a repo root "
+            "that contains them; an empty dataset is not a pass."
+        )
+    return paths, False
+
+
+def _compare_file_to_forbidden(
+    file_path: Path,
+    sha_to_id: dict[str, str],
+    sha_to_phash: dict[str, list[str]],
+    hamming_threshold: int,
+) -> tuple[tuple[str, str, str] | None, tuple[str, str, int] | None]:
+    """Exact SHA-256 match, else the first pHash hit within the threshold."""
+    file_path = Path(file_path)
+    if not file_path.exists():
+        raise SeparationCheckError(f"FAIL-CLOSED: missing file {file_path}")
+    try:
+        file_sha = sha256_file(file_path)
+    except ContentCheckError as exc:
+        raise SeparationCheckError(f"FAIL-CLOSED: {exc}") from exc
+
+    if file_sha in sha_to_id:
+        return (str(file_path), sha_to_id[file_sha], "SHA-256 exact match"), None
+
+    try:
+        file_hashes = perceptual_hashes(file_path)
+    except ContentCheckError as exc:
+        raise SeparationCheckError(f"FAIL-CLOSED: {exc}") from exc
+
+    for forbidden_sha, fixture_id in sha_to_id.items():
+        distance = nearest_hamming(file_hashes, sha_to_phash[forbidden_sha])
+        if distance is not None and distance <= hamming_threshold:
+            return None, (str(file_path), fixture_id, distance)
+    return None, None
 
 
 def check_separation(
@@ -262,17 +321,7 @@ def check_separation(
         repo_root = Path.cwd()
     repo_root = Path(repo_root)
 
-    discovered = dataset_paths is None
-    if discovered:
-        dataset_paths = auto_discover_data_files(repo_root)
-    else:
-        dataset_paths = list(dataset_paths)
-        if len(dataset_paths) == 0:
-            raise SeparationCheckError(
-                "FAIL-CLOSED: 0 dataset files. Pass data files or a repo root "
-                "that contains them; an empty dataset is not a pass."
-            )
-
+    paths, discovered = _resolve_dataset_paths(dataset_paths, repo_root)
     entries = load_manifest_entries(manifest_path)
     sha_to_id, sha_to_phash = forbidden_fixtures(entries)
     training_violations = find_training_job_violations(repo_root, manifest_path)
@@ -284,30 +333,14 @@ def check_separation(
 
     exact_matches: list[tuple[str, str, str]] = []
     near_duplicates: list[tuple[str, str, int]] = []
-
-    for file_path in dataset_paths:
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise SeparationCheckError(f"FAIL-CLOSED: missing file {file_path}")
-        try:
-            file_sha = sha256_file(file_path)
-        except ContentCheckError as exc:
-            raise SeparationCheckError(f"FAIL-CLOSED: {exc}") from exc
-
-        if file_sha in sha_to_id:
-            exact_matches.append((str(file_path), sha_to_id[file_sha], "SHA-256 exact match"))
-            continue
-
-        try:
-            file_hashes = perceptual_hashes(file_path)
-        except ContentCheckError as exc:
-            raise SeparationCheckError(f"FAIL-CLOSED: {exc}") from exc
-
-        for forbidden_sha, fixture_id in sha_to_id.items():
-            distance = nearest_hamming(file_hashes, sha_to_phash[forbidden_sha])
-            if distance is not None and distance <= hamming_threshold:
-                near_duplicates.append((str(file_path), fixture_id, distance))
-                break
+    for file_path in paths:
+        exact, near = _compare_file_to_forbidden(
+            file_path, sha_to_id, sha_to_phash, hamming_threshold
+        )
+        if exact is not None:
+            exact_matches.append(exact)
+        elif near is not None:
+            near_duplicates.append(near)
 
     passed = not exact_matches and not near_duplicates
     return {
@@ -315,11 +348,11 @@ def check_separation(
         "near_duplicates": near_duplicates,
         "config_violations": [],
         "training_violations": [],
-        "files_checked": len(dataset_paths),
+        "files_checked": len(paths),
         "passed": passed,
         "message": (
             "No data files outside the smoke store; training-job scan is clean."
-            if discovered and len(dataset_paths) == 0
+            if discovered and len(paths) == 0
             else ""
         ),
     }
