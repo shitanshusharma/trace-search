@@ -22,3 +22,10 @@ Shitanshu Sharma, 21 Oct 2026, 1:33 PM IST: "Add MIT-open-group, bzip2 and zlib 
 A match also requires the manifest row name (`FreeType`) and that file's sha256. The same installed-closure hash check applies. `FTL` on any other file fails. The FreeType credit line is in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
 `MIT-Modern-Variant`, `libpng-2.0`, `X11`, `BSD-3-Clause-Open-MPI`, `MIT-open-group`, and `bzip2-1.0.6` are plain allowlist identifiers. `X11` is libxcb. `MIT-open-group` is libXau. `bzip2-1.0.6` is bzip2 1.0.8 inside Pillow's libfreetype. zlib-ng uses the existing non-SPDX identifier `Zlib`. They are not named exceptions.
+
+Shitanshu, 2026-10-21 3:49 PM IST, loops chat: "Accept all six recommendations" (D-T3-6). That approval covers the `ALLOWED_NON_SPDX` strings `Pexels License` and `Pixabay Content License`. They are plain allowlist identifiers for stock clips. They are not named exceptions.
+
+| Licence | Allowlist |
+|---|---|
+| `Pexels License` | `ALLOWED_NON_SPDX` |
+| `Pixabay Content License` | `ALLOWED_NON_SPDX` |
