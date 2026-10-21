@@ -1,0 +1,8 @@
+# Semgrep ignore file.
+# A custom ignore file replaces semgrep's defaults, so keep the usual skips.
+.git/
+.venv/
+venv/
+node_modules/
+__pycache__/
+.pytest_cache/

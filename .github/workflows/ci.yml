@@ -17,7 +17,7 @@ jobs:
   lint-and-test:
     name: Lint, Test, and License Check
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     
     steps:
     - name: Check out code
@@ -46,11 +46,22 @@ jobs:
     - name: License fence check
       run: |
         python scripts/check_licenses.py --requirements=requirements.txt --requirements=requirements-dev.txt --report=license-report.json
-    
+
+    - name: CI tools banned-licence check
+      run: |
+        # Own venv. Do not install this lock into the app environment,
+        # and do not uninstall packages from either environment.
+        python -m venv .venv-ci-fence
+        .venv-ci-fence/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
+        site="$(.venv-ci-fence/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+        PYTHONPATH=src .venv-ci-fence/bin/python -m scripts.check_ci_licenses --path "$site" --report ci-tools-licence-report.json
+
     - name: Upload license report
       if: always()
       uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874  # v4.4.0
       with:
         name: license-report
-        path: license-report.json
+        path: |
+          license-report.json
+          ci-tools-licence-report.json
         retention-days: 90

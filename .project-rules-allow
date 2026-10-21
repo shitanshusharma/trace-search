@@ -1,0 +1,20 @@
+# Project Rules Allow-List
+#
+# This file contains false-positive exceptions for the project rules checker.
+# Each entry must have a justification comment explaining why it's allowed.
+#
+# Format:
+#   - For code violations: <file>:<line>:<match>
+#   - media:<file> and media_file:<file> do not waive the manifest path and sha256 check.
+#
+# Example:
+#   # Allowed: "watchlist" used in documentation context only
+#   src/trace_search/docs.py:42:watchlist
+#
+# All entries in this file require review and sign-off.
+
+# Package metadata, not a tracked person's identity field. Reviewed 2026-10-20.
+pyproject.toml:6:name = "
+
+# Author metadata, not a tracked person's identity field. Reviewed 2026-10-20.
+pyproject.toml:13:name = "
