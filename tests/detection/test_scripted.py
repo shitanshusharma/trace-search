@@ -100,3 +100,18 @@ def test_docstring_limits_output_to_wiring() -> None:
     assert "CODE_TEST" in text
     assert "SMOKE" in text
     assert "never evidence" in text
+
+
+def test_caller_dict_mutation_does_not_change_detector_output() -> None:
+    """A later add, replace, or delete on the caller's mapping is ignored."""
+    person = _detection()
+    script = {("cam-a", 3): [person]}
+    detector = ScriptedDetector(script)
+    frame = _frame("cam-a", 3)
+    before = detector.detect(frame)
+
+    script[("cam-a", 9)] = [_detection(frame_number=9)]
+    script[("cam-a", 3)] = [_detection(det_class=DetClass.HANDBAG, score=0.1)]
+    del script[("cam-a", 3)]
+
+    assert detector.detect(frame) == before == [person]
