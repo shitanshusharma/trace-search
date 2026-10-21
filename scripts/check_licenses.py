@@ -193,6 +193,8 @@ ALLOWED_SPDX = {
 # The license text is exact, including case, and only that package is rewritten.
 PIP_LICENSES_TO_SPDX = {
     ('imagehash', '2-clause BSD License'): 'BSD-2-Clause',
+    # protobuf wheel METADATA / pip-licenses. This package only.
+    ('protobuf', '3-Clause BSD License'): 'BSD-3-Clause',
 }
 
 # Parse failures that do not match a banned pattern. Still fail closed.

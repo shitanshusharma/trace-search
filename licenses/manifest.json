@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0",
-  "last_updated_ist": "2026-10-21",
+  "last_updated_ist": "2026-10-22",
   "entries": [
     {
       "name": "pytest",
@@ -108,7 +108,7 @@
       "license": "Apache-2.0",
       "source_url": "https://pypi.org/project/packaging/",
       "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
-      "notes": "Transitive dependency of pytest"
+      "notes": "Transitive dependency of pytest. Also required by onnxruntime 1.31.0. Wheel packaging-26.3-py3-none-any.whl METADATA License-Expression is Apache-2.0 OR BSD-2-Clause."
     },
     {
       "name": "Pygments",
@@ -1064,6 +1064,51 @@
       "seed": "{\"base_seed\": 42, \"offset\": 4, \"config\": {\"name\": \"lobby_occlusion\", \"duration_sec\": 14.0, \"num_figures\": 4, \"background_brightness\": 0.75, \"num_obstructions\": 4}}",
       "notes": "Deterministic synthetic clip for smoke testing. Config: lobby_occlusion",
       "path": "smoke/FX-SMOKE-SYN-005_lobby_occlusion.mp4"
+    },
+    {
+      "name": "onnxruntime",
+      "version": "1.31.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/onnxruntime/1.31.0/",
+      "sha256": "d4092b78fc5bab77ce6522393098cdb2535423045ecdcff15cc0d022162d6b66",
+      "notes": "T-3-8 YOLOX runtime. CI wheel (Python 3.11, manylinux x86_64): onnxruntime-1.31.0-cp311-cp311-manylinux_2_28_x86_64.whl. sha256 from sha256sum of that wheel. METADATA License is MIT License. Requires flatbuffers, numpy>=1.21.6 (satisfied by the existing numpy==1.26.4 pin), packaging, and protobuf>=4.25.8. The symbolic and quantization extras are not installed."
+    },
+    {
+      "name": "protobuf",
+      "version": "7.36.2",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/protobuf/7.36.2/",
+      "sha256": "89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2",
+      "notes": "Closure of onnxruntime 1.31.0. CI wheel: protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl. sha256 from sha256sum of that wheel. METADATA License is 3-Clause BSD License. The wheel LICENSE file is the Google 3-clause BSD text. pip-licenses reports that exact string, rewritten to BSD-3-Clause for protobuf only (Shitanshu Sharma, 22 Oct 2026, 1:11 AM IST)."
+    },
+    {
+      "name": "flatbuffers",
+      "version": "25.12.19",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/google/flatbuffers/blob/v25.12.19/LICENSE",
+      "sha256": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4",
+      "notes": "Closure of onnxruntime 1.31.0. Wheel flatbuffers-25.12.19-py2.py3-none-any.whl. sha256 from sha256sum of that wheel. METADATA License is Apache 2.0. The wheel has no LICENSE file. This row is Apache-2.0 from the upstream google/flatbuffers LICENSE at https://github.com/google/flatbuffers/blob/v25.12.19/LICENSE. pip-licenses reports Apache Software License via the Trove classifier. No PIP_LICENSES_TO_SPDX mapping was added."
+    },
+    {
+      "name": "YOLOX-S COCO",
+      "version": "0.1.1rc0",
+      "type": "weight",
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx",
+      "sha256": "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+      "notes": "Official Megvii-BaseDetection/YOLOX release asset yolox_s.onnx. Apache-2.0. COCO images are subject to Flickr terms. COCO annotations are CC BY 4.0. The file is not stored in this repository and CI does not download it. Counsel review of the YOLOX weights (D-5) is still pending before release."
+    },
+    {
+      "name": "YOLOX",
+      "version": "6ddff4824372906469a7fae2dc3206c7aa4bbaee",
+      "type": "model",
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/Megvii-BaseDetection/YOLOX/commit/6ddff4824372906469a7fae2dc3206c7aa4bbaee",
+      "sha256": "103b59b2d679f2ab829e7f7bf348242c400efa925a4adb262cbf3dd375c4ec0c",
+      "notes": "B-46. Reference implementation pinned to commit 6ddff4824372906469a7fae2dc3206c7aa4bbaee. The short prefix 6ddff482 matched one commit. sha256 is the GitHub archive tarball for that commit. Apache-2.0."
     }
   ]
 }

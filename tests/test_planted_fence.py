@@ -771,6 +771,79 @@ def test_two_clause_bsd_text_rejected_for_other_packages(tmp_path, monkeypatch):
     assert "PASSED" not in stdout
 
 
+def test_protobuf_three_clause_bsd_license_passes(tmp_path, monkeypatch):
+    """pip-licenses reports protobuf as this exact string. It maps to BSD-3-Clause."""
+    assert cl.is_license_allowed("3-Clause BSD License", "protobuf") is True
+    assert cl.is_license_allowed("3-Clause BSD License", "Protobuf") is True
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "protobuf",
+            "version": "7.36.2",
+            "license": "3-Clause BSD License",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="protobuf", version="7.36.2", license_id="BSD-3-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_protobuf_bsd_near_miss_still_fails(tmp_path, monkeypatch):
+    """A near-miss is not the approved string, so it stays unparseable."""
+    assert cl.is_license_allowed("3 Clause BSD Licence", "protobuf") is False
+    assert cl.is_license_allowed("3-Clause BSD License") is False
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "protobuf",
+            "version": "7.36.2",
+            "license": "3 Clause BSD Licence",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="protobuf", version="7.36.2", license_id="BSD-3-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "3 Clause BSD Licence" in stdout
+    assert "PASSED" not in stdout
+
+
+def test_three_clause_bsd_text_rejected_for_other_packages(tmp_path, monkeypatch):
+    """The protobuf rewrite does not apply to any other package name."""
+    assert cl.is_license_allowed("3-Clause BSD License", "flatbuffers") is False
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "flatbuffers",
+            "version": "25.12.19",
+            "license": "3-Clause BSD License",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="flatbuffers", version="25.12.19", license_id="BSD-3-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "3-Clause BSD License" in stdout
+    assert "PASSED" not in stdout
+
+
 def test_unknown_pip_licenses_free_text_stays_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cl,
@@ -1717,6 +1790,7 @@ def test_allowlist_adds_only_the_six_plain_strings():
     }
     assert cl.PIP_LICENSES_TO_SPDX == {
         ("imagehash", "2-clause BSD License"): "BSD-2-Clause",
+        ("protobuf", "3-Clause BSD License"): "BSD-3-Clause",
     }
     assert [spec["license"] for spec in cl.OPENCV_BUNDLED_FILE_EXCEPTIONS] == [
         "OpenSSL",

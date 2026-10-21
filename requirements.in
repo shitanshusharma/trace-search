@@ -1,0 +1,13 @@
+# Runtime pins. Compile with Python 3.11:
+#   pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in
+# numpy stays 1.26.4. It satisfies onnxruntime's numpy>=1.21.6 requirement.
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+Pillow==13.0.0
+imagehash==4.3.2
+PyWavelets==1.9.0
+scipy==1.17.1
+onnxruntime==1.31.0
+protobuf==7.36.2
+flatbuffers==25.12.19
+packaging==26.3
