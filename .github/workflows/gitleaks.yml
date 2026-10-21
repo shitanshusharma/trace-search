@@ -5,6 +5,9 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,7 +30,65 @@ jobs:
         fetch-depth: 0  # Full history for PR scan
     
     - name: Run Gitleaks
+      if: github.event_name == 'pull_request' || github.event_name == 'push'
       uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GITLEAKS_ENABLE_COMMENTS: false
+
+    # gitleaks-action v3.0.0 runs gitleaks 8.24.3. On schedule and
+    # workflow_dispatch it passes no --log-opts, so the scan is `git log --all`
+    # and merge commits have no diff. This step scans every commit reachable
+    # from HEAD, including merges, which is `git rev-list HEAD`.
+    - name: Scan full git history
+      if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      run: |
+        set -euo pipefail
+
+        # Same binary gitleaks-action v3.0.0 installs when GITLEAKS_VERSION is unset.
+        version="8.24.3"
+        checksum="9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c"
+        archive="gitleaks_${version}_linux_x64.tar.gz"
+        url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}"
+        workdir="$(mktemp -d)"
+
+        expected="$(git rev-list --count HEAD)"
+        printf 'git rev-list --count HEAD: %s\n' "${expected}"
+
+        curl --fail --silent --show-error --location --retry 4 --output "${workdir}/${archive}" "${url}"
+        printf '%s  %s\n' "${checksum}" "${workdir}/${archive}" | sha256sum -c -
+        tar -xzf "${workdir}/${archive}" -C "${workdir}" gitleaks
+        chmod +x "${workdir}/gitleaks"
+        "${workdir}/gitleaks" version
+
+        log_file="$(mktemp)"
+        status=0
+        "${workdir}/gitleaks" detect \
+          --source . \
+          --redact \
+          --verbose \
+          --no-color \
+          --no-banner \
+          --exit-code=2 \
+          --log-level=debug \
+          --log-opts="--full-history -m HEAD" \
+          >"${log_file}" 2>&1 || status=$?
+        cat "${log_file}"
+
+        scanned="$(sed -n 's/.* \([0-9][0-9]*\) commits scanned\./\1/p' "${log_file}")"
+        printf 'commits scanned: %s\n' "${scanned}"
+        printf 'git rev-list --count HEAD: %s\n' "${expected}"
+
+        if [ "${status}" -ne 0 ]; then
+          printf 'gitleaks exit status: %s\n' "${status}"
+          exit "${status}"
+        fi
+        if [ "${scanned}" != "${expected}" ]; then
+          printf 'scanned commit count %s does not equal git rev-list --count HEAD %s\n' "${scanned}" "${expected}"
+          exit 1
+        fi
+        if ! grep -q 'no leaks found' "${log_file}"; then
+          printf 'gitleaks did not report zero leaks\n'
+          exit 1
+        fi
+        printf 'leaks found: 0\n'
