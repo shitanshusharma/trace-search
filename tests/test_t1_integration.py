@@ -25,6 +25,7 @@ from trace_search.fixtures.guards import (
     check_fixture_allowed,
 )
 from trace_search.fixtures.separation import check_separation
+from trace_search.fixtures.smoke_rows import is_generated_smoke_clip
 
 
 def test_t1_complete_workflow():
@@ -239,28 +240,21 @@ def test_t1_determinism_same_seed_same_sha():
         assert path1.read_bytes() == path2.read_bytes()
 
 
-def test_regenerate_matches_manifest_entries_byte_for_byte():
-    """The generator's rows, including path, match the committed manifest.
-
-    A second run writes the same clip bytes. The manifest SHA-256 is that
-    byte string.
-    """
-    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
-    committed = {
-        entry["fixture_id"]: entry
-        for entry in manifest["entries"]
-        if entry.get("type") == "synthetic_clip"
-    }
-    assert len(committed) == 5
+def _assert_regenerated_matches(manifest: dict) -> None:
+    """Hash every generated smoke row. The same predicate selects those rows."""
+    committed = [entry for entry in manifest["entries"] if is_generated_smoke_clip(entry)]
+    assert committed
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         first_dir = root / "smoke"
         second_dir = root / "again" / "smoke"
-        first = generate_smoke_fixtures(output_dir=first_dir, base_seed=42, num_clips=5)
-        second = generate_smoke_fixtures(output_dir=second_dir, base_seed=42, num_clips=5)
-        assert [entry["fixture_id"] for entry in first] == list(committed)
-        for entry, repeat in zip(first, second):
-            stored = committed[entry["fixture_id"]]
+        clip_count = max(len(committed), 5)
+        first = generate_smoke_fixtures(output_dir=first_dir, base_seed=42, num_clips=clip_count)
+        second = generate_smoke_fixtures(output_dir=second_dir, base_seed=42, num_clips=clip_count)
+        assert [entry["fixture_id"] for entry in first] == [
+            entry["fixture_id"] for entry in committed
+        ]
+        for entry, repeat, stored in zip(first, second, committed):
             assert entry == stored
             assert repeat == stored
             assert entry["path"].startswith("smoke/")
@@ -271,6 +265,30 @@ def test_regenerate_matches_manifest_entries_byte_for_byte():
             right = second_dir / Path(entry["path"]).name
             assert left.read_bytes() == right.read_bytes()
             assert SyntheticVideoGenerator.compute_sha256(left) == stored["sha256"]
+
+
+def test_regenerate_matches_manifest_entries_byte_for_byte():
+    """The generator's rows, including path, match the committed manifest.
+
+    A second run writes the same clip bytes. The manifest SHA-256 is that
+    byte string. Every generated smoke row is included, including a later one.
+    """
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    _assert_regenerated_matches(manifest)
+
+
+def test_planted_tampered_synthetic_sha_fails_regenerate():
+    """A generated row with a replaced sha256 fails the regenerate comparison."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    tampered = False
+    for entry in manifest["entries"]:
+        if is_generated_smoke_clip(entry):
+            entry["sha256"] = "0" * 64
+            tampered = True
+            break
+    assert tampered
+    with pytest.raises(AssertionError):
+        _assert_regenerated_matches(manifest)
 
 
 def test_regenerate_lowlight_matches_manifest_bytes():
