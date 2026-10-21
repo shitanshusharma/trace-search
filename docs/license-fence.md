@@ -11,7 +11,9 @@ OpenSSL and Intel IPP are not on the global allowlist. Shitanshu Sharma, 21 Oct 
 
 A match also requires the manifest row name (`OpenSSL-libcrypto`, `OpenSSL-libssl`, `Intel IPP ICV`, `Intel IPP IW`) and that file's sha256. The installed-closure check hashes each named file in site-packages. The exception applies only when that on-disk sha256 matches both the manifest row and the pinned value. A missing file or a mismatch fails closed and names the file and both hashes. The same licence fails for any other package, version, file, name, or hash. `IJG` is an allowlist identifier because libjpeg-turbo ships `IJG AND BSD-3-Clause AND Zlib`. It is not one of these named exceptions.
 
-Pillow's bundled FreeType is not on the global allowlist. Shitanshu Sharma: "Do all of it, FreeType under FTL only."
+Pillow's bundled FreeType is not on the global allowlist. Shitanshu Sharma, 21 Oct 2026, 12:01 PM IST: "Do all of it, FreeType under FTL only."
+
+Shitanshu Sharma, 21 Oct 2026, 1:33 PM IST: "Add MIT-open-group, bzip2 and zlib rows to #19". That approval covers the new `ALLOWED_SPDX` strings `MIT-open-group` and `bzip2-1.0.6`. This PR does not add `Zlib` to `ALLOWED_SPDX`. The zlib-ng rows use the existing non-SPDX identifier `Zlib`.
 
 | Licence | Version | Package | Files |
 |---|---|---|---|

@@ -1659,8 +1659,8 @@ def test_openblas_expression_with_gpl_still_fails():
     assert "GPL-2.0" in stdout
 
 
-def test_allowlist_adds_only_the_four_plain_strings():
-    """FTL stays off the allowlist. The plain ids in _ADDED_SPDX are the only additions."""
+def test_allowlist_adds_only_the_six_plain_strings():
+    """FTL stays off the allowlist. The six plain ids in _ADDED_SPDX are the only additions."""
     previous = {
         "MIT",
         "Apache-2.0",
@@ -1851,3 +1851,19 @@ def test_contained_component_row_with_gpl_fails(index):
     assert row["name"] in stdout
     assert "banned license 'GPL-2.0'" in stdout
     assert "banned pattern '^GPL-[123]'" in stdout
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_ftl_on_contained_component_row_fails(index):
+    """FTL on a bzip2 or zlib-ng row is not the FreeType exception."""
+    row = dict(_contained_component_rows()[index])
+    assert row["name"] != "FreeType"
+    assert row["license"] != "FTL"
+    row["license"] = "FTL"
+    assert "FTL" not in cl.ALLOWED_SPDX
+    assert "FTL" not in cl.ALLOWED_NON_SPDX
+    assert cl.is_pillow_bundled_file_exception("FTL", row, _on_disk_pin(row)) is False
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert row["name"] in stdout
+    assert "license 'FTL' not in allowed list" in stdout
