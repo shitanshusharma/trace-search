@@ -45,12 +45,12 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
 }
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(export: str) -> Any:
     """Import one public name the first time a caller asks for it."""
-    spec = _LAZY_EXPORTS.get(name)
+    spec = _LAZY_EXPORTS.get(export)
     if spec is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        raise AttributeError(f"module {__name__!r} has no attribute {export!r}")
     module_name, attr = spec
     value = getattr(import_module(module_name, __name__), attr)
-    globals()[name] = value
+    globals()[export] = value
     return value
