@@ -1449,7 +1449,7 @@ def test_openssl_semicolon_mit_on_libssl_row_fails(tmp_path):
 # ----- Pillow bundled libs and scipy OpenBLAS / LAPACK (T-7-8) -----
 
 _FTL_CREDIT = (
-    "Portions of this software are copyright © <year> The FreeType "
+    "Portions of this software are copyright © 1996-2026 The FreeType "
     "Project (www.freetype.org).  All rights reserved."
 )
 _NEW_PILLOW_FILES = {
@@ -1698,7 +1698,58 @@ def test_allowlist_adds_only_the_four_plain_strings():
 def test_freetype_credit_line_uses_the_wheel_sentence():
     text = Path("THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     assert _FTL_CREDIT in text
+    assert "<year>" not in text
+    assert "VER-2-14-3" in text
+    assert "freetype.h" in text
     assert "GPL" not in text
     fence = Path("docs/license-fence.md").read_text(encoding="utf-8")
     assert "THIRD_PARTY_NOTICES.md" in fence
     assert "FTL" in fence
+
+
+_COMPOUND_FTL = [
+    "FTL OR GPL-2.0-or-later",
+    "FTL OR GPL-2.0+",
+    "GPL-2.0-or-later OR FTL",
+    "FTL AND MIT",
+    "FTL WITH GCC-exception-3.1",
+]
+
+
+@pytest.mark.parametrize("planted", _COMPOUND_FTL)
+def test_compound_ftl_on_the_real_freetype_row_fails(planted):
+    """OR, AND, and WITH on the real FreeType row do not get the bare FTL exception."""
+    row = _freetype_row()
+    assert row["license"] == "FTL"
+    assert cl.is_pillow_bundled_file_exception("FTL", row, _on_disk_pin(row)) is True
+    row["license"] = planted
+    assert cl._is_single_bare_license_term(planted) is False
+    assert cl.is_pillow_bundled_file_exception(planted, row, _on_disk_pin(row)) is False
+    decision = cl._license_decision(planted, row["name"], row, _on_disk_pin(row))
+    assert decision[1] is False
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert "FreeType" in stdout
+    assert planted in stdout
+    if "GPL" in planted:
+        assert f"banned license '{planted}'" in stdout
+        assert "banned pattern '^GPL-[123]'" in stdout
+    else:
+        assert f"license '{planted}' not in allowed list" in stdout
+        assert "banned license" not in stdout
+
+
+def test_missing_libfreetype_on_disk_fails(tmp_path, monkeypatch):
+    """A FreeType row whose file is absent on disk fails and names that file."""
+    row = _freetype_row()
+    relative = row["bundled_file"]
+    assert relative == "pillow.libs/libfreetype-57f805ba.so.6.20.6"
+    site_root = tmp_path / "site-packages"
+    site_root.mkdir()
+    assert not (site_root / relative).is_file()
+    code, stdout, _ = _run_installed_closure([row], tmp_path, monkeypatch, [site_root])
+    assert code == 1, stdout
+    assert (
+        f"FreeType: bundled file {relative} is missing "
+        f"(manifest sha256 {row['sha256']}, pinned sha256 {row['sha256']})"
+    ) in stdout
