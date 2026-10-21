@@ -89,6 +89,14 @@ _EXACT: dict[str, str] = {
     "gnu lesser general public license v2 or later (lgplv2+)": "LGPL-2.1-or-later",
     "gnu lesser general public license v3 (lgplv3)": "LGPL-3.0-only",
     "gnu lesser general public license v3 or later (lgplv3+)": "LGPL-3.0-or-later",
+    "isc license (iscl)": "ISC",
+    "isc license": "ISC",
+    "iscl": "ISC",
+    "the unlicense (unlicense)": "Unlicense",
+    "the unlicense": "Unlicense",
+    # The Public Domain classifier has no SPDX id of its own. This scan
+    # treats it as Unlicense, which is already on the allowed list.
+    "public domain": "Unlicense",
 }
 
 _FAMILY_SPDX = re.compile(r"(?i)^(AGPL|LGPL|GPL)-\d+(?:\.\d+)?(?:-(?:only|or-later))?$")

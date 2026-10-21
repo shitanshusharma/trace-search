@@ -152,6 +152,61 @@ def test_bare_gplv3_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
     assert "PASSED" not in output
 
 
+@pytest.mark.parametrize(
+    ("tail", "marker"),
+    [
+        ("GNU General Public License v2 or later (GPLv2+)", "banned license"),
+        ("GNU Affero General Public License v3", "banned license"),
+        ("GNU General Public License (GPL)", "fail closed"),
+    ],
+)
+def test_gpl_family_classifiers_fail(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    tail: str,
+    marker: str,
+) -> None:
+    _write_dist(
+        tmp_path,
+        "planted-banned",
+        "1.0.0",
+        f"Classifier: License :: OSI Approved :: {tail}",
+    )
+    code = ci.main(["--path", str(tmp_path)])
+    output = capsys.readouterr().out
+    assert code == 1, output
+    assert tail in output
+    assert marker in output
+    assert "PASSED" not in output
+    if marker == "fail closed":
+        assert "banned license" not in output
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "ISC License (ISCL)",
+        "The Unlicense (Unlicense)",
+        "Public Domain",
+    ],
+)
+def test_permissive_classifiers_pass(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    tail: str,
+) -> None:
+    if tail == "Public Domain":
+        header = "Classifier: License :: Public Domain"
+    else:
+        header = f"Classifier: License :: OSI Approved :: {tail}"
+    _write_dist(tmp_path, "planted-permissive", "1.0.0", header)
+    code = ci.main(["--path", str(tmp_path)])
+    output = capsys.readouterr().out
+    assert code == 0, output
+    assert "PASSED" in output
+    assert "banned license" not in output
+
+
 def test_osi_approved_classifier_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _write_dist(tmp_path, "planted-banned", "1.0.0", "Classifier: License :: OSI Approved")
     code = ci.main(["--path", str(tmp_path)])
