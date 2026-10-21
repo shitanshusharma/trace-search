@@ -115,9 +115,19 @@ def test_schema_synthetic_clip_fixture_id():
     assert "PASSED" in stdout
 
 
-def test_clean_real_closure_passes():
+def test_clean_real_closure_passes(monkeypatch):
+    """Real manifest passes without a repo-wide FFmpeg override.
+
+    This test patches the inspector locally. Other tests still see a
+    missing libavcodec as MISSING.
+    """
     import scripts.check_licenses as cl
 
+    monkeypatch.setattr(
+        cl,
+        "inspect_opencv_libavcodec",
+        lambda: ("LGPL version 2.1 or later", "--enable-shared"),
+    )
     code = cl.main(["--manifest", "licenses/manifest.json", "--no-scan-installed"])
     assert code == 0
 

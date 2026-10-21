@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.check_licenses as cl
 from tests.conftest import invoke_main, library_entry, make_manifest
 
 SCHEMA = Path("licenses/manifest_schema.json")
@@ -141,6 +142,117 @@ def test_non_gcc_package_claiming_gcc_exception_fails():
     assert "fake-lib: banned license 'GPL-3.0 WITH GCC-exception-3.1'" in stdout
 
 
+def test_mit_and_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="MIT AND GPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "MIT AND GPL-3.0-only" in stdout
+    assert "banned" in stdout.lower()
+
+
+def test_mit_or_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="MIT OR GPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "banned license 'MIT OR GPL-3.0-only'" in stdout
+
+
+def test_agpl_or_mit_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="AGPL-3.0-only OR MIT")])
+    )
+    assert code == 1, stdout
+    assert "banned license 'AGPL-3.0-only OR MIT'" in stdout
+
+
+def test_cc_by_nc_or_mit_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="CC-BY-NC-4.0 OR MIT")])
+    )
+    assert code == 1, stdout
+    assert "banned license 'CC-BY-NC-4.0 OR MIT'" in stdout
+
+
+def test_mit_or_apache_passes():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="MIT OR Apache-2.0")])
+    )
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_or_of_only_banned_licenses_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="GPL-3.0-only OR AGPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "GPL-3.0-only OR AGPL-3.0-only" in stdout
+
+
+def test_malformed_spdx_expression_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="(MIT OR GPL-3.0-only")])
+    )
+    assert code == 1, stdout
+    assert "unparseable license '(MIT OR GPL-3.0-only'" in stdout
+    assert "banned license '(MIT OR GPL-3.0-only'" not in stdout
+
+
+def test_spdx_parenthesized_or_with_gpl_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(license_id="(MIT OR GPL-3.0-only) AND Apache-2.0")
+        ])
+    )
+    assert code == 1, stdout
+    assert "banned license '(MIT OR GPL-3.0-only) AND Apache-2.0'" in stdout
+
+
+def test_spdx_parentheses_scope_the_and():
+    """Parentheses bind the OR inside AND, so the GPL term is still required."""
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(license_id="GPL-3.0-only AND (MIT OR Apache-2.0)")
+        ])
+    )
+    assert code == 1, stdout
+    assert "GPL-3.0-only AND (MIT OR Apache-2.0)" in stdout
+
+
+def test_with_exception_other_than_gcc_fails():
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(license_id="Apache-2.0 WITH LLVM-exception")])
+    )
+    assert code == 1, stdout
+    assert "Apache-2.0 WITH LLVM-exception" in stdout
+    assert "PASSED" not in stdout
+
+
+def test_ijg_bsd_zlib_conjunction_passes():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="libjpeg-turbo",
+                license_id="IJG AND BSD-3-Clause AND Zlib",
+            )
+        ])
+    )
+    assert code == 0, stdout
+    assert "PASSED" in stdout
+
+
+def test_openssl_and_intel_licenseref_stay_unlisted():
+    for license_id in ("OpenSSL", "LicenseRef-Intel-Simplified-Software-License"):
+        code, stdout, _ = invoke_main(
+            make_manifest([library_entry(name="pending-lib", license_id=license_id)])
+        )
+        assert code == 1, stdout
+        assert license_id in stdout
+        assert "not in allowed list" in stdout
+
+
 # ----- 4. generator_license allowlist -----
 
 
@@ -173,7 +285,8 @@ def test_generator_license_free_text_fails():
         make_manifest([_synthetic_fields(generator_license="custom blender terms")])
     )
     assert code == 1, stdout
-    assert "generator_license 'custom blender terms' not in allowed list" in stdout
+    assert "generator_license 'custom blender terms' is unparseable" in stdout
+    assert "is banned" not in stdout
 
 
 def test_generator_license_empty_fails():
@@ -210,7 +323,8 @@ def test_generator_row_free_text_license_fails():
         make_manifest([_generator_row(generator_license="see the internal wiki")])
     )
     assert code == 1, stdout
-    assert "generator_license 'see the internal wiki' not in allowed list" in stdout
+    assert "generator_license 'see the internal wiki' is unparseable" in stdout
+    assert "is banned" not in stdout
 
 
 def test_banned_generator_name_fails():
@@ -296,9 +410,7 @@ def test_whitespace_only_license_version_fails():
 
 
 def _schema_errors(manifest):
-    from scripts.check_licenses import validate_schema
-
-    return validate_schema(manifest, SCHEMA)
+    return cl.validate_schema(manifest, SCHEMA)
 
 
 def test_schema_fx_smoke_syn_with_code_test_fails_at_use():
@@ -344,16 +456,12 @@ def test_schema_valid_stock_clip_passes():
 
 
 def test_ffmpeg_not_a_dependency_when_no_opencv():
-    from scripts.check_licenses import check_ffmpeg_build
-
-    violations, status = check_ffmpeg_build(make_manifest([library_entry()]))
+    violations, status = cl.check_ffmpeg_build(make_manifest([library_entry()]))
     assert violations == []
     assert status == "NOT_A_DEPENDENCY"
 
 
 def test_opencv_libavcodec_lgpl_passes(monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "inspect_opencv_libavcodec",
@@ -367,8 +475,6 @@ def test_opencv_libavcodec_lgpl_passes(monkeypatch):
 
 
 def test_opencv_libavcodec_gpl_fails(monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl, "inspect_opencv_libavcodec",
         lambda: ("GPL version 2 or later", "--enable-gpl --enable-shared"),
@@ -381,8 +487,6 @@ def test_opencv_libavcodec_gpl_fails(monkeypatch):
 
 
 def test_opencv_libavcodec_nonfree_fails(monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl, "inspect_opencv_libavcodec",
         lambda: ("LGPL version 2.1 or later", "--enable-nonfree"),
@@ -395,8 +499,6 @@ def test_opencv_libavcodec_nonfree_fails(monkeypatch):
 
 
 def test_opencv_libavcodec_missing_fails_closed(monkeypatch):
-    import scripts.check_licenses as cl
-
     def boom():
         raise FileNotFoundError("opencv bundled libavcodec not found")
 
@@ -410,8 +512,6 @@ def test_opencv_libavcodec_missing_fails_closed(monkeypatch):
 
 def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
     """A contrib-named wheel with an LGPL libavcodec passes, any case."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "inspect_opencv_libavcodec",
@@ -424,10 +524,24 @@ def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
     assert status == "LGPL_OK"
 
 
+def test_opencv_contrib_wheel_without_clean_libavcodec_fails(tmp_path):
+    """A contrib wheel is an FFmpeg distribution, so a missing libavcodec fails."""
+    import trace_search.ingest.ffmpeg_check as ffmpeg_check
+
+    assert cl.is_opencv_ffmpeg_distribution is ffmpeg_check.is_opencv_ffmpeg_distribution
+    assert "opencv-contrib-python" in ffmpeg_check.OPENCV_FFMPEG_DISTRIBUTIONS
+    assert "opencv-contrib-python-headless" in ffmpeg_check.OPENCV_FFMPEG_DISTRIBUTIONS
+    code, stdout, _ = invoke_main(
+        make_manifest([library_entry(name="opencv-contrib-python")]),
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "MISSING" in stdout
+    assert "libavcodec" in stdout
+
+
 def test_opencv_contrib_gpl_configuration_fails_fence(tmp_path, monkeypatch):
     """A contrib wheel whose libavcodec reports --enable-gpl fails the fence."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "inspect_opencv_libavcodec",
@@ -473,8 +587,6 @@ def test_gpl_still_fails_when_allowlist_includes_hpnd():
 
 
 def test_installed_gpl_package_fails_with_specific_message(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -489,10 +601,27 @@ def test_installed_gpl_package_fails_with_specific_message(tmp_path, monkeypatch
     assert "gpl-pkg (1.0.0): banned license 'GPL-3.0'" in stdout
 
 
+def test_installed_version_mismatch_fails(tmp_path, monkeypatch):
+    """A stale manifest version does not cover a newer installed package."""
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{"name": "numpy", "version": "2.2.0", "license": "BSD-3-Clause"}],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="numpy", version="1.26.4", license_id="BSD-3-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "numpy: installed version 2.2.0 does not match manifest version 1.26.4" in stdout
+    assert "PASSED" not in stdout
+
+
 def test_installed_unlisted_requirements_package_fails(tmp_path, monkeypatch):
     """An installed runtime package with no manifest row fails closed."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -508,8 +637,6 @@ def test_installed_unlisted_requirements_package_fails(tmp_path, monkeypatch):
 
 
 def test_metadata_gpl_manifest_mit_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -525,8 +652,6 @@ def test_metadata_gpl_manifest_mit_fails(tmp_path, monkeypatch):
 
 
 def test_ultralytics_installed_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -542,8 +667,6 @@ def test_ultralytics_installed_fails(tmp_path, monkeypatch):
 
 
 def test_pip_licenses_raising_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     def boom(**kw):
         raise RuntimeError("pip-licenses command failed")
 
@@ -558,8 +681,6 @@ def test_pip_licenses_raising_fails(tmp_path, monkeypatch):
 
 
 def test_pip_licenses_empty_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     def boom(**kw):
         raise RuntimeError("pip-licenses returned empty package list")
 
@@ -573,9 +694,74 @@ def test_pip_licenses_empty_fails(tmp_path, monkeypatch):
     assert "Failed to scan installed packages: pip-licenses returned empty package list" in stdout
 
 
-def test_semicolon_joined_gpl_on_installed_path(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
+def test_imagehash_two_clause_bsd_license_passes(tmp_path, monkeypatch):
+    """pip-licenses 5.5.5 reports ImageHash as this exact free-text string."""
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "ImageHash",
+            "version": "4.3.2",
+            "license": "2-clause BSD License",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="ImageHash", version="4.3.2", license_id="BSD-2-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 0, stdout
+    assert "PASSED" in stdout
 
+
+def test_two_clause_bsd_text_rejected_for_other_packages(tmp_path, monkeypatch):
+    """The ImageHash rewrite does not apply to any other package name."""
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "Pygments",
+            "version": "2.21.0",
+            "license": "2-clause BSD License",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="Pygments", version="2.21.0", license_id="BSD-2-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "2-clause BSD License" in stdout
+    assert "PASSED" not in stdout
+
+
+def test_unknown_pip_licenses_free_text_stays_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kw: [{
+            "name": "ImageHash",
+            "version": "4.3.2",
+            "license": "2-clause BSD license",
+        }],
+    )
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="ImageHash", version="4.3.2", license_id="BSD-2-Clause")
+        ]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "2-clause BSD license" in stdout
+    assert "PASSED" not in stdout
+
+
+def test_semicolon_joined_gpl_on_installed_path(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -670,8 +856,6 @@ def test_generator_missing_required_field(field):
 
 
 def test_pip_licenses_not_on_path_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(cl.shutil, "which", lambda _name: None)
     code, stdout, _ = invoke_main(
         make_manifest([library_entry(name="pytest")]),
@@ -684,8 +868,6 @@ def test_pip_licenses_not_on_path_fails(tmp_path, monkeypatch):
 
 
 def test_empty_installed_scan_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(cl, "get_installed_packages", lambda **kw: [])
     code, stdout, _ = invoke_main(
         make_manifest([library_entry(name="pytest")]),

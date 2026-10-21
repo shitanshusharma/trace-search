@@ -3,10 +3,19 @@
 from tests.conftest import invoke_main, library_entry, make_manifest
 
 
-def test_license_checker_passes_on_valid_manifest():
-    """The license checker should pass on the current valid manifest."""
+def test_license_checker_passes_on_valid_manifest(monkeypatch):
+    """The license checker should pass on the current valid manifest.
+
+    The inspector is patched in this test only. The suite default stays
+    fail-closed, so a root conftest is not required.
+    """
     import scripts.check_licenses as cl
 
+    monkeypatch.setattr(
+        cl,
+        "inspect_opencv_libavcodec",
+        lambda: ("LGPL version 2.1 or later", "--enable-shared"),
+    )
     code = cl.main(["--manifest", "licenses/manifest.json", "--no-scan-installed"])
     assert code == 0
 
