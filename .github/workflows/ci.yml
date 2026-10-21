@@ -52,7 +52,20 @@ jobs:
     - name: Run unit tests
       run: |
         pytest tests/ -v --tb=short
-    
+
+    - name: Worktree clean after pytest
+      run: |
+        dirty="$(git status --porcelain)"
+        if [ -n "$dirty" ]; then
+          echo "git status --porcelain was not clean after pytest:"
+          printf '%s\n' "$dirty"
+          exit 1
+        fi
+        if [ -d audit_logs ]; then
+          echo "pytest created audit_logs/ in the repo checkout"
+          exit 1
+        fi
+
     - name: License fence check
       run: |
         python scripts/check_licenses.py --requirements=requirements.txt --requirements=requirements-dev.txt --report=license-report.json
@@ -65,6 +78,10 @@ jobs:
         .venv-ci-fence/bin/python -m pip install --require-hashes --no-deps -r requirements-ci.lock
         site="$(.venv-ci-fence/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
         PYTHONPATH=src .venv-ci-fence/bin/python -m scripts.check_ci_licenses --path "$site" --report ci-tools-licence-report.json
+
+    - name: AC-13 audit log demo
+      run: |
+        python scripts/demo_audit_log.py --json
 
     - name: Upload license report
       if: always()
