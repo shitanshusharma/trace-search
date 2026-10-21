@@ -8,9 +8,6 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "python"
     commit-message:
       prefix: "deps"
       include: "scope"
@@ -28,9 +25,15 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "github-actions"
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
+      other-actions:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "github/codeql-action*"
     commit-message:
       prefix: "ci"
       include: "scope"
@@ -44,9 +47,6 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "npm"
     commit-message:
       prefix: "deps"
       include: "scope"
