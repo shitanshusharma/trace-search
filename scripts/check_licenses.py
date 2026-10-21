@@ -345,8 +345,12 @@ def installed_site_roots() -> list[Path]:
     roots: list[Path] = []
     try:
         roots.extend(Path(path) for path in site.getsitepackages())
-    except Exception:
-        pass
+    except AttributeError:
+        print(
+            'warning: site.getsitepackages() is unavailable; '
+            'named OpenCV bundled-file exceptions fail closed',
+            file=sys.stderr,
+        )
     try:
         user_site = site.getusersitepackages()
     except Exception:

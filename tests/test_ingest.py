@@ -336,7 +336,6 @@ class TestFileIngest:
 
         for i, video_path in enumerate(video_paths):
             cam_id = camera_ids[i]
-            cam = registry.get(cam_id)
 
             # Each camera's video starts at base_start
             # The sync event occurs at sync_wall_clock

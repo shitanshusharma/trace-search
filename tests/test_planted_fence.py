@@ -1281,3 +1281,28 @@ def test_installed_opencv_bundled_files_match_passes(tmp_path, monkeypatch):
     for relative, digest in pins.items():
         assert f"{relative} sha256 {digest}" in stdout
     assert "License fence check PASSED" in stdout
+
+
+def test_no_site_roots_rejects_named_exception(tmp_path, monkeypatch):
+    """No site-packages roots: the named OpenCV exception is not applied."""
+    def unavailable():
+        raise AttributeError("getsitepackages")
+
+    monkeypatch.setattr(cl.site, "getsitepackages", unavailable)
+    monkeypatch.setattr(cl.site, "getusersitepackages", lambda: None)
+    monkeypatch.setattr(
+        cl,
+        "get_installed_packages",
+        lambda **kwargs: [{"name": "trace-search", "version": "0.1.0", "license": "MIT"}],
+    )
+    assert cl.installed_site_roots() == []
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    code, stdout, stderr = invoke_main(
+        make_manifest([row]),
+        scan_installed=True,
+        tmp_dir=tmp_path,
+    )
+    assert code == 1, stdout
+    assert "OpenSSL-libcrypto" in stdout
+    assert "license 'OpenSSL' not in allowed list" in stdout
+    assert "getsitepackages() is unavailable" in stderr
