@@ -109,6 +109,22 @@ def test_gcc_runtime_exception_libgfortran_passes():
     assert "PASSED" in stdout
 
 
+def test_planted_scipy_libgfortran_as_gpl_3_fails():
+    """Changing a scipy libgfortran row from the GCC exception to GPL-3.0 fails."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    changed = False
+    for entry in manifest["entries"]:
+        bundled = entry.get("bundled_in", "")
+        if entry.get("name") == "libgfortran" and bundled.startswith("scipy-1.17.1"):
+            entry["license"] = "GPL-3.0"
+            changed = True
+            break
+    assert changed
+    code, stdout, _stderr = invoke_main(manifest)
+    assert code == 1, stdout
+    assert "banned license 'GPL-3.0'" in stdout
+
+
 def test_plain_gpl3_still_fails():
     code, stdout, _ = invoke_main(make_manifest([library_entry(license_id="GPL-3.0")]))
     assert code == 1, stdout

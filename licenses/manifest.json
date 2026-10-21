@@ -318,6 +318,61 @@
       "notes": "Dependency of ImageHash. cp311 manylinux wheel. File: scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
     },
     {
+      "name": "libgfortran",
+      "version": "5.0.0",
+      "type": "library",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "source_url": "https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libgfortran",
+      "sha256": "c6090048eccc763522c12ef016f81da6b627cb3a044f55cf0479a839c41c0980",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libgfortran-040039e1-0352e75f.so.5.0.0",
+      "notes": "Bundled in scipy.libs/libgfortran-040039e1-0352e75f.so.5.0.0 of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. License from that wheel's LICENSE.txt: GPL-3.0-or-later WITH GCC-exception-3.1."
+    },
+    {
+      "name": "libgfortran",
+      "version": "5.0.0",
+      "type": "library",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "source_url": "https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libgfortran",
+      "sha256": "a95cc4ac4afad889f2d83088f46b5e6fa6cd5efd729db887e1e639147ec55b73",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libgfortran-8f1e9814.so.5.0.0",
+      "notes": "Bundled in scipy.libs/libgfortran-8f1e9814.so.5.0.0 of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. License from that wheel's LICENSE.txt: GPL-3.0-or-later WITH GCC-exception-3.1."
+    },
+    {
+      "name": "libquadmath",
+      "version": "0.0.0",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libquadmath",
+      "sha256": "71bdc2ec57ab2fc939360597968f73230426b1c6764048e62a2cb6c8d8c3a1fd",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libquadmath-828275a7.so.0.0.0",
+      "notes": "Bundled in scipy.libs/libquadmath-828275a7.so.0.0.0 of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. License from that wheel's LICENSE.txt: LGPL-2.1-or-later."
+    },
+    {
+      "name": "libquadmath",
+      "version": "0.0.0",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libquadmath",
+      "sha256": "6ed5137f412781ad7863439fb543613f620b43c32b63292a0029246162f5bbc6",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libquadmath-96973f99-934c22de.so.0.0.0",
+      "notes": "Bundled in scipy.libs/libquadmath-96973f99-934c22de.so.0.0.0 of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. License from that wheel's LICENSE.txt: LGPL-2.1-or-later."
+    },
+    {
+      "name": "OpenBLAS",
+      "version": "0.3.30",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/OpenMathLib/OpenBLAS/",
+      "sha256": "8fb864c29cac4b25f6e2c139491ea96f2724dde42d51394f84e9c4a622e34790",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libscipy_openblas-6cdc3b4a.so",
+      "notes": "Bundled in scipy.libs/libscipy_openblas-6cdc3b4a.so of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so identifies itself as OpenBLAS 0.3.30. LICENSE.txt names this file OpenBLAS, BSD-3-Clause."
+    },
+    {
       "name": "numpy",
       "version": "1.26.4",
       "type": "library",
