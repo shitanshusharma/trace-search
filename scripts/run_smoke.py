@@ -9,13 +9,16 @@ evidence for any acceptance criterion.
 
 ``--purge --db PATH`` deletes those SMOKE rows and does not run detection.
 It does not take a manifest, clips, or a detector, and it does not delete
-files or rows with any other ``derived_from`` value.
+files or rows with any other ``derived_from`` value. ``--db`` must already
+be a track database file. A missing path or a file with no
+``track_observations`` table is refused, and nothing is created.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass
@@ -34,7 +37,7 @@ from trace_search.fixtures.guards import (
 from trace_search.ingest.file_ingest import FileVideoSource
 from trace_search.pipeline.camera_pipeline import RunStats, run_cameras
 from trace_search.tracking.bytetrack import ByteTracker
-from trace_search.tracking.store import TrackStore
+from trace_search.tracking.store import TrackStore, _db_path_outside_repo
 
 _DERIVED_FROM = "SMOKE"
 _YOLOX_ENV = "TRACE_SEARCH_YOLOX_WEIGHTS"
@@ -94,22 +97,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _require_db(parsed: argparse.Namespace) -> Path:
+def _require_db(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> Path:
     if parsed.db is None:
-        raise ValueError("--db is required")
+        parser.error("--db is required")
     return Path(str(parsed.db))
 
 
-def _reject_purge_extras(parsed: argparse.Namespace) -> None:
+def _reject_purge_extras(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> None:
     present = [flag for attr, flag in _PURGE_EXCLUSIVE if getattr(parsed, attr) is not None]
     if present:
         joined = ", ".join(present)
-        raise ValueError(f"--purge cannot be combined with {joined}")
+        parser.error(f"--purge cannot be combined with {joined}")
 
 
-def _parse_run(parsed: argparse.Namespace, db: Path) -> _Args:
+def _parse_run(parser: argparse.ArgumentParser, parsed: argparse.Namespace, db: Path) -> _Args:
     if parsed.manifest is None or parsed.clips_dir is None or parsed.detector is None:
-        raise ValueError("a smoke run requires --manifest, --clips-dir, and --detector")
+        parser.error("a smoke run requires --manifest, --clips-dir, and --detector")
     weights = parsed.weights
     weight_path = Path(str(weights)) if weights is not None else None
     min_clips = 5 if parsed.min_clips is None else int(parsed.min_clips)
@@ -124,12 +127,13 @@ def _parse_run(parsed: argparse.Namespace, db: Path) -> _Args:
 
 
 def _parse(argv: list[str] | None) -> _Args | _PurgeArgs:
-    parsed = _parser().parse_args(argv)
-    db = _require_db(parsed)
+    parser = _parser()
+    parsed = parser.parse_args(argv)
+    db = _require_db(parser, parsed)
     if bool(parsed.purge):
-        _reject_purge_extras(parsed)
+        _reject_purge_extras(parser, parsed)
         return _PurgeArgs(db=db)
-    return _parse_run(parsed, db)
+    return _parse_run(parser, parsed, db)
 
 
 def _require_yolox_weights(weights: Path | None) -> Path:
@@ -255,11 +259,38 @@ def _attempt(
     return True
 
 
+def _require_track_observations(path: Path) -> None:
+    """Refuse a file that is not already a track database.
+
+    The connection is read-only, so a foreign SQLite file keeps its schema.
+    """
+    connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("track_observations",),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        raise ValueError(f"no track_observations table in {path}")
+
+
+def _open_track_db(db: Path) -> Path:
+    """Resolve ``db`` and refuse anything that is not an existing track file."""
+    resolved = _db_path_outside_repo(db)
+    if not resolved.is_file():
+        raise ValueError(f"no track db at {resolved}")
+    _require_track_observations(resolved)
+    return resolved
+
+
 def _purge(db: Path) -> int:
-    """Delete SMOKE rows. This does not open clips or delete any file."""
-    store = TrackStore(db)
+    """Delete SMOKE rows. This does not open clips or create a database."""
+    store = TrackStore(_open_track_db(db))
     deleted = store.delete_where(derived_from="SMOKE")
     remaining = store.count(derived_from="SMOKE")
+    print(f"db={store.db_path}")
     print(f"deleted: {deleted}")
     print(f"SMOKE rows remaining: {remaining}")
     return 0
@@ -300,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         print(_BANNER)
         detector = _build_detector(args.detector, args.weights)
         return _run_all(args, detector)
-    except (FileNotFoundError, ValueError, OSError, ImportError) as exc:
+    except (FileNotFoundError, ValueError, OSError, ImportError, sqlite3.Error) as exc:
         print(f"error: {type(exc).__name__}: {exc}")
         return 1
 

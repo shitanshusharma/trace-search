@@ -5,7 +5,9 @@ from __future__ import annotations
 import builtins
 import json
 import re
+import sqlite3
 import subprocess
+import time
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -578,6 +580,7 @@ def test_purge_deletes_only_smoke_rows_from_the_t3_9_run(tmp_path: Path) -> None
     code, output = _invoke(["--purge", "--db", str(db)])
 
     assert code == 0, output
+    assert f"db={db.resolve()}" in output
     assert "SMOKE rows remaining: 0" in output
     match = re.search(r"^deleted: (\d+)$", output, re.MULTILINE)
     assert match is not None, output
@@ -642,3 +645,119 @@ def test_purge_without_db_exits_nonzero() -> None:
     assert "--db is required" in output
     assert "SMOKE rows remaining:" not in output
     assert "Traceback" not in output
+
+
+def _sqlite_master(path: Path) -> bytes:
+    """The sqlite_master rows, in rowid order, as one byte string."""
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    try:
+        rows = connection.execute("SELECT * FROM sqlite_master ORDER BY rowid").fetchall()
+    finally:
+        connection.close()
+    return repr(rows).encode()
+
+
+def test_purge_refuses_a_missing_db_and_creates_nothing(tmp_path: Path) -> None:
+    target = tmp_path / "missing" / "x.sqlite"
+    code, output = _invoke(["--purge", "--db", str(target)])
+    assert code == 1, output
+    assert f"no track db at {target.resolve()}" in output
+    assert "SMOKE rows remaining:" not in output
+    assert "Traceback" not in output
+    assert not (tmp_path / "missing").exists()
+
+
+def test_purge_refuses_a_foreign_sqlite_file(tmp_path: Path) -> None:
+    db = tmp_path / "foreign.sqlite"
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+        connection.execute("INSERT INTO notes (body) VALUES ('keep')")
+        connection.commit()
+    finally:
+        connection.close()
+    before_master = _sqlite_master(db)
+    before_bytes = db.read_bytes()
+
+    code, output = _invoke(["--purge", "--db", str(db)])
+
+    assert code == 1, output
+    assert "SMOKE rows remaining:" not in output
+    assert "Traceback" not in output
+    assert db.read_bytes() == before_bytes
+    assert _sqlite_master(db) == before_master
+
+
+def test_purge_text_file_exits_with_an_error_line(tmp_path: Path) -> None:
+    db = tmp_path / "notes.txt"
+    db.write_text("not a database\n", encoding="utf-8")
+    before = db.read_bytes()
+    code, output = _invoke(["--purge", "--db", str(db)])
+    assert code == 1, output
+    assert "error:" in output
+    assert "Traceback" not in output
+    assert "SMOKE rows remaining:" not in output
+    assert db.read_bytes() == before
+
+
+def test_purge_keeps_a_code_test_row_older_than_six_days(tmp_path: Path) -> None:
+    """A CODE_TEST row aged 6 days plus 1 second stays.
+
+    The store window is 7 days, and a row is kept when its age equals the
+    window. One second past 6 days is inside that window and outside a
+    6-day window.
+    """
+    db = tmp_path / "smoke.sqlite"
+    created_at = time.time() - (6 * 86400 + 1)
+    kept = _kept_code_row()
+    TrackStore(db, clock=lambda: created_at).write("code-run", "FX-CODE-KEEP", "CODE_TEST", [kept])
+
+    code, output = _invoke(["--purge", "--db", str(db)])
+
+    assert code == 0, output
+    age = time.time() - created_at
+    assert age > 6 * 86400
+    assert age < 7 * 86400
+    store = TrackStore(db)
+    assert store.count(derived_from="CODE_TEST") == 1
+    assert store.read("FX-CODE-KEEP", "code-run") == [kept]
+
+
+def test_purge_remaining_matches_rows_left_in_the_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "smoke.sqlite"
+    store = TrackStore(db)
+    rows = [
+        TrackObservation(
+            camera_id="FX-SMOKE-KEEP",
+            track_id=index,
+            det_class=DetClass.PERSON,
+            frame_number=0,
+            timestamp_seconds=0.0,
+            box=(1.0, 1.0, 8.0, 12.0),
+            score=0.4,
+        )
+        for index in range(2)
+    ]
+    store.write("smoke-run", "FX-SMOKE-KEEP", "SMOKE", rows)
+
+    def _delete_nothing(
+        self: TrackStore,
+        *,
+        derived_from: str | None = None,
+        run_id: str | None = None,
+    ) -> int:
+        return 0
+
+    monkeypatch.setattr(TrackStore, "delete_where", _delete_nothing)
+    code, output = _invoke(["--purge", "--db", str(db)])
+    assert code == 0, output
+    left = TrackStore(db).count(derived_from="SMOKE")
+    assert left == 2
+    match = re.search(r"^SMOKE rows remaining: (\d+)$", output, re.MULTILINE)
+    assert match is not None, output
+    assert int(match.group(1)) == left
+    assert f"db={db.resolve()}" in output
