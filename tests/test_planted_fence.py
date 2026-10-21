@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import scripts.check_licenses as cl
 
 from tests.conftest import invoke_main, library_entry, make_manifest
 
@@ -606,8 +607,6 @@ def test_gpl_still_fails_when_allowlist_includes_hpnd():
 
 
 def test_installed_gpl_package_fails_with_specific_message(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -624,8 +623,6 @@ def test_installed_gpl_package_fails_with_specific_message(tmp_path, monkeypatch
 
 def test_installed_version_mismatch_fails(tmp_path, monkeypatch):
     """A stale manifest version does not cover a newer installed package."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
