@@ -95,7 +95,9 @@ def test_detection_is_frozen() -> None:
         ({"score": math.inf},),
         ({"score": -math.inf},),
         ({"frame_number": -1},),
+        ({"frame_number": True},),
         ({"camera_id": ""},),
+        ({"camera_id": 12},),
     ],
     ids=[
         "x2-equal-x1",
@@ -113,7 +115,9 @@ def test_detection_is_frozen() -> None:
         "score-inf",
         "score-neg-inf",
         "frame-number-negative",
+        "frame-number-bool",
         "camera-id-empty",
+        "camera-id-not-str",
     ],
 )
 def test_invalid_detection_raises_value_error(kwargs: dict[str, object]) -> None:

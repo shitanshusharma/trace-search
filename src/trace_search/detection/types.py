@@ -41,10 +41,19 @@ class Detection:
     score: float
 
     def __post_init__(self) -> None:
-        """Reject a bad box, a score outside [0, 1], or any non-finite value."""
+        """Reject a detection that fails a guard.
+
+        Checks: box ordering (x2 > x1 and y2 > y1), score in [0, 1],
+        non-finite box coordinates, timestamp, or score, frame_number as a
+        non-negative int (not bool), and camera_id as a non-empty str.
+        """
         if not isinstance(self.camera_id, str) or self.camera_id == "":
             raise ValueError(f"camera_id must be a non-empty string, got {self.camera_id!r}")
-        if not isinstance(self.frame_number, int) or self.frame_number < 0:
+        if (
+            isinstance(self.frame_number, bool)
+            or not isinstance(self.frame_number, int)
+            or self.frame_number < 0
+        ):
             raise ValueError(f"frame_number must be an int >= 0, got {self.frame_number!r}")
         x1, y1, x2, y2 = self.box
         _require_finite("x1", x1)
