@@ -14,6 +14,8 @@ error. A well-formed pin must also be:
 
 A commit that merely exists somewhere in the fork network is not enough.
 Every workflow is checked, including ci.yml, now that those actions are SHA-pinned.
+The same owner/repo, ignoring any sub-path, must use one SHA across
+.github/workflows. Every mismatched file:line and SHA is reported.
 """
 
 from __future__ import annotations
@@ -162,6 +164,27 @@ def check_pin(pin: Pin, get: GetFn, ls_remote: LsRemoteFn) -> list[str]:
     return errors
 
 
+def action_identity(action: str) -> str:
+    """Return owner/repo, ignoring a sub-path such as codeql-action/init."""
+    owner, repo, *_rest = action.split("/")
+    return f"{owner}/{repo}"
+
+
+def check_consistent_action_shas(pins: list[Pin]) -> list[str]:
+    """Return one line per pin when an owner/repo has more than one SHA."""
+    grouped: dict[str, list[Pin]] = {}
+    for pin in pins:
+        grouped.setdefault(action_identity(pin.action), []).append(pin)
+    errors: list[str] = []
+    for name in sorted(grouped):
+        group = grouped[name]
+        if len({pin.sha for pin in group}) < 2:
+            continue
+        for pin in sorted(group, key=lambda item: (item.file, item.line, item.action)):
+            errors.append(f"{pin.file}:{pin.line} {pin.action}@{pin.sha}")
+    return errors
+
+
 def workflow_files(root: Path) -> list[Path]:
     workflows = root / ".github" / "workflows"
     if not workflows.is_dir():
@@ -177,16 +200,19 @@ def workflow_files(root: Path) -> list[Path]:
 def validate_repo(root: Path, get: GetFn, ls_remote: LsRemoteFn) -> list[str]:
     errors: list[str] = []
     seen: set[tuple[str, str, str, str]] = set()
+    all_pins: list[Pin] = []
     for path in workflow_files(root):
         rel = path.relative_to(root).as_posix()
         pins, structural = scan_uses(path.read_text(), rel)
         errors.extend(structural)
+        all_pins.extend(pins)
         for pin in pins:
             key = (pin.owner, pin.repo, pin.sha, pin.tag)
             if key in seen:
                 continue
             seen.add(key)
             errors.extend(check_pin(pin, get, ls_remote))
+    errors.extend(check_consistent_action_shas(all_pins))
     return errors
 
 
