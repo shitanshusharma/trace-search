@@ -125,6 +125,22 @@ def test_planted_scipy_libgfortran_as_gpl_3_fails():
     assert "banned license 'GPL-3.0'" in stdout
 
 
+def test_planted_pillow_libjpeg_turbo_as_gpl_3_fails():
+    """Changing the Pillow libjpeg-turbo row to GPL-3.0 fails."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    changed = False
+    for entry in manifest["entries"]:
+        bundled = entry.get("bundled_in", "")
+        if entry.get("name") == "libjpeg-turbo" and bundled.startswith("pillow-13.0.0"):
+            entry["license"] = "GPL-3.0"
+            changed = True
+            break
+    assert changed
+    code, stdout, _stderr = invoke_main(manifest)
+    assert code == 1, stdout
+    assert "banned license 'GPL-3.0'" in stdout
+
+
 def test_plain_gpl3_still_fails():
     code, stdout, _ = invoke_main(make_manifest([library_entry(license_id="GPL-3.0")]))
     assert code == 1, stdout
