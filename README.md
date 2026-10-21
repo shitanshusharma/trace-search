@@ -41,7 +41,7 @@ This project maintains **strict license hygiene** for commercial use:
 
 Every dependency, model, weight, dataset, and test clip is tracked in [`licenses/manifest.json`](licenses/manifest.json) with:
 - Name, version, license, source URL, SHA-256
-- For video clips: license version, date checked (IST), perceptual hashes, usage tag
+- For video clips: repo-relative `path`, license version, date checked (IST), perceptual hashes, usage tag
 
 CI verifies the full installed closure (direct + transitive dependencies) against the manifest and bans GPL/AGPL/SSPL/BUSL/NC/proprietary licenses and problematic components.
 
@@ -141,14 +141,14 @@ The CI pipeline runs on every push and PR:
 6. **AC-13 demo** — `python scripts/demo_audit_log.py --json`
 7. **Fixture separation** — separate job. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-The licence fence is expected to fail on two rows this PR does not own: ImageHash's installed string `2-clause BSD License`, and numpy 2.2.0 missing from the manifest (PR #6 owns that row). The PR body records the CI run for the current head.
+numpy 1.26.4 and its manifest row come from #6. ImageHash 4.3.2 is recorded as BSD-2-Clause.
 
 ## Development Workflow
 
 This is a **multi-task build** (T0–T10). Each task = one cloud agent / one PR. Current status:
 
 - ✅ **T0:** Scaffold + license fence
-- **T1:** Synthetic smoke fixtures and separation checks are in this branch. The licence fence still fails on the ImageHash string and the numpy row owned elsewhere.
+- **T1:** Synthetic smoke fixtures and separation checks are in this branch. numpy 1.26.4 and its manifest row come from #6.
 - ⏳ **T2:** Ingest (video file + optional RTSP)
 - ⏳ **T3:** Detection + tracking (YOLOX + OC-SORT)
 - ⏳ **T4:** Attributes (color + bag)
