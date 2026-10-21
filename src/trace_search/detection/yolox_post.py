@@ -3,7 +3,7 @@
 Reference behaviour is ``demo_postprocess`` and ``multiclass_nms`` in
 ``yolox/utils/demo_utils.py`` (Megvii-BaseDetection/YOLOX) at commit
 ``6ddff4824372906469a7fae2dc3206c7aa4bbaee``, the revision this behaviour was compared against. This
-repository's YOLOX manifest row will be added in T-3-8. Decode follows
+repository's YOLOX reference row is ``YOLOX`` in ``licenses/manifest.json``. Decode follows
 the published grid rule. Each cell center is
 ``(offset + grid index) * stride``, and each side is ``exp(log size) *
 stride``. NMS follows the class-aware branch: classes are suppressed

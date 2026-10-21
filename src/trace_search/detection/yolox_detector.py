@@ -8,6 +8,7 @@ built. Preprocess and postprocess are ``letterbox`` and ``to_detections``.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any, cast
@@ -24,6 +25,22 @@ _ENV = "TRACE_SEARCH_YOLOX_WEIGHTS"
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def weights_sha256_from_manifest(manifest_path: Path | None = None) -> str:
+    """Sha256 of the YOLOX-S COCO row in ``licenses/manifest.json``.
+
+    The default path is resolved from the repository root, not the
+    working directory.
+    """
+    path = _repo_root() / "licenses" / "manifest.json"
+    if manifest_path is not None:
+        path = manifest_path
+    document = json.loads(path.read_text(encoding="utf-8"))
+    for entry in document.get("entries", []):
+        if entry.get("name") == "YOLOX-S COCO":
+            return str(entry["sha256"])
+    raise ValueError(f"YOLOX-S COCO weights row is missing from {path}.")
 
 
 def _resolve_weights_path(weights_path: Path | None) -> Path:
@@ -102,7 +119,9 @@ class YoloxDetector:
         Args:
             weights_path: File outside the repository. When omitted, the path
                 is ``TRACE_SEARCH_YOLOX_WEIGHTS``.
-            expected_sha256: Expected sha256 hex digest of that file.
+            expected_sha256: Expected sha256 hex digest of that file. When
+                omitted, the digest is the YOLOX-S COCO row in
+                ``licenses/manifest.json``.
 
         Raises:
             FileNotFoundError: The path is missing. The message names the
@@ -114,7 +133,8 @@ class YoloxDetector:
         path = _resolve_weights_path(weights_path)
         _require_file(path)
         _require_outside_repo(path)
-        _require_sha256(path, expected_sha256)
+        digest = expected_sha256 or weights_sha256_from_manifest()
+        _require_sha256(path, digest)
         self._session = _session(path)
 
     def detect(self, frame: Frame) -> list[Detection]:

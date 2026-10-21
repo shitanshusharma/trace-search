@@ -11,6 +11,7 @@ the pytest temp directory.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 
@@ -18,7 +19,10 @@ import numpy as np
 import pytest
 
 from trace_search.detection.types import DetClass
-from trace_search.detection.yolox_detector import YoloxDetector
+from trace_search.detection.yolox_detector import (
+    YoloxDetector,
+    weights_sha256_from_manifest,
+)
 from trace_search.ingest.video_source import Frame
 
 _ENV = "TRACE_SEARCH_YOLOX_WEIGHTS"
@@ -228,8 +232,29 @@ def test_unset_env_names_the_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
         YoloxDetector(expected_sha256="ab")
 
 
+def test_weights_sha256_comes_from_the_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The helper reads the YOLOX-S COCO row from the repo, not the cwd."""
+    monkeypatch.chdir(tmp_path)
+    root = Path(__file__).resolve().parents[2]
+    document = json.loads((root / "licenses" / "manifest.json").read_text(encoding="utf-8"))
+    expected = next(
+        entry["sha256"] for entry in document["entries"] if entry["name"] == "YOLOX-S COCO"
+    )
+    assert weights_sha256_from_manifest() == expected
+
+
+def test_missing_weights_row_is_an_error(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"entries": []}', encoding="utf-8")
+    with pytest.raises(ValueError, match="YOLOX-S COCO weights row is missing"):
+        weights_sha256_from_manifest(manifest)
+
+
 def test_path_inside_the_repo_is_refused() -> None:
-    inside = Path("README.md").resolve()
+    inside = Path(__file__).resolve().parents[2] / "README.md"
     assert inside.is_file()
     with pytest.raises(ValueError, match="inside the repository") as caught:
         YoloxDetector(inside, "ab")
