@@ -29,3 +29,16 @@ Shitanshu, 2026-10-21 3:49 PM IST, loops chat: "Accept all six recommendations" 
 |---|---|
 | `Pexels License` | `ALLOWED_NON_SPDX` |
 | `Pixabay Content License` | `ALLOWED_NON_SPDX` |
+
+Shitanshu Sharma, 22 Oct 2026, 1:11 AM IST, loops chat: "Map \"3-Clause BSD License\" to BSD-3-Clause". That approval adds one `PIP_LICENSES_TO_SPDX` entry for protobuf. The exact pip-licenses string `3-Clause BSD License` is rewritten to `BSD-3-Clause` for that package only. The text is exact, including case and hyphens. A near-miss such as `3 Clause BSD Licence` is not rewritten. No other mapping was added. `ALLOWED_SPDX`, `ALLOWED_NON_SPDX`, `GCC_RUNTIME_*`, and `OPENCV_BUNDLED_FILE_EXCEPTIONS` are unchanged.
+
+| Package | Version | Licence | Source |
+|---|---|---|---|
+| onnxruntime | 1.31.0 | `MIT` | Wheel `onnxruntime-1.31.0-cp311-cp311-manylinux_2_28_x86_64.whl`. METADATA `License: MIT License`. |
+| protobuf | 7.36.2 | `BSD-3-Clause` | Wheel `protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl`. METADATA `License: 3-Clause BSD License`. |
+| flatbuffers | 25.12.19 | `Apache-2.0` | Wheel `flatbuffers-25.12.19-py2.py3-none-any.whl`. METADATA `License: Apache 2.0`. The wheel has no LICENSE file. The row cites the upstream Apache-2.0 text at <https://github.com/google/flatbuffers/blob/v25.12.19/LICENSE>. No mapping was added. pip-licenses reports `Apache Software License`. |
+| packaging | 26.3 | `Apache-2.0` | Existing manifest row. Also required by onnxruntime. METADATA `License-Expression: Apache-2.0 OR BSD-2-Clause`. |
+
+YOLOX-S COCO weights are Apache-2.0. The file is the official release asset at <https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx>. It is not stored in this repository and CI does not download it. COCO images are subject to Flickr terms. COCO annotations are CC BY 4.0. Counsel review of the YOLOX weights (D-5) is still pending before release.
+
+The YOLOX reference row (B-46) is Apache-2.0 at commit `6ddff4824372906469a7fae2dc3206c7aa4bbaee`.

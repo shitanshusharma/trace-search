@@ -19,6 +19,7 @@ dependencies = [
     "imagehash==4.3.2",
     "PyWavelets==1.9.0",
     "scipy==1.17.1",
+    "onnxruntime==1.31.0",
 ]
 
 [project.optional-dependencies]
