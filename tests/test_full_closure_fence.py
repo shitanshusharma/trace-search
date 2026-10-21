@@ -1,5 +1,7 @@
 """Comprehensive tests for full closure license fence (in-process)."""
 
+import pytest
+
 from tests.conftest import invoke_main, library_entry, make_manifest
 
 
@@ -115,6 +117,7 @@ def test_schema_synthetic_clip_fixture_id():
     assert "PASSED" in stdout
 
 
+@pytest.mark.ffmpeg_real
 def test_clean_real_closure_passes():
     import scripts.check_licenses as cl
 

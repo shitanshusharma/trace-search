@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0",
-  "last_updated_ist": "2026-10-20",
+  "last_updated_ist": "2026-10-21",
   "entries": [
     {
       "name": "pytest",
@@ -280,6 +280,316 @@
       "source_url": "https://pypi.org/project/webcolors/",
       "sha256": "032c727334856fc0b968f63daa252a1ac93d33db2f5267756623c210e57a4f1d",
       "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "numpy",
+      "version": "1.26.4",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/numpy/1.26.4/",
+      "sha256": "666dbfb6ec68962c033a450943ded891bed2d54e6755e35e5835d63f4f6931d5",
+      "notes": "T2 video ingest. Exact pin numpy==1.26.4. CI wheel (Python 3.11, manylinux x86_64): numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 copied from the PyPI JSON API digests.sha256 for that filename."
+    },
+    {
+      "name": "opencv-python-headless",
+      "version": "4.10.0.84",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://pypi.org/project/opencv-python-headless/4.10.0.84/",
+      "sha256": "377d08a7e48a1405b5e84afcbe4798464ce7ee17081c1c23619c8b398ff18295",
+      "notes": "T2 video ingest. Exact pin opencv-python-headless==4.10.0.84. CI wheel (cp37-abi3, manylinux x86_64): opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 copied from the PyPI JSON API digests.sha256 for that filename. 4.10.0.84 ships FFmpeg 5.1 (avcodec 59.x), OpenSSL 1.1.1w, OpenBLAS, libgfortran, libquadmath, libpng, and libvpx, plus the static libraries listed in cv2.getBuildInformation() 3rdparty dependencies. It does not ship libaom, dav1d, libavif, or libdrm (those appear in later 4.14+ wheels)."
+    },
+    {
+      "name": "FFmpeg-libavcodec",
+      "version": "59.37.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "82a8362a2fba0bb6d6b8f565c472f2ae30fafa0f6836c7701a0ea4641dad0616",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libavcodec-9aae324f.so.59.37.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. LGPL verified by check_ffmpeg_lgpl_compliance() via avcodec_license() and avcodec_configuration()."
+    },
+    {
+      "name": "FFmpeg-libavformat",
+      "version": "59.27.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "fc0dacc9de38f9e2527f89e71267d7df7ec4f574f95acb44f0839bd9b7ecf068",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libavformat-3ff1be5b.so.59.27.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl."
+    },
+    {
+      "name": "FFmpeg-libavutil",
+      "version": "57.28.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "fc78622aa7f0647edf67de47958583f69dc034eb9c50f2efa853c7be1c53aba6",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libavutil-a0a0531e.so.57.28.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl."
+    },
+    {
+      "name": "OpenSSL-libcrypto",
+      "version": "1.1.1w",
+      "type": "library",
+      "license": "OpenSSL",
+      "source_url": "https://www.openssl.org/",
+      "sha256": "d28a738e776f5f5c17b3577b16b6dfc093132060612769d03cf4048eba10b7aa",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "bundled_package": "opencv-python-headless",
+      "bundled_package_version": "4.10.0.84",
+      "bundled_file": "opencv_python_headless.libs/libcrypto-337dac8b.so.1.1",
+      "notes": "Bundled in opencv_python_headless.libs/libcrypto-337dac8b.so.1.1 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. OpenSSL_version(0) on that libcrypto returns 'OpenSSL 1.1.1w  11 Sep 2023'. SPDX id is OpenSSL (OpenSSL License and original SSLeay license). 1.1.1 is end of life. Named exception (Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST) for this file only. Counsel confirmation required before release."
+    },
+    {
+      "name": "libgfortran",
+      "version": "3.0.0",
+      "type": "library",
+      "license": "GPL-3.0 WITH GCC-exception-3.1",
+      "source_url": "https://gcc.gnu.org/onlinedocs/libgfortran/",
+      "sha256": "55e3eb67306c2ff17e6f8a0810eaa0dcb26e94cd83924c5065d5040e87814608",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libgfortran-91cc3cb1.so.3.0.0 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Owner-approved GCC runtime exception (spec rev 3a)."
+    },
+    {
+      "name": "OpenBLAS",
+      "version": "0.3.3",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://www.openblas.net/",
+      "sha256": "79ec02b53f573cd7116a89f04c397473018e7fda05720b354d43505c19d47958",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libopenblas-r0-f650aae0.3.3.so of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Version 0.3.3 from the library's embedded name libopenblas-r0.3.3.so.debug."
+    },
+    {
+      "name": "libpng",
+      "version": "1.6.43",
+      "type": "library",
+      "license": "Libpng",
+      "source_url": "http://www.libpng.org/pub/png/libpng.html",
+      "sha256": "d368f960b9545b7af38e55dd6a44671ddf39dbff61589e9d6ef67e2b0a1ec766",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libpng16-1bde1c40.so.16.43.0 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Library version 1.6.43 (the file suffix 16.43.0 is the soname). cv2.getBuildInformation() reports PNG ver 1.6.43, and the .so contains 'libpng version 1.6.43'."
+    },
+    {
+      "name": "libquadmath",
+      "version": "0.0.0",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://gcc.gnu.org/onlinedocs/libquadmath/",
+      "sha256": "934c22ded0e7d169c4d4678876c96051adf3d94545da962f60b41659b075da3b",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libquadmath-96973f99.so.0.0.0 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. libquadmath is covered by the GNU Lesser General Public License, LGPL-2.1-or-later (GCC COPYING.LIB), not GPL-3.0 WITH GCC-exception-3.1. libgfortran remains on that GCC runtime exception."
+    },
+    {
+      "name": "OpenSSL-libssl",
+      "version": "1.1.1w",
+      "type": "library",
+      "license": "OpenSSL",
+      "source_url": "https://www.openssl.org/",
+      "sha256": "cedc4cdd914b92099831b6684ea346aa3ff2720ae7eb86ba59af4d8bae805a65",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "bundled_package": "opencv-python-headless",
+      "bundled_package_version": "4.10.0.84",
+      "bundled_file": "opencv_python_headless.libs/libssl-28bef1ac.so.1.1",
+      "notes": "Bundled in opencv_python_headless.libs/libssl-28bef1ac.so.1.1 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Same OpenSSL 1.1.1w build as libcrypto (OpenSSL_version(0) returned 'OpenSSL 1.1.1w  11 Sep 2023'). SPDX id is OpenSSL. Named exception (Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST) for this file only. Counsel confirmation required before release."
+    },
+    {
+      "name": "FFmpeg-libswresample",
+      "version": "4.7.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "e774be33f1a7d3ace801a51b62475a32e2ef5c45aed8cbf5fd82e4896da827d2",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libswresample-2ec4394e.so.4.7.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl."
+    },
+    {
+      "name": "FFmpeg-libswscale",
+      "version": "6.7.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "2e9d87cf0bc36262075146b2d33e15a8ba398c80a6550af7678b83d42d485d50",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libswscale-2c3c8be7.so.6.7.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl."
+    },
+    {
+      "name": "libvpx",
+      "version": "1.14.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://chromium.googlesource.com/webm/libvpx/",
+      "sha256": "2061d817820fce0fc00797fd2dec8686eaf4646cb8c608bf8ff7090546dd545f",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libvpx-c3a7933e.so.9.0.0 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Library version 1.14.0 from the strings 'WebM Project VP8 Encoder v1.14.0' and 'WebM Project VP9 Encoder v1.14.0'. The filename suffix 9.0.0 is the soname."
+    },
+    {
+      "name": "libjpeg-turbo",
+      "version": "3.0.3",
+      "type": "library",
+      "license": "IJG AND BSD-3-Clause AND Zlib",
+      "source_url": "https://github.com/libjpeg-turbo/libjpeg-turbo",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. cv2.getBuildInformation() reports JPEG build-libjpeg-turbo ver 3.0.3-70. The library version is 3.0.3; 70 is JPEG_LIB_VERSION from the OpenCV 4.10.0 libjpeg-turbo build. The cv2.abi3.so string is 'OpenCV version 3.0.3 (build opencv-4.10.0-libjpeg-turbo)'. Wheel LICENSE-3RD-PARTY.txt says libjpeg-turbo is covered by the IJG license, the modified 3-clause BSD license, and the zlib license."
+    },
+    {
+      "name": "libtiff",
+      "version": "4.6.0",
+      "type": "library",
+      "license": "libtiff",
+      "source_url": "https://libtiff.gitlab.io/libtiff/",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. cv2.getBuildInformation() reports TIFF build ver 42 - 4.6.0. OpenCV 4.10.0 3rdparty/libtiff sets LIBTIFF 4.6.0. Wheel LICENSE-3RD-PARTY.txt reproduces the libtiff license (Sam Leffler and Silicon Graphics)."
+    },
+    {
+      "name": "libwebp",
+      "version": "1.4.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://chromium.googlesource.com/webm/libwebp/",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. cv2.getBuildInformation() reports WEBP encoder ABI 0x020f, which is WEBP_ENCODER_ABI_VERSION, not the library version. OpenCV 4.10.0 3rdparty/libwebp sets ENC, DEC, and MUX versions to 1.4.0. Wheel LICENSE-3RD-PARTY.txt reproduces the 3-clause BSD license (Copyright 2010 Google Inc.)."
+    },
+    {
+      "name": "OpenJPEG",
+      "version": "2.5.0",
+      "type": "library",
+      "license": "BSD-2-Clause",
+      "source_url": "https://github.com/uclouvain/openjpeg",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name libopenjp2. cv2.getBuildInformation() reports JPEG 2000 build ver 2.5.0. OpenCV 4.10.0 3rdparty/openjpeg sets OPENJPEG_VERSION 2.5.0. Wheel LICENSE-3RD-PARTY.txt says the OpenJPEG copyright is made available under the 2-clause BSD license."
+    },
+    {
+      "name": "OpenEXR",
+      "version": "2.3.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://www.openexr.com/",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name IlmImf. cv2.getBuildInformation() reports OpenEXR build ver 2.3.0. OpenCV 4.10.0 3rdparty/openexr sets OPENEXR_VERSION 2.3.0. Wheel LICENSE-3RD-PARTY.txt reproduces the 3-clause BSD license (Copyright 2006 Industrial Light & Magic)."
+    },
+    {
+      "name": "protobuf",
+      "version": "3.19.1",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/protocolbuffers/protobuf",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name libprotobuf. cv2.getBuildInformation() reports Protobuf build 3.19.1. Wheel LICENSE-3RD-PARTY.txt reproduces the 3-clause BSD license (Copyright 2008 Google Inc.)."
+    },
+    {
+      "name": "flatbuffers",
+      "version": "23.5.9",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/google/flatbuffers",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. cv2.getBuildInformation() reports Flatbuffers builtin/3rdparty 23.5.9. OpenCV 4.10.0 3rdparty/flatbuffers defines FLATBUFFERS_VERSION 23.5.9. Wheel LICENSE-3RD-PARTY.txt includes the Apache License 2.0 for Flatbuffers."
+    },
+    {
+      "name": "ade",
+      "version": "0.1.2d",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/opencv/ade/releases/tag/v0.1.2d",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. Listed in cv2.getBuildInformation() 3rdparty dependencies. OpenCV 4.10.0 modules/gapi/cmake/DownloadADE.cmake fetches ade v0.1.2d. That tag's LICENSE is Apache-2.0. The wheel LICENSE-3RD-PARTY.txt has no ade section."
+    },
+    {
+      "name": "ittnotify",
+      "version": "3.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/opencv/opencv/tree/4.10.0/3rdparty/ittnotify",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. Listed in cv2.getBuildInformation() 3rdparty dependencies (Trace: YES with Intel ITT). OpenCV 4.10.0 3rdparty/ittnotify/include/ittnotify.h sets ITT_MAJOR 3 and ITT_MINOR 0 (API_VERSION_BUILD 20151119). The header is dual-licensed BSD-3-Clause OR GPL-2.0-only and says either license may be used. This row records the BSD-3-Clause option. The wheel LICENSE-3RD-PARTY.txt has no ittnotify section."
+    },
+    {
+      "name": "quirc",
+      "version": "1.0",
+      "type": "library",
+      "license": "ISC",
+      "source_url": "https://github.com/dlbeer/quirc",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. Wheel LICENSE-3RD-PARTY.txt includes the QUIRC notice (Copyright 2010-2012 Daniel Beer), which is the ISC license. OpenCV 4.10.0 3rdparty/quirc/src/quirc.c returns \"1.0\" from quirc_version(). cv2.abi3.so references QUIRC_DATA_TYPE_BYTE."
+    },
+    {
+      "name": "libspng",
+      "version": "0.7.4",
+      "type": "library",
+      "license": "BSD-2-Clause",
+      "source_url": "https://libspng.org/",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. Wheel LICENSE-3RD-PARTY.txt says Libspng is redistributed as a build option under the BSD 2-Clause License (Copyright 2018-2022 Randy). OpenCV 4.10.0 3rdparty/libspng/spng.h sets SPNG_VERSION 0.7.4."
+    },
+    {
+      "name": "Intel IPP ICV",
+      "version": "2021.11.0",
+      "type": "library",
+      "license": "LicenseRef-Intel-Simplified-Software-License",
+      "source_url": "https://www.intel.com/content/www/us/en/developer/tools/oneapi/ipp.html",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "bundled_package": "opencv-python-headless",
+      "bundled_package_version": "4.10.0.84",
+      "bundled_file": "cv2/cv2.abi3.so",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name ippicv. cv2.getBuildInformation() reports Intel IPP 2021.11.0 and links with --exclude-libs,libippicv.a. The package name in OpenCV 4.10.0 is ippicv_2021.11.0_lnx_intel64_20240201_general. Wheel LICENSE-3RD-PARTY.txt and that package's EULA.txt are the Intel Simplified Software License (Version October 2022). Named exception (Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST) for this file only. Counsel confirmation required before release."
+    },
+    {
+      "name": "Intel IPP IW",
+      "version": "2021.11.0",
+      "type": "library",
+      "license": "LicenseRef-Intel-Simplified-Software-License",
+      "source_url": "https://www.intel.com/content/www/us/en/developer/tools/oneapi/ipp.html",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "bundled_package": "opencv-python-headless",
+      "bundled_package_version": "4.10.0.84",
+      "bundled_file": "cv2/cv2.abi3.so",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name ippiw. cv2.getBuildInformation() reports Intel IPP IW sources 2021.11.0 and links with --exclude-libs,libippiw.a. ippicv_lnx/iw/include/iw/iw_version.h sets IW_VERSION_STR 2021.11.0. The IW sources say use is governed by the license under which they were provided; that package EULA is the Intel Simplified Software License (Version October 2022), the same text the wheel prints for Intel IPP ICV. Named exception (Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST) for this file only. Counsel confirmation required before release."
+    },
+    {
+      "name": "libgfortran",
+      "version": "5.0.0",
+      "type": "library",
+      "license": "GPL-3.0 WITH GCC-exception-3.1",
+      "source_url": "https://gcc.gnu.org/onlinedocs/libgfortran/",
+      "sha256": "14afb3129b1a8b50bc40a3b0820c7f1152ea9bc10121aab152943f7057472886",
+      "bundled_in": "numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in numpy.libs/libgfortran-040039e1.so.5.0.0 of numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Owner-approved GCC runtime exception (spec rev 3a)."
+    },
+    {
+      "name": "OpenBLAS",
+      "version": "0.3.23.dev",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://www.openblas.net/",
+      "sha256": "9254d0854dd7615e11de28d771ae408878ca8123a7ac204f21e4cc7a376cc2e5",
+      "bundled_in": "numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in numpy.libs/libopenblas64_p-r0-0cf96a72.3.23.dev.so of numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. The .so identifies itself as 'OpenBLAS 0.3.23.dev'."
+    },
+    {
+      "name": "libquadmath",
+      "version": "0.0.0",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://gcc.gnu.org/onlinedocs/libquadmath/",
+      "sha256": "934c22ded0e7d169c4d4678876c96051adf3d94545da962f60b41659b075da3b",
+      "bundled_in": "numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in numpy.libs/libquadmath-96973f99.so.0.0.0 of numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. libquadmath is covered by the GNU Lesser General Public License, LGPL-2.1-or-later (GCC COPYING.LIB), not GPL-3.0 WITH GCC-exception-3.1. libgfortran remains on that GCC runtime exception."
     }
   ]
 }

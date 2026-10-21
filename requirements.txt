@@ -1,2 +1,8 @@
-# Core dependencies will be added by later tasks (T2-T7)
-# This file is maintained by the license fence process
+# T2 runtime pins. Hashes are the PyPI JSON API digests.sha256 values for
+# the wheels CI installs (Python 3.11, manylinux2014 x86_64).
+# numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+numpy==1.26.4 \
+    --hash=sha256:666dbfb6ec68962c033a450943ded891bed2d54e6755e35e5835d63f4f6931d5
+# opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+opencv-python-headless==4.10.0.84 \
+    --hash=sha256:377d08a7e48a1405b5e84afcbe4798464ce7ee17081c1c23619c8b398ff18295

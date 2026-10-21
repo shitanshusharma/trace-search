@@ -12,7 +12,10 @@ license = {text = "MIT"}
 authors = [
     {name = "Shitanshu Sharma"}
 ]
-dependencies = []
+dependencies = [
+    "numpy==1.26.4",
+    "opencv-python-headless==4.10.0.84",
+]
 
 [project.optional-dependencies]
 dev = [

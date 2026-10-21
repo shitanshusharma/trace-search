@@ -79,6 +79,37 @@ GCC_RUNTIME_EXCEPTION_LICENSES = {
     'GCC Runtime Library Exception',
 }
 
+# Named exceptions for files inside the pinned opencv-python-headless wheel.
+# Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST: "allow OpenSSL and Intel IPP
+# as narrow named exceptions for the OpenCV-bundled files only."
+# Counsel confirmation required before release.
+# These are not global allowlist entries. OpenSSL and
+# LicenseRef-Intel-Simplified-Software-License stay out of ALLOWED_SPDX
+# and ALLOWED_NON_SPDX. A row matches only when the licence string, the
+# library version, the bundling package, that package's version, and the
+# file path all match. Any other package, version, or file still fails.
+OPENCV_BUNDLED_FILE_EXCEPTIONS = (
+    {
+        'license': 'OpenSSL',
+        'version': '1.1.1w',
+        'package': 'opencv-python-headless',
+        'package_version': '4.10.0.84',
+        'files': {
+            'opencv_python_headless.libs/libcrypto-337dac8b.so.1.1',
+            'opencv_python_headless.libs/libssl-28bef1ac.so.1.1',
+        },
+    },
+    {
+        'license': 'LicenseRef-Intel-Simplified-Software-License',
+        'version': '2021.11.0',
+        'package': 'opencv-python-headless',
+        'package_version': '4.10.0.84',
+        'files': {
+            'cv2/cv2.abi3.so',
+        },
+    },
+)
+
 # Exact allowed SPDX identifiers (case-sensitive for SPDX compliance)
 ALLOWED_SPDX = {
     'MIT',
@@ -98,6 +129,7 @@ ALLOWED_SPDX = {
     '0BSD',
     'HPND',
     'MIT-CMU',
+    'IJG',  # Independent JPEG Group; libjpeg-turbo ships IJG AND BSD-3-Clause AND Zlib
 }
 
 # Also allow common non-SPDX forms
@@ -229,12 +261,49 @@ def is_gcc_runtime_exception(license_str: str, component_name: str) -> bool:
     )
 
 
-def is_license_banned(license_str: str, component_name: str = '') -> tuple[bool, str]:
+def is_opencv_bundled_file_exception(license_str: str, entry: dict | None) -> bool:
+    """True only for one named file inside opencv-python-headless 4.10.0.84.
+
+    license_str must be the entry's whole licence. A component split out of
+    OR, AND, or WITH does not match, so a banned term still fails.
+    """
+    if not isinstance(entry, dict):
+        return False
+    raw_license = entry.get('license', '')
+    if not isinstance(raw_license, str) or license_str.strip() != raw_license.strip():
+        return False
+    version = entry.get('version', '')
+    package = entry.get('bundled_package', '')
+    package_version = entry.get('bundled_package_version', '')
+    bundled_file = entry.get('bundled_file', '')
+    fields = (version, package, package_version, bundled_file)
+    if not all(isinstance(value, str) and value for value in fields):
+        return False
+    package_norm = normalize_package_name(package)
+    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+        if (
+            license_str.strip() == spec['license']
+            and version == spec['version']
+            and package_norm == normalize_package_name(spec['package'])
+            and package_version == spec['package_version']
+            and bundled_file in spec['files']
+        ):
+            return True
+    return False
+
+
+def is_license_banned(
+    license_str: str,
+    component_name: str = '',
+    entry: dict | None = None,
+) -> tuple[bool, str]:
     """
     Check if a license string is banned.
 
     Splits on '; ' (pip-licenses format), SPDX OR/AND/WITH, and checks each component.
+    A banned term fails if it appears in any component.
     Allows GCC Runtime Library Exception for specific GCC runtime libraries only.
+    OpenSSL and Intel IPP match only via is_opencv_bundled_file_exception.
     Returns (is_banned, reason).
     """
     if not license_str or not license_str.strip():
@@ -242,6 +311,10 @@ def is_license_banned(license_str: str, component_name: str = '') -> tuple[bool,
 
     # Named GCC exception: check the full expression BEFORE splitting on WITH.
     if is_gcc_runtime_exception(license_str, component_name):
+        return False, ""
+
+    # Named OpenCV file exception: full licence string only, before the split.
+    if is_opencv_bundled_file_exception(license_str, entry):
         return False, ""
 
     # Split on '; ' (pip-licenses format) and SPDX operators
@@ -264,20 +337,28 @@ def is_license_banned(license_str: str, component_name: str = '') -> tuple[bool,
     return False, ""
 
 
-def is_license_allowed(license_str: str, component_name: str = '') -> bool:
+def is_license_allowed(
+    license_str: str,
+    component_name: str = '',
+    entry: dict | None = None,
+) -> bool:
     """
     Check if a license is in the allowed list.
 
     Handles '; ' (pip-licenses format) and SPDX expressions.
     For AND/';' expressions: ALL components must be allowed.
     For OR expressions: at least one component must be allowed.
-    Allows GCC Runtime Library Exception for specific GCC runtime libraries.
+    WITH is allowed only for the GCC runtime exception.
+    OpenSSL and Intel IPP are allowed only for the named OpenCV files.
     """
     license_str = license_str.strip()
     if not license_str:
         return False
 
     if is_gcc_runtime_exception(license_str, component_name):
+        return True
+
+    if is_opencv_bundled_file_exception(license_str, entry):
         return True
 
     # Handle '; ' separated licenses (pip-licenses format)
@@ -318,10 +399,10 @@ def check_manifest_licenses(manifest: dict) -> list[str]:
         name = entry.get('name', 'unknown')
         entry_type = entry.get('type', '')
 
-        is_banned, reason = is_license_banned(license_str, name)
+        is_banned, reason = is_license_banned(license_str, name, entry)
         if is_banned:
             violations.append(f"{name}: banned license '{license_str}' ({reason})")
-        elif not is_license_allowed(license_str, name):
+        elif not is_license_allowed(license_str, name, entry):
             violations.append(
                 f"{name}: license '{license_str}' not in allowed list "
                 "(must be exact SPDX or approved non-SPDX)"

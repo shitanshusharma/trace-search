@@ -1,8 +1,11 @@
 """Tests for the license fence with installed package scanning (in-process)."""
 
+import pytest
+
 from tests.conftest import invoke_main, library_entry, make_manifest
 
 
+@pytest.mark.ffmpeg_real
 def test_license_checker_passes_on_valid_manifest_with_installed():
     import scripts.check_licenses as cl
 

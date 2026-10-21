@@ -714,3 +714,147 @@ def test_requirements_txt_missing_numpy_fails(tmp_path):
     )
     assert code == 1, stdout
     assert "numpy: required by requirements.txt but not in manifest" in stdout
+
+
+# ----- OpenCV bundled OpenSSL 1.1.1w and Intel IPP (21 Oct 2026) -----
+
+_OPENSSL_LIBCRYPTO = "opencv_python_headless.libs/libcrypto-337dac8b.so.1.1"
+_OPENSSL_LIBSSL = "opencv_python_headless.libs/libssl-28bef1ac.so.1.1"
+_IPP_FILE = "cv2/cv2.abi3.so"
+_OPENCV_PACKAGE = "opencv-python-headless"
+_OPENCV_VERSION = "4.10.0.84"
+
+
+def _scoped_row(name, license_id, version, bundled_file, **overrides):
+    row = library_entry(name=name, license_id=license_id, version=version)
+    row.update(
+        {
+            "bundled_package": _OPENCV_PACKAGE,
+            "bundled_package_version": _OPENCV_VERSION,
+            "bundled_file": bundled_file,
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+def _openssl_row(**overrides):
+    bundled_file = overrides.pop("bundled_file", _OPENSSL_LIBCRYPTO)
+    version = overrides.pop("version", "1.1.1w")
+    return _scoped_row(
+        "OpenSSL-libcrypto",
+        "OpenSSL",
+        version,
+        bundled_file,
+        **overrides,
+    )
+
+
+def _ipp_row(**overrides):
+    bundled_file = overrides.pop("bundled_file", _IPP_FILE)
+    version = overrides.pop("version", "2021.11.0")
+    return _scoped_row(
+        "Intel IPP ICV",
+        "LicenseRef-Intel-Simplified-Software-License",
+        version,
+        bundled_file,
+        **overrides,
+    )
+
+
+def test_openssl_real_bundled_files_pass():
+    """The two OpenSSL files in the pinned wheel pass. The licence is not global."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    rows = [e for e in manifest["entries"] if e["name"] in {"OpenSSL-libcrypto", "OpenSSL-libssl"}]
+    assert len(rows) == 2
+    assert {e["bundled_file"] for e in rows} == {_OPENSSL_LIBCRYPTO, _OPENSSL_LIBSSL}
+    code, stdout, _ = invoke_main(make_manifest(rows))
+    assert code == 0, stdout
+
+
+def test_ipp_real_bundled_file_passes():
+    """Intel IPP ICV and IW pass only on cv2/cv2.abi3.so in the pinned wheel."""
+    manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
+    rows = [e for e in manifest["entries"] if e["name"] in {"Intel IPP ICV", "Intel IPP IW"}]
+    assert len(rows) == 2
+    assert {e["bundled_file"] for e in rows} == {_IPP_FILE}
+    code, stdout, _ = invoke_main(make_manifest(rows))
+    assert code == 0, stdout
+
+
+def test_openssl_fails_in_a_different_package():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(name="cryptography", license_id="OpenSSL", version="1.1.1w"),
+            _openssl_row(bundled_package="numpy"),
+        ])
+    )
+    assert code == 1, stdout
+    assert stdout.count("license 'OpenSSL' not in allowed list") == 2
+
+
+def test_openssl_fails_for_a_different_version():
+    code, stdout, _ = invoke_main(make_manifest([_openssl_row(version="1.1.1k")]))
+    assert code == 1, stdout
+    assert "OpenSSL-libcrypto" in stdout
+    assert "not in allowed list" in stdout
+
+
+def test_openssl_fails_for_another_opencv_file():
+    code, stdout, _ = invoke_main(
+        make_manifest([_openssl_row(bundled_file="cv2/cv2.abi3.so")])
+    )
+    assert code == 1, stdout
+    assert "license 'OpenSSL' not in allowed list" in stdout
+
+
+def test_ipp_fails_in_a_different_package():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            library_entry(
+                name="ipp",
+                license_id="LicenseRef-Intel-Simplified-Software-License",
+                version="2021.11.0",
+            ),
+            _ipp_row(bundled_package="intel-ipp"),
+        ])
+    )
+    assert code == 1, stdout
+    assert stdout.count("not in allowed list") == 2
+
+
+def test_ipp_fails_for_another_opencv_file():
+    code, stdout, _ = invoke_main(
+        make_manifest([
+            _ipp_row(bundled_file="opencv_python_headless.libs/libippicv.a")
+        ])
+    )
+    assert code == 1, stdout
+    assert "not in allowed list" in stdout
+
+
+def test_ipp_fails_for_a_different_version():
+    code, stdout, _ = invoke_main(make_manifest([_ipp_row(version="2021.10.0")]))
+    assert code == 1, stdout
+    assert "not in allowed list" in stdout
+
+
+def test_openssl_or_gpl_still_fails_on_a_named_file():
+    """A banned term still fails inside an expression. The exception is not a bypass."""
+    code, stdout, _ = invoke_main(
+        make_manifest([_openssl_row(license="OpenSSL OR GPL-3.0")])
+    )
+    assert code == 1, stdout
+    assert "banned" in stdout.lower()
+    assert "GPL" in stdout
+
+
+def test_openssl_and_ipp_are_not_globally_allowed():
+    import scripts.check_licenses as cl
+
+    assert cl.is_license_allowed("OpenSSL") is False
+    assert cl.is_license_allowed("LicenseRef-Intel-Simplified-Software-License") is False
+    assert "OpenSSL" not in cl.ALLOWED_SPDX
+    assert "LicenseRef-Intel-Simplified-Software-License" not in cl.ALLOWED_SPDX
+    assert "OpenSSL" not in cl.ALLOWED_NON_SPDX
+    assert "LicenseRef-Intel-Simplified-Software-License" not in cl.ALLOWED_NON_SPDX

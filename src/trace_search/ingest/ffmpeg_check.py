@@ -1,7 +1,9 @@
 """Single FFmpeg/libavcodec check for OpenCV wheels.
 
-OPENCV_FFMPEG_DISTRIBUTIONS is the only list of wheel names. The licence
-fence imports this module instead of keeping its own copy.
+OPENCV_FFMPEG_DISTRIBUTIONS is the only wheel-name list, including the
+contrib distributions. The licence fence imports
+is_opencv_ffmpeg_distribution and inspect_opencv_libavcodec from this
+module. check_ffmpeg_lgpl_compliance() is the fail-closed wrapper CI calls.
 """
 
 import ctypes
@@ -86,3 +88,43 @@ def inspect_opencv_libavcodec() -> tuple[str, str]:
         license_raw.decode("utf-8", errors="replace"),
         config_raw.decode("utf-8", errors="replace"),
     )
+
+
+def check_ffmpeg_lgpl_compliance() -> tuple[bool, str]:
+    """Fail-closed LGPL check for the OpenCV wheel's libavcodec.
+
+    CI and the planted tests call this. It uses find_bundled_libavcodec()
+    and inspect_opencv_libavcodec() above, so the wheel-name list stays in
+    this module only. Missing evidence, a non-LGPL license, --enable-gpl,
+    or --enable-nonfree fails the check.
+    """
+    lib_path = find_bundled_libavcodec()
+    if lib_path is None:
+        return False, "Failed to find bundled libavcodec library"
+    if not lib_path.exists():
+        return False, f"libavcodec not found at {lib_path}"
+
+    try:
+        license_str, config_str = inspect_opencv_libavcodec()
+    except FileNotFoundError:
+        return False, "Failed to find bundled libavcodec library"
+    except RuntimeError as exc:
+        return False, str(exc)
+    except Exception as exc:
+        return False, f"Failed to load libavcodec: {exc}"
+
+    if not license_str.strip():
+        return False, "avcodec_license() returned empty evidence"
+    if not config_str.strip():
+        return False, "avcodec_configuration() returned empty evidence"
+
+    if "LGPL" not in license_str.upper():
+        return False, f"License is not LGPL: {license_str!r}"
+
+    config_lower = config_str.lower()
+    if "--enable-gpl" in config_lower:
+        return False, f"Configuration contains --enable-gpl: {config_str!r}"
+    if "--enable-nonfree" in config_lower:
+        return False, f"Configuration contains --enable-nonfree: {config_str!r}"
+
+    return True, f"FFmpeg LGPL compliance verified: {license_str}"
