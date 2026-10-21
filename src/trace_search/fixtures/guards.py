@@ -3,6 +3,10 @@
 SHA-256 matches the manifest. pHash (Hamming <= 8) catches a re-encode.
 Unknown use tags, unknown contexts, missing files, and decode or pHash
 errors are denied.
+
+SMOKE_TEST allows only SMOKE_ONLY rows. A file with no manifest row fails
+closed. The other contexts are unchanged: they still deny their existing
+forbidden tags, and a file that is not in the manifest is still allowed.
 """
 
 from __future__ import annotations
