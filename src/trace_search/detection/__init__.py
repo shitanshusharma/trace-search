@@ -1,1 +1,8 @@
-"""Person detection (YOLOX-based)."""
+"""Detection contract.
+
+Detectors share one record and one protocol. This package does not load a model.
+"""
+
+from .types import DetClass, Detection, Detector
+
+__all__ = ["DetClass", "Detection", "Detector"]
