@@ -217,25 +217,28 @@ def _missing_anchor_field(data: dict[str, Any]) -> VerificationResult | None:
     return None
 
 
-def _anchor_field_types(data: dict[str, Any]) -> VerificationResult | None:
-    if not isinstance(data["last_hmac"], str) or isinstance(data["entry_count"], bool):
+def _anchor_field_types(data: dict[str, Any]) -> tuple[str, int] | VerificationResult:
+    last_hmac = data["last_hmac"]
+    entry_count = data["entry_count"]
+    if not isinstance(last_hmac, str) or isinstance(entry_count, bool):
         return _anchor_error("Head anchor field has the wrong type")
-    if not isinstance(data["entry_count"], int):
+    if not isinstance(entry_count, int):
         return _anchor_error("Head anchor field has the wrong type")
-    return None
+    return last_hmac, entry_count
 
 
-def _signed_anchor(data: dict[str, Any], key: bytes) -> _Anchor | VerificationResult:
+def _signed_anchor(
+    data: dict[str, Any],
+    key: bytes,
+    last_hmac: str,
+    entry_count: int,
+) -> _Anchor | VerificationResult:
     expected = _hmac_hex(
         key,
-        {"entry_count": data["entry_count"], "last_hmac": data["last_hmac"]},
+        {"entry_count": entry_count, "last_hmac": last_hmac},
     )
     if not _mac_equal(data["anchor_hmac"], expected):
         return _anchor_error("Head anchor signature mismatch (unsigned or wrong key)")
-    last_hmac = data["last_hmac"]
-    entry_count = data["entry_count"]
-    if not isinstance(last_hmac, str) or not isinstance(entry_count, int):
-        return _anchor_error("Head anchor field has the wrong type")
     return _Anchor(last_hmac=last_hmac, entry_count=entry_count)
 
 
@@ -250,12 +253,13 @@ def _parse_anchor_object(data: object, key: bytes) -> _Anchor | VerificationResu
     if missing is not None:
         return missing
     typed = _anchor_field_types(data)
-    if typed is not None:
+    if isinstance(typed, VerificationResult):
         return typed
+    last_hmac, entry_count = typed
     extra = set(data) - {"anchor_hmac", "entry_count", "last_hmac"}
     if extra:
         return _anchor_error(f"Head anchor has extra fields: {sorted(extra)}")
-    return _signed_anchor(data, key)
+    return _signed_anchor(data, key, last_hmac, entry_count)
 
 
 def _invalid_entry(index: int, message: str) -> VerificationResult:
@@ -305,7 +309,7 @@ def _check_entry_shape(data: dict[str, Any], index: int) -> VerificationResult |
         AuditAction(data["action"])
     except ValueError:
         return _invalid_entry(index, f"Unknown action '{data['action']}' at entry {index}")
-    if not isinstance(data["operator_username"], str) or not data["operator_username"].strip():
+    if not data["operator_username"].strip():
         return _invalid_entry(index, f"operator_username is empty at entry {index}")
     return None
 
