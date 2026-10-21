@@ -44,8 +44,8 @@ def redact_rtsp_credentials(url: str) -> str:
     for match in _RTSP_SCHEME_RE.finditer(url):
         if match.start() < cursor:
             continue
-        pieces.append(url[cursor:match.start()])
-        tail = url[match.end():]
+        pieces.append(url[cursor : match.start()])
+        tail = url[match.end() :]
         end = _rtsp_span_end(tail)
         pieces.append(_redact_rtsp_span(match.group(0), tail[:end]))
         cursor = match.end() + end

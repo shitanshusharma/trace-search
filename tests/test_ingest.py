@@ -130,7 +130,7 @@ class TestCameraRegistry:
 
         for i in range(6):
             cam = CameraConfig(
-                camera_id=f"cam{i+1}",
+                camera_id=f"cam{i + 1}",
                 brand="hikvision" if i < 3 else "cpplus",
                 site_map_x=i * 10.0,
                 site_map_y=i * 5.0,
@@ -147,7 +147,7 @@ class TestCameraRegistry:
         assert loaded.count() == 6
 
         for i in range(6):
-            cam_id = f"cam{i+1}"
+            cam_id = f"cam{i + 1}"
             original = registry.get(cam_id)
             loaded_cam = loaded.get(cam_id)
 
@@ -166,14 +166,14 @@ class TestClockSync:
         timestamps = {
             "cam1": 1000.0,  # Reference
             "cam2": 1005.0,  # 5 seconds fast
-            "cam3": 998.0,   # 2 seconds slow
+            "cam3": 998.0,  # 2 seconds slow
         }
 
         offsets = estimate_offset_from_sync_event(timestamps, "cam1")
 
         assert offsets["cam1"] == 0.0
         assert offsets["cam2"] == -5.0  # Need to subtract 5
-        assert offsets["cam3"] == 2.0   # Need to add 2
+        assert offsets["cam3"] == 2.0  # Need to add 2
 
     def test_sync_event_missing_reference(self):
         """Test sync event with missing reference camera."""
@@ -195,7 +195,7 @@ class TestClockSync:
 
         assert offsets["cam1"] == 0.0
         assert abs(offsets["cam2"] - (-5.0)) < 0.1  # Median ~-5.0
-        assert abs(offsets["cam3"] - 2.0) < 0.1     # Median ~2.0
+        assert abs(offsets["cam3"] - 2.0) < 0.1  # Median ~2.0
 
     def test_multiple_events_empty(self):
         """Test multiple events with empty list."""
@@ -301,7 +301,7 @@ class TestFileIngest:
         camera_ids = []
 
         for i in range(6):
-            cam_id = f"cam{i+1}"
+            cam_id = f"cam{i + 1}"
             camera_ids.append(cam_id)
             cam = CameraConfig(
                 camera_id=cam_id,
@@ -316,7 +316,7 @@ class TestFileIngest:
         video_paths = []
 
         for i in range(6):
-            video_path = tmp_path / f"cam{i+1}.mp4"
+            video_path = tmp_path / f"cam{i + 1}.mp4"
             generate_test_video(video_path, duration_seconds=video_duration, fps=video_fps)
             video_paths.append(video_path)
 
@@ -328,9 +328,7 @@ class TestFileIngest:
             camera_reported_sync_times[cam_id] = sync_wall_clock - true_offsets[i]
 
         # Use sync event to estimate offsets
-        estimated_offsets = estimate_offset_from_sync_event(
-            camera_reported_sync_times, "cam1"
-        )
+        estimated_offsets = estimate_offset_from_sync_event(camera_reported_sync_times, "cam1")
 
         # Test: ingest all 6 videos and verify corrected timestamps
         cameras_tested = 0
@@ -371,9 +369,7 @@ class TestFileIngest:
 
                 # Get the sync frame and apply estimated offset
                 sync_frame = frames[sync_frame_idx]
-                corrected_time = sync_frame.corrected_timestamp(
-                    estimated_offsets[cam_id]
-                )
+                corrected_time = sync_frame.corrected_timestamp(estimated_offsets[cam_id])
 
                 # AC-03 requirement: ≤1s error after correction
                 error = abs(corrected_time - sync_wall_clock)
@@ -392,8 +388,7 @@ class TestFileIngest:
         # AC-03 assertion: all errors ≤ 1s
         failed = [(cam_id, err) for cam_id, err in errors if err > 1.0]
         assert not failed, (
-            f"AC-03 FAILED: {len(failed)}/6 cameras exceeded 1s error after correction: "
-            f"{failed}"
+            f"AC-03 FAILED: {len(failed)}/6 cameras exceeded 1s error after correction: {failed}"
         )
 
         max_error = max(err for _, err in errors)
@@ -631,10 +626,10 @@ class TestThroughput:
         camera_ids = []
 
         for i in range(6):
-            video_path = tmp_path / f"cam{i+1}.mp4"
+            video_path = tmp_path / f"cam{i + 1}.mp4"
             generate_test_video(video_path, duration_seconds=1.0, fps=10.0)
             video_paths.append(video_path)
-            camera_ids.append(f"cam{i+1}")
+            camera_ids.append(f"cam{i + 1}")
 
         result = ThroughputHarness.measure_files(video_paths, camera_ids)
 
@@ -644,7 +639,7 @@ class TestThroughput:
 
         # Each stream should be measured
         for i, stats in enumerate(result.streams):
-            assert stats.camera_id == f"cam{i+1}"
+            assert stats.camera_id == f"cam{i + 1}"
             assert stats.total_frames > 0
 
     def test_throughput_json_export(self, tmp_path):
@@ -687,7 +682,7 @@ class TestIntegration:
 
         for i in range(6):
             cam = CameraConfig(
-                camera_id=f"cam{i+1}",
+                camera_id=f"cam{i + 1}",
                 brand="hikvision" if i < 3 else "cpplus",
                 site_map_x=i * 10.0,
                 site_map_y=i * 5.0,
@@ -705,12 +700,12 @@ class TestIntegration:
         # Generate videos
         video_paths = []
         for i in range(6):
-            video_path = tmp_path / f"cam{i+1}.mp4"
+            video_path = tmp_path / f"cam{i + 1}.mp4"
             # Use different colors for each camera
             colors = [
-                (255, 0, 0),    # Blue
-                (0, 255, 0),    # Green
-                (0, 0, 255),    # Red
+                (255, 0, 0),  # Blue
+                (0, 255, 0),  # Green
+                (0, 0, 255),  # Red
                 (255, 255, 0),  # Cyan
                 (255, 0, 255),  # Magenta
                 (0, 255, 255),  # Yellow
@@ -724,7 +719,7 @@ class TestIntegration:
             video_paths.append(video_path)
 
         # Measure throughput
-        camera_ids = [f"cam{i+1}" for i in range(6)]
+        camera_ids = [f"cam{i + 1}" for i in range(6)]
         result = ThroughputHarness.measure_files(video_paths, camera_ids)
 
         # Verify throughput result
@@ -738,7 +733,7 @@ class TestIntegration:
 
         # Verify all cameras ingested correctly
         for i in range(6):
-            cam_id = f"cam{i+1}"
+            cam_id = f"cam{i + 1}"
             cam = loaded_registry.get(cam_id)
             assert cam is not None
 

@@ -70,9 +70,7 @@ def estimate_offset_from_multiple_events(
     # Validate reference camera appears in all events
     for i, event in enumerate(events):
         if reference_camera_id not in event:
-            raise ValueError(
-                f"Reference camera {reference_camera_id} not in event {i}"
-            )
+            raise ValueError(f"Reference camera {reference_camera_id} not in event {i}")
 
     # Compute offset for each event
     all_offsets: dict[str, list[float]] = {}

@@ -96,9 +96,7 @@ class CameraRegistry:
         Args:
             path: Path to save JSON file
         """
-        data = {
-            "cameras": [cam.to_dict() for cam in self._cameras.values()]
-        }
+        data = {"cameras": [cam.to_dict() for cam in self._cameras.values()]}
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(data, f, indent=2)

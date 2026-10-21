@@ -155,6 +155,18 @@ ALLOWED_SPDX = {
     'IJG',  # Independent JPEG Group; libjpeg-turbo ships IJG AND BSD-3-Clause AND Zlib
 }
 
+# OpenSSL and LicenseRef-Intel-Simplified-Software-License are not
+# allowlisted here. See OPENCV_BUNDLED_FILE_EXCEPTIONS.
+
+# (normalized package name, exact pip-licenses string) -> SPDX id.
+# The license text is exact, including case, and only that package is rewritten.
+PIP_LICENSES_TO_SPDX = {
+    ('imagehash', '2-clause BSD License'): 'BSD-2-Clause',
+}
+
+# Parse failures that do not match a banned pattern. Still fail closed.
+_UNPARSEABLE = "unparseable license"
+
 # Also allow common non-SPDX forms
 ALLOWED_NON_SPDX = {
     'MIT License',
@@ -453,49 +465,283 @@ def opencv_bundled_hash_violations(
     return violations, ok_lines
 
 
+class SpdxParseError(Exception):
+    """An SPDX expression could not be parsed. Callers fail closed."""
+
+
+_TOKEN_RE = re.compile(r"\(|\)|[A-Za-z0-9][A-Za-z0-9.+-]*")
+_OPERATORS = {"AND", "OR", "WITH"}
+
+
+def _tokenize_spdx(expr: str) -> list[str]:
+    tokens: list[str] = []
+    pos = 0
+    length = len(expr)
+    while pos < length:
+        if expr[pos].isspace():
+            pos += 1
+            continue
+        match = _TOKEN_RE.match(expr, pos)
+        if not match:
+            raise SpdxParseError(f"unexpected character {expr[pos]!r}")
+        tokens.append(match.group(0))
+        pos = match.end()
+    if not tokens:
+        raise SpdxParseError("empty SPDX expression")
+    return tokens
+
+
+class _SpdxParser:
+    """SPDX license expression: OR is loosest, then AND, then WITH, plus parentheses."""
+
+    def __init__(self, tokens: list[str]):
+        self.tokens = tokens
+        self.index = 0
+
+    def peek(self) -> str | None:
+        if self.index >= len(self.tokens):
+            return None
+        return self.tokens[self.index]
+
+    def eat(self, expected: str | None = None) -> str:
+        token = self.peek()
+        if token is None:
+            raise SpdxParseError("unexpected end of SPDX expression")
+        if expected is not None and token != expected:
+            raise SpdxParseError(f"expected {expected}")
+        self.index += 1
+        return token
+
+    def parse(self):
+        node = self._parse_or()
+        if self.peek() is not None:
+            raise SpdxParseError("trailing tokens in SPDX expression")
+        return node
+
+    def _parse_or(self):
+        node = self._parse_and()
+        parts = [node]
+        while self.peek() == "OR":
+            self.eat("OR")
+            parts.append(self._parse_and())
+        if len(parts) == 1:
+            return node
+        return ("OR", parts)
+
+    def _parse_and(self):
+        node = self._parse_with()
+        parts = [node]
+        while self.peek() == "AND":
+            self.eat("AND")
+            parts.append(self._parse_with())
+        if len(parts) == 1:
+            return node
+        return ("AND", parts)
+
+    def _parse_with(self):
+        node = self._parse_primary()
+        if self.peek() != "WITH":
+            return node
+        self.eat("WITH")
+        exception = self._parse_primary()
+        if not isinstance(node, str) or not isinstance(exception, str):
+            raise SpdxParseError("WITH applies only to a license id and an exception id")
+        return ("WITH", node, exception)
+
+    def _parse_primary(self):
+        token = self.peek()
+        if token is None:
+            raise SpdxParseError("unexpected end of SPDX expression")
+        if token == "(":
+            self.eat("(")
+            node = self._parse_or()
+            if self.peek() != ")":
+                raise SpdxParseError("unbalanced parenthesis")
+            self.eat(")")
+            return node
+        if token in _OPERATORS or token == ")":
+            raise SpdxParseError(f"unexpected token {token}")
+        return self.eat()
+
+
+def _parse_spdx(expr: str):
+    return _SpdxParser(_tokenize_spdx(expr)).parse()
+
+
+def _id_matches_banned(license_id: str) -> tuple[bool, str]:
+    for pattern in BANNED_LICENSE_PATTERNS:
+        if re.search(pattern, license_id, re.IGNORECASE):
+            return True, f"banned pattern '{pattern}' in '{license_id}'"
+    return False, ""
+
+
+def _id_is_allowed(license_id: str) -> bool:
+    if license_id in ALLOWED_SPDX:
+        return True
+    folded = license_id.upper()
+    return any(folded == allowed.upper() for allowed in ALLOWED_NON_SPDX)
+
+
+def _is_exact_non_spdx(license_str: str) -> bool:
+    folded = license_str.upper()
+    return any(folded == allowed.upper() for allowed in ALLOWED_NON_SPDX)
+
+
+def _eval_spdx(node, component_name: str) -> tuple[bool, bool, str]:
+    """Return (banned, allowed, reason). A WITH node is allowed only for the GCC exception."""
+    if isinstance(node, str):
+        banned, reason = _id_matches_banned(node)
+        if banned:
+            return True, False, reason
+        if _id_is_allowed(node):
+            return False, True, ""
+        return False, False, ""
+
+    kind = node[0]
+    if kind == "AND":
+        results = [_eval_spdx(child, component_name) for child in node[1]]
+        for banned, _allowed, reason in results:
+            if banned:
+                return True, False, reason
+        if all(allowed for _banned, allowed, _reason in results):
+            return False, True, ""
+        return False, False, ""
+
+    if kind == "OR":
+        # PRD §3: a banned term fails the row even inside OR.
+        # OR passes only when every term is allowed (GCC exception included).
+        results = [_eval_spdx(child, component_name) for child in node[1]]
+        for banned, _allowed, reason in results:
+            if banned:
+                return True, False, reason
+        if all(allowed for _banned, allowed, _reason in results):
+            return False, True, ""
+        return False, False, ""
+
+    if kind == "WITH":
+        license_id, exception_id = node[1], node[2]
+        expression = f"{license_id} WITH {exception_id}"
+        if is_gcc_runtime_exception(expression, component_name):
+            return False, True, ""
+        banned, reason = _id_matches_banned(license_id)
+        if banned:
+            return True, False, reason
+        return False, False, ""
+
+    raise SpdxParseError("unknown SPDX node")
+
+
+def _is_single_bare_license_term(license_str: str) -> bool:
+    """True for one licence id, with no OR, AND, or WITH around it."""
+    try:
+        tokens = _tokenize_spdx(license_str)
+    except SpdxParseError:
+        return False
+    return (
+        len(tokens) == 1
+        and tokens[0] not in _OPERATORS
+        and tokens[0] not in {"(", ")"}
+    )
+
+
+def _license_decision(
+    license_str: str,
+    component_name: str = '',
+    entry: dict | None = None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> tuple[bool, bool, str]:
+    """
+    Classify one license string.
+
+    Returns (banned, allowed, reason). Unparseable text is not banned; it still
+    fails closed. ';' is the pip-licenses conjunction: every part must be allowed.
+    AND and OR both require every term to be allowed. A banned term fails either
+    operator. WITH is allowed only for the named GCC runtime exception.
+
+    A single bare term is allowed first when it matches
+    OPENCV_BUNDLED_FILE_EXCEPTIONS. OR, AND, and WITH skip that exception and
+    use the parser below unchanged.
+    """
+    license_str = license_str.strip()
+    if not license_str:
+        return True, False, "empty license"
+
+    if _is_single_bare_license_term(license_str) and is_opencv_bundled_file_exception(
+        license_str, entry, on_disk
+    ):
+        return False, True, ""
+
+    license_str = PIP_LICENSES_TO_SPDX.get(
+        (normalize_package_name(component_name), license_str),
+        license_str,
+    )
+
+    if is_gcc_runtime_exception(license_str, component_name):
+        return False, True, ""
+
+    if _is_exact_non_spdx(license_str):
+        return False, True, ""
+
+    if ";" in license_str:
+        parts = [part.strip() for part in license_str.split(";")]
+        decisions = [
+            _license_decision(part, component_name, entry, on_disk) for part in parts
+        ]
+        pending = ""
+        for banned, allowed, reason in decisions:
+            if banned:
+                return True, False, reason
+            if not allowed and reason and not pending:
+                pending = reason
+        if all(allowed for _banned, allowed, _reason in decisions):
+            return False, True, ""
+        return False, False, pending
+
+    try:
+        node = _parse_spdx(license_str)
+    except SpdxParseError:
+        banned, reason = _id_matches_banned(license_str)
+        if banned:
+            return True, False, reason
+        return False, False, _UNPARSEABLE
+
+    return _eval_spdx(node, component_name)
+
+
+def _license_failure(
+    license_str: str,
+    component_name: str = '',
+    entry: dict | None = None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> str | None:
+    """Phrase for a failing license, or None when it is allowed."""
+    banned, allowed, reason = _license_decision(
+        license_str, component_name, entry, on_disk
+    )
+    if banned:
+        return f"banned license '{license_str}' ({reason})"
+    if not allowed:
+        if reason == _UNPARSEABLE:
+            return f"unparseable license '{license_str}'"
+        return (
+            f"license '{license_str}' not in allowed list "
+            "(must be exact SPDX or approved non-SPDX)"
+        )
+    return None
+
+
 def is_license_banned(
     license_str: str,
     component_name: str = '',
     entry: dict | None = None,
     on_disk: dict[str, list[str]] | None = None,
 ) -> tuple[bool, str]:
-    """
-    Check if a license string is banned.
-
-    Splits on '; ' (pip-licenses format), SPDX OR/AND/WITH, and checks each component.
-    A banned term fails if it appears in any component.
-    Allows GCC Runtime Library Exception for specific GCC runtime libraries only.
-    OpenSSL and Intel IPP match only via is_opencv_bundled_file_exception.
-    Returns (is_banned, reason).
-    """
-    if not license_str or not license_str.strip():
-        return True, "empty license"
-
-    # Named GCC exception: check the full expression BEFORE splitting on WITH.
-    if is_gcc_runtime_exception(license_str, component_name):
-        return False, ""
-
-    # Named OpenCV file exception: full licence string only, before the split.
-    if is_opencv_bundled_file_exception(license_str, entry, on_disk):
-        return False, ""
-
-    # Split on '; ' (pip-licenses format) and SPDX operators
-    all_components = []
-    for part in license_str.split(';'):
-        part = part.strip()
-        if part:
-            spdx_components = re.split(r'\s+(?:OR|AND|WITH)\s+', part)
-            all_components.extend(spdx_components)
-
-    for comp in all_components:
-        comp = comp.strip().strip('()')
-        if not comp:
-            continue
-
-        for pattern in BANNED_LICENSE_PATTERNS:
-            if re.search(pattern, comp, re.IGNORECASE):
-                return True, f"banned pattern '{pattern}' in '{comp}'"
-
+    """Return whether the license matched a banned pattern, and why."""
+    banned, _allowed, reason = _license_decision(
+        license_str, component_name, entry, on_disk
+    )
+    if banned:
+        return True, reason
     return False, ""
 
 
@@ -505,52 +751,11 @@ def is_license_allowed(
     entry: dict | None = None,
     on_disk: dict[str, list[str]] | None = None,
 ) -> bool:
-    """
-    Check if a license is in the allowed list.
-
-    Handles '; ' (pip-licenses format) and SPDX expressions.
-    For AND/';' expressions: ALL components must be allowed.
-    For OR expressions: at least one component must be allowed.
-    WITH is allowed only for the GCC runtime exception.
-    OpenSSL and Intel IPP are allowed only for the named OpenCV files.
-    """
-    license_str = license_str.strip()
-    if not license_str:
-        return False
-
-    if is_gcc_runtime_exception(license_str, component_name):
-        return True
-
-    if is_opencv_bundled_file_exception(license_str, entry, on_disk):
-        return True
-
-    # Handle '; ' separated licenses (pip-licenses format)
-    # Treat as AND - all must be allowed
-    if '; ' in license_str:
-        parts = [p.strip() for p in license_str.split('; ')]
-        return all(is_license_allowed(p, component_name) for p in parts if p)
-
-    # Check SPDX identifiers (case-sensitive)
-    if license_str in ALLOWED_SPDX:
-        return True
-
-    # Check non-SPDX forms (case-insensitive)
-    license_upper = license_str.upper()
-    for allowed in ALLOWED_NON_SPDX:
-        if license_upper == allowed.upper():
-            return True
-
-    # Handle SPDX OR expression - at least one must be allowed
-    if ' OR ' in license_str:
-        components = [c.strip() for c in license_str.split(' OR ')]
-        return any(is_license_allowed(c, component_name) for c in components if c)
-
-    # Handle SPDX AND expression - all must be allowed
-    if ' AND ' in license_str:
-        components = [c.strip() for c in license_str.split(' AND ')]
-        return all(is_license_allowed(c, component_name) for c in components if c)
-
-    return False
+    """Return whether every required SPDX term is on the allowlist."""
+    _banned, allowed, _reason = _license_decision(
+        license_str, component_name, entry, on_disk
+    )
+    return allowed
 
 
 def check_manifest_licenses(
@@ -565,14 +770,9 @@ def check_manifest_licenses(
         name = entry.get('name', 'unknown')
         entry_type = entry.get('type', '')
 
-        is_banned, reason = is_license_banned(license_str, name, entry, on_disk)
-        if is_banned:
-            violations.append(f"{name}: banned license '{license_str}' ({reason})")
-        elif not is_license_allowed(license_str, name, entry, on_disk):
-            violations.append(
-                f"{name}: license '{license_str}' not in allowed list "
-                "(must be exact SPDX or approved non-SPDX)"
-            )
+        failure = _license_failure(license_str, name, entry, on_disk)
+        if failure:
+            violations.append(f"{name}: {failure}")
 
         # generator_license uses the same allowlist / SPDX parser as packages.
         # Applies to every row that carries a generator: synthetic_clip,
@@ -586,13 +786,19 @@ def check_manifest_licenses(
                     f"{name}: {entry_type} missing required generator_license field"
                 )
             else:
-                gen_is_banned, gen_reason = is_license_banned(generator_license)
-                if gen_is_banned:
+                gen_banned, _gen_allowed, gen_reason = _license_decision(
+                    generator_license
+                )
+                if gen_banned:
                     violations.append(
                         f"{name}: generator_license '{generator_license}' is banned "
                         f"({gen_reason})"
                     )
-                elif not is_license_allowed(generator_license):
+                elif gen_reason == _UNPARSEABLE:
+                    violations.append(
+                        f"{name}: generator_license '{generator_license}' is unparseable"
+                    )
+                elif not _gen_allowed:
                     violations.append(
                         f"{name}: generator_license '{generator_license}' not in allowed list"
                     )
@@ -736,38 +942,43 @@ def check_installed_packages(
     direct_deps parameter is ignored - kept for compatibility.
 
     Exempts the project's own package (trace-search) explicitly.
+    A library row matches only when the normalised name and the exact
+    installed version both match. A stale version fails closed.
     """
     del direct_deps  # unused; full-closure scan
     violations = []
     missing = []
 
-    manifest_packages = {}
+    manifest_by_name: dict[str, list[dict]] = {}
     for entry in manifest.get('entries', []):
         if entry.get('type') == 'library':
             norm_name = entry.get('name', '').lower().replace('_', '-')
-            manifest_packages[norm_name] = entry
+            manifest_by_name.setdefault(norm_name, []).append(entry)
 
     for pkg in installed:
         name = pkg['name']
-        version = pkg['version']
+        version = str(pkg['version']).strip()
         license_str = pkg['license']
         norm_name = name.lower().replace('_', '-')
 
         if norm_name == 'trace-search':
             continue
 
-        if norm_name not in manifest_packages:
+        rows = manifest_by_name.get(norm_name)
+        if not rows:
             missing.append(f"{name} ({version}): installed but not in manifest")
+        else:
+            manifest_versions = [str(row.get('version', '')).strip() for row in rows]
+            if version not in manifest_versions:
+                listed = ", ".join(manifest_versions)
+                violations.append(
+                    f"{name}: installed version {version} does not match "
+                    f"manifest version {listed}"
+                )
 
-        is_banned, reason = is_license_banned(license_str, name)
-        if is_banned:
-            violations.append(
-                f"{name} ({version}): banned license '{license_str}' ({reason})"
-            )
-        elif not is_license_allowed(license_str, name):
-            violations.append(
-                f"{name} ({version}): license '{license_str}' not in allowed list"
-            )
+        failure = _license_failure(license_str, name)
+        if failure:
+            violations.append(f"{name} ({version}): {failure}")
 
     return violations, missing
 
@@ -776,7 +987,8 @@ def check_ffmpeg_build(manifest: dict) -> tuple[list[str], str]:
     """
     Check FFmpeg via the opencv wheel's bundled libavcodec.
 
-    Distribution names come from ffmpeg_check.OPENCV_FFMPEG_DISTRIBUTIONS.
+    Wheel names are matched by ffmpeg_check.is_opencv_ffmpeg_distribution,
+    which is the only normalisation of OPENCV_FFMPEG_DISTRIBUTIONS.
     System ffmpeg is not a project dependency. When none of those wheels
     is declared, the status is NOT_A_DEPENDENCY.
 
