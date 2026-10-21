@@ -246,21 +246,26 @@ def test_retention_purges_a_row_one_second_older_than_7_days(tmp_path: Path) -> 
 
 
 def test_purge_runs_on_open(tmp_path: Path) -> None:
-    start = 2_000_000_000.0
-    clock = _Clock(start - 40 * _DAY)
-    db_path = tmp_path / "tracks.sqlite"
-    store = TrackStore(db_path, clock=clock)
-    old = _observation(camera_id="cam-old", track_id=1)
-    fresh = _observation(camera_id="cam-fresh", track_id=2)
-    store.write("run-old", "FX-1", "SMOKE", [old])
-    clock.now = start - _DAY
-    store.write("run-fresh", "FX-1", "CODE_TEST", [fresh])
+    """Opening the store deletes an already expired row. The reopen does no write."""
+    now = 1_800_000_000.0
+    clock = _Clock(now - 8 * _DAY)
+    store = TrackStore(tmp_path / "tracks.sqlite", clock=clock)
+    expired = _observation(camera_id="cam-old", track_id=1)
+    store.write("run-old", "FX-1", "CODE_TEST", [expired])
+    db_path = store.db_path
+    del store
 
-    clock.now = start
+    connection = sqlite3.connect(db_path)
+    try:
+        row = connection.execute("SELECT COUNT(*) FROM track_observations").fetchone()
+    finally:
+        connection.close()
+    assert row == (1,)
+
+    clock.now = now
     reopened = TrackStore(db_path, clock=clock)
-
     assert reopened.read("cam-old") == []
-    assert reopened.read("cam-fresh") == [fresh]
+    assert reopened.count() == 0
 
 
 def test_purge_runs_before_write(tmp_path: Path) -> None:
@@ -408,10 +413,37 @@ def test_purge_now_overrides_the_clock(tmp_path: Path) -> None:
 
 
 def test_default_db_path_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """TRACE_SEARCH_TRACK_DB wins over XDG_DATA_HOME and over the home fallback."""
     target = tmp_path / "configured.sqlite"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv(TRACK_DB_ENV, str(target))
     assert default_db_path() == target
     assert load_config().db_path == target
+
+
+def test_xdg_data_home_wins_over_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """XDG_DATA_HOME wins over ~/.local/share when the env db path is unset."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(TRACK_DB_ENV, raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    assert default_db_path() == tmp_path / "xdg" / "trace-search" / "tracks.sqlite"
+    home_fallback = home / ".local" / "share" / "trace-search" / "tracks.sqlite"
+    assert default_db_path() != home_fallback
+
+
+def test_db_path_expands_tilde(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """~ in TRACE_SEARCH_TRACK_DB and XDG_DATA_HOME expands under HOME."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv(TRACK_DB_ENV, "~/x.sqlite")
+    assert default_db_path() == home / "x.sqlite"
+
+    monkeypatch.delenv(TRACK_DB_ENV)
+    monkeypatch.setenv("XDG_DATA_HOME", "~/xdg")
+    assert default_db_path() == home / "xdg" / "trace-search" / "tracks.sqlite"
 
 
 def test_blank_config_falls_back_to_xdg(
