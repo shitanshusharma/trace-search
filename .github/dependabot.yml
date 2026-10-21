@@ -11,8 +11,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
-    reviewers:
-      - "shitanshusharma"
     ignore:
       # Major version updates require manual review
       - dependency-name: "*"
@@ -37,8 +35,6 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
-    reviewers:
-      - "shitanshusharma"
 
   # npm dependencies (when UI exists)
   - package-ecosystem: "npm"
@@ -50,8 +46,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
-    reviewers:
-      - "shitanshusharma"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
