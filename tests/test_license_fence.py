@@ -1,5 +1,7 @@
 """Tests for the license fence (in-process)."""
 
+import hashlib
+
 from tests.conftest import invoke_main, library_entry, make_manifest
 
 
@@ -129,3 +131,81 @@ def test_license_checker_accepts_valid_clip():
     code, stdout, _ = invoke_main(manifest)
     assert code == 0, stdout
     assert "PASSED" in stdout
+
+
+# Non-SPDX identifiers already on the fence before the stock-clip approval.
+_NON_SPDX_WITHOUT_STOCK = {
+    "MIT License",
+    "Apache License 2.0",
+    "Apache Software License",
+    "BSD License",
+    "ISC License",
+    "ISC License (ISCL)",
+    "Python Software Foundation License",
+    "Public Domain",
+    "Historical Permission Notice and Disclaimer (HPND)",
+    "MIT CMU License (MIT-CMU)",
+    "Zlib",
+    "Libpng",
+    "libtiff",
+}
+
+_STOCK_NON_SPDX = {
+    "Pexels License",
+    "Pixabay Content License",
+}
+
+
+def _stock_clip_row(license_id: str, clip_name: str) -> dict:
+    """Planted clip row. The path stays inside the temp manifest, not the repo."""
+    payload = f"{clip_name}\n{license_id}\n".encode("ascii")
+    return {
+        "name": clip_name,
+        "version": "1.0",
+        "type": "clip",
+        "license": license_id,
+        "license_version": "stock terms checked 2026-10-21",
+        "date_checked_ist": "2026-10-21",
+        "source_url": "https://example.com/stock-clip",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "phash": [f"{i:016x}" for i in range(10)],
+        "use": "SMOKE_ONLY",
+        "fixture_id": "FX-SMOKE-013",
+        "path": "clips/planted-stock.mp4",
+    }
+
+
+def test_planted_pexels_license_row_passes_the_fence():
+    """A temp manifest row licensed 'Pexels License' passes the fence."""
+    code, stdout, _ = invoke_main(
+        make_manifest([_stock_clip_row("Pexels License", "pexels-planted.mp4")])
+    )
+    assert code == 0, stdout
+    assert "License fence check PASSED" in stdout
+
+
+def test_planted_pixabay_content_license_row_passes_the_fence():
+    """A temp manifest row licensed 'Pixabay Content License' passes the fence."""
+    code, stdout, _ = invoke_main(
+        make_manifest([_stock_clip_row("Pixabay Content License", "pixabay-planted.mp4")])
+    )
+    assert code == 0, stdout
+    assert "License fence check PASSED" in stdout
+
+
+def test_planted_pexels_british_spelling_fails_the_fence():
+    """British spelling 'Pexels Licence' is not the approved string and fails."""
+    code, stdout, _ = invoke_main(
+        make_manifest([_stock_clip_row("Pexels Licence", "pexels-near-miss.mp4")])
+    )
+    assert code == 1, stdout
+    assert "unparseable license 'Pexels Licence'" in stdout
+    assert "License fence check FAILED" in stdout
+    assert "License fence check PASSED" not in stdout
+
+
+def test_allowed_non_spdx_is_exactly_the_approved_set():
+    """ALLOWED_NON_SPDX is the prior identifiers plus the two stock-clip strings."""
+    import scripts.check_licenses as cl
+
+    assert cl.ALLOWED_NON_SPDX == _NON_SPDX_WITHOUT_STOCK | _STOCK_NON_SPDX
