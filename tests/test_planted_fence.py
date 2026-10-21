@@ -1306,3 +1306,99 @@ def test_no_site_roots_rejects_named_exception(tmp_path, monkeypatch):
     assert "OpenSSL-libcrypto" in stdout
     assert "license 'OpenSSL' not in allowed list" in stdout
     assert "getsitepackages() is unavailable" in stderr
+
+
+def _on_disk_pin(row):
+    """on_disk map whose single digest is this row's pinned sha256."""
+    return {row["bundled_file"]: [row["sha256"]]}
+
+
+def test_real_libcrypto_matching_on_disk_passes(tmp_path, monkeypatch):
+    """The real libcrypto row passes when the installed digest matches the pin."""
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    decision = cl._license_decision(
+        row["license"], row["name"], row, _on_disk_pin(row)
+    )
+    assert decision == (False, True, "")
+
+    site_root = tmp_path / "site-packages"
+    target = site_root / row["bundled_file"]
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"placeholder")
+
+    def fake_sha256(path):
+        relative = str(Path(path).relative_to(site_root)).replace("\\", "/")
+        assert relative == row["bundled_file"]
+        return row["sha256"]
+
+    monkeypatch.setattr(cl, "sha256_file", fake_sha256)
+    code, stdout, _ = _run_installed_closure(
+        [row], tmp_path, monkeypatch, [site_root]
+    )
+    assert code == 0, stdout
+    assert "License fence check PASSED" in stdout
+
+
+def test_real_libcrypto_on_disk_mismatch_fails(tmp_path, monkeypatch):
+    """A different digest at the named libcrypto path fails the exception."""
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    site_root = tmp_path / "site-packages"
+    target = site_root / row["bundled_file"]
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"not-the-real-libcrypto")
+    actual = cl.sha256_file(target)
+    assert actual != row["sha256"]
+    decision = cl._license_decision(
+        row["license"],
+        row["name"],
+        row,
+        {row["bundled_file"]: [actual]},
+    )
+    assert decision == (False, False, "")
+    code, stdout, _ = _run_installed_closure(
+        [row], tmp_path, monkeypatch, [site_root]
+    )
+    assert code == 1, stdout
+    assert "license 'OpenSSL' not in allowed list" in stdout
+    assert "does not match" in stdout
+    assert actual in stdout
+
+
+def test_openssl_or_mit_on_real_libcrypto_row_fails(tmp_path):
+    """OpenSSL OR MIT is compound, so the named exception does not apply."""
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    row["license"] = "OpenSSL OR MIT"
+    decision = cl._license_decision(
+        row["license"], row["name"], row, _on_disk_pin(row)
+    )
+    assert decision == (False, False, "")
+    code, stdout, _ = invoke_main(make_manifest([row]), tmp_dir=tmp_path)
+    assert code == 1, stdout
+    assert "license 'OpenSSL OR MIT' not in allowed list" in stdout
+
+
+def test_unparseable_license_on_exception_row_fails_closed(tmp_path):
+    """An unparseable licence on a named exception row fails closed."""
+    row = dict(_real_rows("OpenSSL-libcrypto")[0])
+    row["license"] = "(MIT OR GPL-3.0-only"
+    decision = cl._license_decision(
+        row["license"], row["name"], row, _on_disk_pin(row)
+    )
+    assert decision == (False, False, cl._UNPARSEABLE)
+    code, stdout, _ = invoke_main(make_manifest([row]), tmp_dir=tmp_path)
+    assert code == 1, stdout
+    assert "unparseable license '(MIT OR GPL-3.0-only'" in stdout
+    assert "banned license '(MIT OR GPL-3.0-only'" not in stdout
+
+
+def test_openssl_semicolon_mit_on_libssl_row_fails(tmp_path):
+    """OpenSSL; MIT on the libssl row is not the named exception."""
+    row = dict(_real_rows("OpenSSL-libssl")[0])
+    row["license"] = "OpenSSL; MIT"
+    decision = cl._license_decision(
+        row["license"], row["name"], row, _on_disk_pin(row)
+    )
+    assert decision == (False, False, "")
+    code, stdout, _ = invoke_main(make_manifest([row]), tmp_dir=tmp_path)
+    assert code == 1, stdout
+    assert "license 'OpenSSL; MIT' not in allowed list" in stdout
