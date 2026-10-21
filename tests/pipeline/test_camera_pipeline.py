@@ -94,14 +94,16 @@ def _detection(
     frame_number: int,
     *,
     timestamp_seconds: float = 0.0,
+    score: float = 0.9,
+    box: tuple[float, float, float, float] | None = None,
 ) -> Detection:
     return Detection(
         camera_id=camera_id,
         frame_number=frame_number,
         timestamp_seconds=timestamp_seconds,
         det_class=DetClass.PERSON,
-        box=_box(frame_number),
-        score=0.9,
+        box=_box(frame_number) if box is None else box,
+        score=score,
     )
 
 
@@ -130,10 +132,16 @@ def _factory(created: list[ByteTracker]) -> Callable[[], ByteTracker]:
     return build
 
 
-def _miskey_message(det_camera: str, det_frame: int) -> str:
+def _miskey_message(
+    det_camera: str,
+    det_frame: int,
+    *,
+    key_camera: str = "cam-a",
+    key_frame: int = 0,
+) -> str:
     return (
         "scripted detection does not match script key "
-        "(camera_id='cam-a', frame_number=0): "
+        f"(camera_id={key_camera!r}, frame_number={key_frame!r}): "
         f"detection camera_id={det_camera!r} frame_number={det_frame!r}"
     )
 
@@ -234,6 +242,7 @@ def test_clock_offset_is_stored_on_each_row(tmp_path: Path) -> None:
     rows = store.read("cam-a", run_id=_RUN)
     assert stats.tracks == len(rows) == len(frames)
     assert stats.errors == 0
+    assert source.is_open() is True
     for row, frame in zip(rows, frames, strict=True):
         assert row.timestamp_seconds == frame.corrected_timestamp(_OFFSET)
         assert row.timestamp_seconds == frame.timestamp_seconds + _OFFSET
@@ -262,3 +271,90 @@ def test_mis_keyed_scripted_detection_raises(tmp_path: Path) -> None:
             )
         assert str(caught.value) == _miskey_message(det_camera, det_frame)
         assert store.count(run_id=_RUN) == 0
+
+
+def test_unread_mis_keyed_script_raises_at_construction(tmp_path: Path) -> None:
+    """A bad key on a frame the source never reads fails before any row is written."""
+    bad_frame = 7
+    script = {
+        ("cam-a", 0): (_detection("cam-a", 0),),
+        ("cam-a", bad_frame): (_detection("other-cam", bad_frame),),
+    }
+    source = _source("cam-a", 1)
+    store = _store(tmp_path / "unread.sqlite")
+
+    with pytest.raises(ValueError) as caught:
+        ScriptedDetector(script)
+
+    assert str(caught.value) == _miskey_message("other-cam", bad_frame, key_frame=bad_frame)
+    assert store.count(run_id=_RUN) == 0
+    assert source.is_open() is False
+
+
+def test_run_stats_counts_detections_that_do_not_become_tracks(tmp_path: Path) -> None:
+    """A box below ByteTrack's low threshold is a detection and not a stored row."""
+    high = _detection("cam-a", 0)
+    low = _detection("cam-a", 0, score=0.05, box=(200.0, 10.0, 240.0, 90.0))
+    script = {("cam-a", 0): (high, low)}
+    store = _store(tmp_path / "tracks.sqlite")
+    stats = run_camera(
+        _source("cam-a", 1),
+        ScriptedDetector(script),
+        ByteTracker,
+        store,
+        _RUN,
+        _FIXTURE,
+        _ORIGIN,
+    )
+
+    assert stats.frames == 1
+    assert stats.detections == 2
+    assert stats.tracks == 1
+    assert store.count(run_id=_RUN) == stats.tracks
+    rows = store.read("cam-a", run_id=_RUN)
+    assert len(rows) == 1
+    assert rows[0].box == high.box
+    assert rows[0].score == high.score
+
+
+def test_run_camera_closes_the_source_it_opened(tmp_path: Path) -> None:
+    """A source that starts closed is closed again after the run."""
+    source = _source("cam-a", 1)
+    assert source.is_open() is False
+    stats = run_camera(
+        source,
+        ScriptedDetector(_script(("cam-a",), 1)),
+        ByteTracker,
+        _store(tmp_path / "tracks.sqlite"),
+        _RUN,
+        _FIXTURE,
+        _ORIGIN,
+    )
+
+    assert stats.frames == 1
+    assert source.is_open() is False
+
+
+def test_run_camera_does_not_reopen_or_close_an_open_source(tmp_path: Path) -> None:
+    """A source that is already open stays open, and reading continues."""
+    source = _source("cam-a", _FRAME_COUNT)
+    source.open()
+    skipped = source.read_frame()
+    assert skipped is not None
+    assert skipped.frame_number == 0
+    store = _store(tmp_path / "tracks.sqlite")
+    stats = run_camera(
+        source,
+        ScriptedDetector(_script(("cam-a",), _FRAME_COUNT)),
+        ByteTracker,
+        store,
+        _RUN,
+        _FIXTURE,
+        _ORIGIN,
+    )
+
+    assert source.is_open() is True
+    assert stats.frames == _FRAME_COUNT - 1
+    assert [row.frame_number for row in store.read("cam-a", run_id=_RUN)] == list(
+        range(1, _FRAME_COUNT)
+    )

@@ -27,13 +27,19 @@ def _require_script(key: tuple[str, int], detections: Sequence[Detection]) -> No
         _require_script_key(key, detection)
 
 
+def _require_stored_script(script: Mapping[tuple[str, int], Sequence[Detection]]) -> None:
+    """Reject every stored detection that does not carry its script key."""
+    for key, detections in script.items():
+        _require_script(key, detections)
+
+
 class ScriptedDetector:
     """Detector for CODE_TEST and SMOKE wiring only.
 
     Its output is never evidence. Callers receive a new list on every
     ``detect`` call, so a mutation of that list does not change the script.
     A detection whose camera_id or frame_number differs from its script key
-    raises ValueError.
+    raises ValueError when the detector is constructed.
     """
 
     def __init__(self, script: Mapping[tuple[str, int], Sequence[Detection]]) -> None:
@@ -42,21 +48,24 @@ class ScriptedDetector:
         Args:
             script: Detections keyed by ``(camera_id, frame_number)``.
                 Later changes to the caller's mapping, or an append on a
-                caller's sequence, do not change ``detect``.
+                caller's sequence, do not change ``detect``. A detection
+                whose camera_id or frame_number differs from its key raises
+                ValueError here, before any frame is read.
+
+        Raises:
+            ValueError: A stored detection does not carry its script key.
         """
         self._script = {key: tuple(value) for key, value in script.items()}
+        _require_stored_script(self._script)
 
     def detect(self, frame: Frame) -> list[Detection]:
         """Return the scripted detections for this frame.
 
         The key is ``(frame.camera_id, frame.frame_number)``. Any other key
-        returns an empty list. A detection whose ``camera_id`` or
-        ``frame_number`` differs from that key raises ``ValueError``.
+        returns an empty list. Construction already rejected a detection
+        whose camera_id or frame_number differs from its key.
         """
-        key = (frame.camera_id, frame.frame_number)
-        recorded = self._script.get(key)
+        recorded = self._script.get((frame.camera_id, frame.frame_number))
         if recorded is None:
             return []
-        found = list(recorded)
-        _require_script(key, found)
-        return found
+        return list(recorded)
