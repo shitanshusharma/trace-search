@@ -373,8 +373,6 @@ class TestSchemaValidation:
             "race",
             "skin_color",
             "face",
-            "face_embedding",
-            "face_crop",
             "height",
             "height_cm",
             "pose",
