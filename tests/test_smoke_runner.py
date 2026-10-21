@@ -256,10 +256,10 @@ def test_yolox_without_weights_errors_before_onnxruntime(
     monkeypatch.delenv("TRACE_SEARCH_YOLOX_WEIGHTS", raising=False)
     real_import = builtins.__import__
 
-    def _tracking_import(name: str, *args: object, **kwargs: object) -> object:
-        if name == "onnxruntime" or name.startswith("onnxruntime."):
-            raise AssertionError(f"imported {name}")
-        return real_import(name, *args, **kwargs)
+    def _tracking_import(module: str, *args: object, **kwargs: object) -> object:
+        if module == "onnxruntime" or module.startswith("onnxruntime."):
+            raise AssertionError(f"imported {module}")
+        return real_import(module, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _tracking_import)
     code, output = _run(
