@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 import pytest
-import scripts.check_licenses as cl
 
+import scripts.check_licenses as cl
 from tests.conftest import invoke_main, library_entry, make_manifest
 
 SCHEMA = Path("licenses/manifest_schema.json")
@@ -410,9 +410,7 @@ def test_whitespace_only_license_version_fails():
 
 
 def _schema_errors(manifest):
-    from scripts.check_licenses import validate_schema
-
-    return validate_schema(manifest, SCHEMA)
+    return cl.validate_schema(manifest, SCHEMA)
 
 
 def test_schema_fx_smoke_syn_with_code_test_fails_at_use():
@@ -458,16 +456,12 @@ def test_schema_valid_stock_clip_passes():
 
 
 def test_ffmpeg_not_a_dependency_when_no_opencv():
-    from scripts.check_licenses import check_ffmpeg_build
-
-    violations, status = check_ffmpeg_build(make_manifest([library_entry()]))
+    violations, status = cl.check_ffmpeg_build(make_manifest([library_entry()]))
     assert violations == []
     assert status == "NOT_A_DEPENDENCY"
 
 
 def test_opencv_libavcodec_lgpl_passes(monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "inspect_opencv_libavcodec",
@@ -481,8 +475,6 @@ def test_opencv_libavcodec_lgpl_passes(monkeypatch):
 
 
 def test_opencv_libavcodec_gpl_fails(monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl, "inspect_opencv_libavcodec",
         lambda: ("GPL version 2 or later", "--enable-gpl --enable-shared"),
@@ -495,8 +487,6 @@ def test_opencv_libavcodec_gpl_fails(monkeypatch):
 
 
 def test_opencv_libavcodec_nonfree_fails(monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl, "inspect_opencv_libavcodec",
         lambda: ("LGPL version 2.1 or later", "--enable-nonfree"),
@@ -509,8 +499,6 @@ def test_opencv_libavcodec_nonfree_fails(monkeypatch):
 
 
 def test_opencv_libavcodec_missing_fails_closed(monkeypatch):
-    import scripts.check_licenses as cl
-
     def boom():
         raise FileNotFoundError("opencv bundled libavcodec not found")
 
@@ -524,8 +512,6 @@ def test_opencv_libavcodec_missing_fails_closed(monkeypatch):
 
 def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
     """A contrib-named wheel with an LGPL libavcodec passes, any case."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "inspect_opencv_libavcodec",
@@ -540,7 +526,6 @@ def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
 
 def test_opencv_contrib_wheel_without_clean_libavcodec_fails(tmp_path):
     """A contrib wheel is an FFmpeg distribution, so a missing libavcodec fails."""
-    import scripts.check_licenses as cl
     import trace_search.ingest.ffmpeg_check as ffmpeg_check
 
     assert cl.is_opencv_ffmpeg_distribution is ffmpeg_check.is_opencv_ffmpeg_distribution
@@ -557,8 +542,6 @@ def test_opencv_contrib_wheel_without_clean_libavcodec_fails(tmp_path):
 
 def test_opencv_contrib_gpl_configuration_fails_fence(tmp_path, monkeypatch):
     """A contrib wheel whose libavcodec reports --enable-gpl fails the fence."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "inspect_opencv_libavcodec",
@@ -639,8 +622,6 @@ def test_installed_version_mismatch_fails(tmp_path, monkeypatch):
 
 def test_installed_unlisted_requirements_package_fails(tmp_path, monkeypatch):
     """An installed runtime package with no manifest row fails closed."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -656,8 +637,6 @@ def test_installed_unlisted_requirements_package_fails(tmp_path, monkeypatch):
 
 
 def test_metadata_gpl_manifest_mit_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -673,8 +652,6 @@ def test_metadata_gpl_manifest_mit_fails(tmp_path, monkeypatch):
 
 
 def test_ultralytics_installed_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -690,8 +667,6 @@ def test_ultralytics_installed_fails(tmp_path, monkeypatch):
 
 
 def test_pip_licenses_raising_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     def boom(**kw):
         raise RuntimeError("pip-licenses command failed")
 
@@ -706,8 +681,6 @@ def test_pip_licenses_raising_fails(tmp_path, monkeypatch):
 
 
 def test_pip_licenses_empty_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     def boom(**kw):
         raise RuntimeError("pip-licenses returned empty package list")
 
@@ -723,8 +696,6 @@ def test_pip_licenses_empty_fails(tmp_path, monkeypatch):
 
 def test_imagehash_two_clause_bsd_license_passes(tmp_path, monkeypatch):
     """pip-licenses 5.5.5 reports ImageHash as this exact free-text string."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -747,8 +718,6 @@ def test_imagehash_two_clause_bsd_license_passes(tmp_path, monkeypatch):
 
 def test_two_clause_bsd_text_rejected_for_other_packages(tmp_path, monkeypatch):
     """The ImageHash rewrite does not apply to any other package name."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -771,8 +740,6 @@ def test_two_clause_bsd_text_rejected_for_other_packages(tmp_path, monkeypatch):
 
 
 def test_unknown_pip_licenses_free_text_stays_rejected(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -795,8 +762,6 @@ def test_unknown_pip_licenses_free_text_stays_rejected(tmp_path, monkeypatch):
 
 
 def test_semicolon_joined_gpl_on_installed_path(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(
         cl,
         "get_installed_packages",
@@ -891,8 +856,6 @@ def test_generator_missing_required_field(field):
 
 
 def test_pip_licenses_not_on_path_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(cl.shutil, "which", lambda _name: None)
     code, stdout, _ = invoke_main(
         make_manifest([library_entry(name="pytest")]),
@@ -905,8 +868,6 @@ def test_pip_licenses_not_on_path_fails(tmp_path, monkeypatch):
 
 
 def test_empty_installed_scan_fails(tmp_path, monkeypatch):
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(cl, "get_installed_packages", lambda **kw: [])
     code, stdout, _ = invoke_main(
         make_manifest([library_entry(name="pytest")]),
