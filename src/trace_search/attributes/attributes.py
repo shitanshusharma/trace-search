@@ -5,10 +5,13 @@ Extracts upper-clothing color, lower-clothing color, and bag presence
 from person bounding boxes. No trained weights, no sensitive attributes.
 """
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from typing import cast
 
 import numpy as np
+import numpy.typing as npt
 
 # Detector boxes are (x1, y1, x2, y2). Ints or floats from YOLOX-style detectors.
 Box = tuple[float, float, float, float]
@@ -55,7 +58,7 @@ class PersonAttributes:
     upper_confidence: float
     lower_confidence: float
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not (0.0 <= self.upper_confidence <= 1.0):
             raise ValueError(f"upper_confidence must be in [0,1], got {self.upper_confidence}")
         if not (0.0 <= self.lower_confidence <= 1.0):
@@ -124,7 +127,7 @@ class AttributeExtractor:
         self.low_light_threshold = low_light_threshold
 
     @staticmethod
-    def bgr_to_hsv(bgr: np.ndarray) -> np.ndarray:
+    def bgr_to_hsv(bgr: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
         """
         Convert BGR image to HSV using numpy only (no OpenCV).
 
@@ -172,7 +175,7 @@ class AttributeExtractor:
 
     def extract(
         self,
-        frame: np.ndarray,
+        frame: npt.NDArray[np.uint8],
         person_box: Box,
         bag_boxes: list[Box] | None = None,
     ) -> PersonAttributes:
@@ -198,7 +201,7 @@ class AttributeExtractor:
 
     def extract_frame(
         self,
-        frame: np.ndarray,
+        frame: npt.NDArray[np.uint8],
         person_boxes: list[Box],
         bag_boxes: list[Box] | None = None,
     ) -> list[PersonAttributes]:
@@ -307,8 +310,8 @@ class AttributeExtractor:
     @classmethod
     def assign_bags(
         cls,
-        person_boxes: list[Box],
-        bag_boxes: list[Box] | None,
+        person_boxes: Sequence[tuple[float, float, float, float]],
+        bag_boxes: Sequence[tuple[float, float, float, float]] | None,
         threshold: float = CONTAINMENT_THRESHOLD,
     ) -> list[bool]:
         """
@@ -354,7 +357,7 @@ class AttributeExtractor:
 
     def _extract_region_color(
         self,
-        person_crop: np.ndarray,
+        person_crop: npt.NDArray[np.uint8],
         region: str,
     ) -> tuple[Color, float]:
         """
@@ -434,7 +437,7 @@ class AttributeExtractor:
 
         return color, confidence
 
-    def _classify_color_hsv(self, hsv: np.ndarray) -> tuple[Color, float]:
+    def _classify_color_hsv(self, hsv: npt.NDArray[np.uint8]) -> tuple[Color, float]:
         """
         Classify dominant color from HSV image using binning.
 
@@ -457,14 +460,14 @@ class AttributeExtractor:
             mean_val = np.mean(gray_values)
 
             if mean_val < self.BLACK_THRESHOLD_VAL:
-                confidence = min(0.9, gray_pixels / total_pixels)
-                return Color.BLACK, confidence
+                confidence = float(gray_pixels / total_pixels)
+                return Color.BLACK, float(min(0.9, confidence))
             elif mean_val > self.WHITE_THRESHOLD_VAL:
-                confidence = min(0.9, gray_pixels / total_pixels)
-                return Color.WHITE, confidence
+                confidence = float(gray_pixels / total_pixels)
+                return Color.WHITE, float(min(0.9, confidence))
             else:
-                confidence = min(0.9, gray_pixels / total_pixels)
-                return Color.GRAY, confidence
+                confidence = float(gray_pixels / total_pixels)
+                return Color.GRAY, float(min(0.9, confidence))
 
         # Check for brown (special case: low-sat orange/yellow)
         brown_mask = (
@@ -477,10 +480,10 @@ class AttributeExtractor:
         )
         brown_pixels = np.sum(brown_mask)
         if brown_pixels > 0.3 * total_pixels:
-            return Color.BROWN, brown_pixels / total_pixels
+            return Color.BROWN, float(brown_pixels / total_pixels)
 
         # Check chromatic colors
-        color_counts = {}
+        color_counts: dict[Color, int] = {}
 
         for color, ranges in self.COLOR_RANGES.items():
             if len(ranges) == 4:  # Red wraps around
@@ -515,23 +518,23 @@ class AttributeExtractor:
 
             count = np.sum(mask)
             if count > 0:
-                color_counts[color] = count
+                color_counts[color] = int(count)
 
         if not color_counts:
             return Color.UNKNOWN, 0.0
 
         # Return dominant color
-        dominant_color = max(color_counts, key=color_counts.get)
+        dominant_color = max(color_counts, key=lambda c: color_counts[c])
         confidence = color_counts[dominant_color] / total_pixels
 
-        return dominant_color, confidence
+        return dominant_color, float(confidence)
 
 
 class AttributeQuery:
     """Helper for attribute-based search queries on anonymous tracks."""
 
     @staticmethod
-    def matches(attrs: PersonAttributes, query: dict) -> bool:
+    def matches(attrs: PersonAttributes, query: Mapping[str, object]) -> bool:
         """
         Check if attributes match a query.
 
@@ -546,7 +549,7 @@ class AttributeQuery:
         Returns:
             True if all specified query conditions match
         """
-        min_conf = query.get("min_confidence", 0.0)
+        min_conf = cast(float, query.get("min_confidence", 0.0))
 
         # Check confidence threshold
         if "upper_color" in query and attrs.upper_confidence < min_conf:
@@ -556,17 +559,17 @@ class AttributeQuery:
 
         # Check upper color
         if "upper_color" in query:
-            if attrs.upper_clothing_color != Color(query["upper_color"]):
+            if attrs.upper_clothing_color != Color(cast(str, query["upper_color"])):
                 return False
 
         # Check lower color
         if "lower_color" in query:
-            if attrs.lower_clothing_color != Color(query["lower_color"]):
+            if attrs.lower_clothing_color != Color(cast(str, query["lower_color"])):
                 return False
 
         # Check bag
         if "bag_on_track" in query:
-            if attrs.bag_on_track != query["bag_on_track"]:
+            if attrs.bag_on_track != cast(bool, query["bag_on_track"]):
                 return False
 
         return True

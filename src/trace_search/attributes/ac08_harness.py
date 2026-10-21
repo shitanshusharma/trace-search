@@ -7,7 +7,7 @@ Emits JSON results (DEFERRED in code-only mode, not scored until FX-HOLD).
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from .attributes import AttributeQuery, PersonAttributes
 
@@ -27,6 +27,16 @@ class AttributeSearchQuery:
     query_id: str
     query: dict[str, Any]
     relevant_track_ids: list[str]
+
+
+class _PerQueryResult(TypedDict):
+    """One precision@10 row. Typed so the mean sums floats."""
+
+    query_id: str
+    query: dict[str, Any]
+    precision_at_10: float
+    retrieved_count: int
+    relevant_in_top10: int
 
 
 class AC08Harness:
@@ -54,7 +64,7 @@ class AC08Harness:
         self.fixture_id = fixture_id
         self.records: list[LabelledRecord] = []
 
-    def add_record(self, record: LabelledRecord):
+    def add_record(self, record: LabelledRecord) -> None:
         """Add a track record with predicted attributes to the index."""
         self.records.append(record)
 
@@ -106,7 +116,7 @@ class AC08Harness:
         if len(queries) < 10:
             raise ValueError(f"AC-08 requires ≥10 queries, got {len(queries)}")
 
-        results = []
+        results: list[_PerQueryResult] = []
 
         for q in queries:
             retrieved = self.search(q.query, k=10)
