@@ -1,0 +1,147 @@
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  summary:
+    name: review / pr-summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    
+    - name: Wait for other checks
+      uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        running-workflow-name: 'review / pr-summary'
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        wait-interval: 10
+        allowed-conclusions: success,failure,cancelled,skipped
+      continue-on-error: true
+    
+    - name: Aggregate check results
+      id: aggregate
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      with:
+        result-encoding: string
+        script: |
+          const { data: checks } = await github.rest.checks.listForRef({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            ref: context.payload.pull_request.head.sha,
+            per_page: 100
+          });
+          
+          const targetChecks = [
+            'quality / lint',
+            'quality / types',
+            'quality / tests+coverage',
+            'quality / complexity',
+            'security / bandit',
+            'security / semgrep',
+            'security / codeql (python)',
+            'security / gitleaks',
+            'security / pip-audit',
+            'security / dependency-review',
+            'rules / project-rules',
+            'rules / validate-action-shas',
+            'quality / ui (eslint+tsc+prettier)',
+            'security / codeql (javascript)',
+            'security / npm-audit',
+            'Lint, Test, and License Check'
+          ];
+          
+          let summary = '## 🤖 Automated PR Review Summary\n\n';
+          let passing = 0;
+          let failing = 0;
+          let pending = 0;
+          
+          summary += '### Check Results\n\n';
+          summary += '| Check | Status |\n';
+          summary += '|-------|--------|\n';
+          
+          for (const checkName of targetChecks) {
+            const check = checks.check_runs.find(c => c.name === checkName);
+            if (!check || check.status !== 'completed') {
+              summary += `| ${checkName} | ❌ FAILED (not run or incomplete) |\n`;
+              failing++;
+            } else if (check.conclusion === 'success') {
+              summary += `| ${checkName} | ✅ Pass |\n`;
+              passing++;
+            } else if (check.conclusion === 'failure') {
+              summary += `| ${checkName} | ❌ FAILED |\n`;
+              failing++;
+            } else if (check.conclusion === 'skipped') {
+              summary += `| ${checkName} | ⏭️ Skipped |\n`;
+            } else {
+              summary += `| ${checkName} | ❌ FAILED (${check.conclusion}) |\n`;
+              failing++;
+            }
+          }
+          
+          summary += '\n';
+          summary += `**Summary:** ${passing} passing, ${failing} failing, ${pending} pending\n\n`;
+          
+          if (failing > 0) {
+            summary += '### ⚠️ Action Required\n\n';
+            summary += 'Some checks failed. Please review the workflow logs and fix the issues.\n\n';
+          } else if (pending === 0) {
+            summary += '### ✅ All Checks Passed\n\n';
+            summary += 'Great work! All quality and security checks passed.\n\n';
+          }
+          
+          summary += '---\n';
+          summary += '*This comment is automatically updated on each push.*\n';
+          
+          // Set failed count as output
+          core.setOutput('failed_count', failing.toString());
+          
+          return summary;
+    
+    - name: Find existing comment
+      id: find-comment
+      uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: 'github-actions[bot]'
+        body-includes: 'Automated PR Review Summary'
+    
+    - name: Create or update PR comment
+      env:
+        COMMENT_BODY: ${{ steps.aggregate.outputs.result }}
+      uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4.0.0
+      with:
+        comment-id: ${{ steps.find-comment.outputs.comment-id }}
+        issue-number: ${{ github.event.pull_request.number }}
+        body: ${{ env.COMMENT_BODY }}
+        edit-mode: replace
+    
+    - name: Exit with failure if any check failed
+      if: always()
+      env:
+        FAILED_COUNT: ${{ steps.aggregate.outputs.failed_count }}
+        SUMMARY: ${{ steps.aggregate.outputs.result }}
+      run: |
+        echo "failed_count=${FAILED_COUNT}"
+        if [ "${FAILED_COUNT}" != "0" ] || printf '%s\n' "$SUMMARY" | grep -q '❌ FAILED'; then
+          echo "One or more required checks failed"
+          exit 1
+        fi

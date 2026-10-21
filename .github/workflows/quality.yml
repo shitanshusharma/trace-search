@@ -1,0 +1,213 @@
+name: Quality Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: quality / lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install locked dependencies
+      run: pip install --require-hashes -r requirements-dev.lock
+    
+    - name: Run ruff lint
+      run: ruff check src/ tests/ scripts/ --output-format=github
+    
+    - name: Run ruff format check
+      run: ruff format --check src/ tests/ scripts/
+
+  types:
+    name: quality / types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        # CI-tools lock only. The licence fence job does not install this file.
+        pip install --require-hashes --no-deps -r requirements-ci.lock
+        pip install -e .
+    
+    - name: Run mypy
+      run: mypy src/ --strict --pretty --show-error-codes
+      continue-on-error: false
+
+  tests-coverage:
+    name: quality / tests+coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0  # For diff-cover
+    
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        # App lock only. CI tools are installed later, after pytest, for diff-cover.
+        pip install --require-hashes -r requirements-dev.lock
+        pip install -e .
+    
+    - name: Run pytest with coverage
+      run: |
+        pytest tests/ \
+          --cov=src/trace_search \
+          --cov-report=xml \
+          --cov-report=term \
+          --cov-report=html \
+          --cov-branch \
+          -v
+      env:
+        NO_FFMPEG_CHECK: '1'
+    
+    - name: Check overall coverage floor (80%)
+      run: |
+        coverage report --fail-under=80
+    
+    - name: Check diff coverage on new/changed code
+      if: github.event_name == 'pull_request'
+      env:
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        pip install --require-hashes --no-deps -r requirements-ci.lock
+        diff-cover coverage.xml \
+          --compare-branch="origin/$BASE_REF" \
+          --fail-under=80
+      continue-on-error: true
+    
+    - name: Upload coverage reports
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: coverage-reports
+        path: |
+          coverage.xml
+          htmlcov/
+        retention-days: 30
+
+  complexity:
+    name: quality / complexity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install tools
+      run: |
+        pip install --require-hashes -r requirements-dev.lock
+        pip install --require-hashes --no-deps -r requirements-ci.lock
+    
+    - name: Check cyclomatic complexity (ruff mccabe)
+      run: ruff check src/ --select C90 --config 'lint.mccabe.max-complexity=10'
+    
+    - name: Check maintainability index (radon)
+      run: |
+        radon mi src/ -s -n B
+        radon cc src/ -s -n C
+
+  ui-checks:
+    name: quality / ui (eslint+tsc+prettier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    
+    - name: Check for UI package
+      id: check-ui
+      run: |
+        if [ -f "ui/package.json" ] || [ -f "web/package.json" ]; then
+          echo "has_ui=true" >> $GITHUB_OUTPUT
+          if [ -f "ui/package.json" ]; then
+            echo "dir=ui" >> $GITHUB_OUTPUT
+          else
+            echo "dir=web" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "has_ui=false" >> $GITHUB_OUTPUT
+          echo "No UI package found - skipping UI checks"
+        fi
+    
+    - name: Set up Node.js
+      if: steps.check-ui.outputs.has_ui == 'true'
+      uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6 # v4.0.4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: ${{ steps.check-ui.outputs.dir }}/package-lock.json
+    
+    - name: Install dependencies
+      if: steps.check-ui.outputs.has_ui == 'true'
+      working-directory: ${{ steps.check-ui.outputs.dir }}
+      run: npm ci
+    
+    - name: Run ESLint
+      if: steps.check-ui.outputs.has_ui == 'true'
+      working-directory: ${{ steps.check-ui.outputs.dir }}
+      run: npm run lint
+    
+    - name: Run TypeScript check
+      if: steps.check-ui.outputs.has_ui == 'true'
+      working-directory: ${{ steps.check-ui.outputs.dir }}
+      run: npx tsc --noEmit
+    
+    - name: Run Prettier check
+      if: steps.check-ui.outputs.has_ui == 'true'
+      working-directory: ${{ steps.check-ui.outputs.dir }}
+      run: npx prettier --check src/

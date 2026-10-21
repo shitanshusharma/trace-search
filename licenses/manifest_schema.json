@@ -35,7 +35,7 @@
           },
           "type": {
             "type": "string",
-            "enum": ["library", "model", "weight", "dataset", "clip", "synthetic_clip", "generator", "tool"],
+            "enum": ["library", "model", "weight", "dataset", "clip", "synthetic_clip", "code_fixture", "generator", "tool"],
             "description": "Type of component"
           },
           "license": {
@@ -56,6 +56,8 @@
           },
           "license_version": {
             "type": "string",
+            "minLength": 1,
+            "pattern": "\\S",
             "description": "For clips only: license version or terms last-updated date"
           },
           "date_checked_ist": {
@@ -76,21 +78,31 @@
           },
           "use": {
             "type": "string",
-            "enum": ["SMOKE_ONLY", "CODE_TEST", "TRAIN", "DEV", "HOLD"],
-            "description": "For clips/fixtures only: usage tag"
+            "enum": ["SMOKE_ONLY", "CODE_TEST"],
+            "description": "Usage tag. Stock/synthetic clips are SMOKE_ONLY; FX-CODE fixtures are CODE_TEST."
           },
           "fixture_id": {
             "type": "string",
-            "pattern": "^FX-[A-Z]+-[0-9]+$",
-            "description": "Fixture identifier (e.g., FX-SMOKE-001, FX-DEV-023)"
+            "pattern": "^FX-(SMOKE(-SYN)?|CODE)-[0-9]+$",
+            "description": "FX-SMOKE-### (clip/SMOKE_ONLY), FX-SMOKE-SYN-### (synthetic_clip/SMOKE_ONLY), FX-CODE-### (code_fixture/CODE_TEST)"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?:[^/\\\\]+/)*[^/\\\\]+$",
+            "description": "Repo-relative POSIX path for clip and synthetic_clip rows. No leading '/' and no '..' segment. The media allow-list reads entries[].path."
           },
           "generator": {
             "type": "string",
-            "description": "For synthetic clips: generator name"
+            "minLength": 1,
+            "pattern": "\\S",
+            "description": "For synthetic clips, FX-CODE rows, and generators: generator name"
           },
           "generator_version": {
             "type": "string",
-            "description": "For synthetic clips: generator version"
+            "minLength": 1,
+            "pattern": "\\S",
+            "description": "Generator version or commit"
           },
           "generator_license": {
             "type": "string",
@@ -98,23 +110,123 @@
           },
           "seed": {
             "type": "string",
-            "description": "For synthetic clips: random seed or generation parameters"
+            "minLength": 1,
+            "pattern": "\\S",
+            "description": "Seed or prompt used to generate the clip or fixture"
           },
           "notes": {
             "type": "string",
             "description": "Optional notes about provenance or special handling"
           }
         },
-        "if": {
-          "properties": {
-            "type": {
-              "enum": ["clip", "synthetic_clip"]
+        "allOf": [
+          {
+            "if": {
+              "properties": { "type": { "const": "clip" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["license_version", "date_checked_ist", "phash", "use", "fixture_id", "path"],
+              "properties": {
+                "use": { "const": "SMOKE_ONLY" },
+                "fixture_id": { "pattern": "^FX-SMOKE-[0-9]+$" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "synthetic_clip" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": [
+                "license_version",
+                "date_checked_ist",
+                "phash",
+                "use",
+                "fixture_id",
+                "path",
+                "generator",
+                "generator_version",
+                "generator_license",
+                "seed"
+              ],
+              "properties": {
+                "use": { "const": "SMOKE_ONLY" },
+                "fixture_id": { "pattern": "^FX-SMOKE-SYN-[0-9]+$" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "code_fixture" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": [
+                "use",
+                "fixture_id",
+                "generator",
+                "generator_version",
+                "generator_license",
+                "seed"
+              ],
+              "properties": {
+                "use": { "const": "CODE_TEST" },
+                "fixture_id": { "pattern": "^FX-CODE-[0-9]+$" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "generator" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["generator_license", "seed"],
+              "properties": {
+                "generator_license": { "type": "string", "minLength": 1 },
+                "seed": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "fixture_id": { "pattern": "^FX-SMOKE-SYN-[0-9]+$" } },
+              "required": ["fixture_id"]
+            },
+            "then": {
+              "properties": {
+                "type": { "const": "synthetic_clip" },
+                "use": { "const": "SMOKE_ONLY" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "fixture_id": { "pattern": "^FX-CODE-[0-9]+$" } },
+              "required": ["fixture_id"]
+            },
+            "then": {
+              "properties": {
+                "type": { "const": "code_fixture" },
+                "use": { "const": "CODE_TEST" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "fixture_id": { "pattern": "^FX-SMOKE-[0-9]+$" } },
+              "required": ["fixture_id"]
+            },
+            "then": {
+              "properties": {
+                "type": { "const": "clip" },
+                "use": { "const": "SMOKE_ONLY" }
+              }
             }
           }
-        },
-        "then": {
-          "required": ["license_version", "date_checked_ist", "phash", "use"]
-        }
+        ]
       }
     }
   }

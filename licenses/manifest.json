@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0",
-  "last_updated_ist": "2026-10-20",
+  "last_updated_ist": "2026-10-21",
   "entries": [
     {
       "name": "pytest",
@@ -9,7 +9,7 @@
       "license": "MIT",
       "source_url": "https://pypi.org/project/pytest/",
       "sha256": "37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c",
-      "notes": "Dev dependency for testing"
+      "notes": "Direct dev dependency for testing"
     },
     {
       "name": "pytest-cov",
@@ -18,7 +18,7 @@
       "license": "MIT",
       "source_url": "https://pypi.org/project/pytest-cov/",
       "sha256": "a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678",
-      "notes": "Dev dependency for coverage"
+      "notes": "Direct dev dependency for coverage"
     },
     {
       "name": "ruff",
@@ -27,7 +27,7 @@
       "license": "MIT",
       "source_url": "https://pypi.org/project/ruff/",
       "sha256": "a6ef98e51de8ef38082f90653ceeb84944bd7673783eea13e1647c5b9b064189",
-      "notes": "Dev dependency for linting"
+      "notes": "Direct dev dependency for linting"
     },
     {
       "name": "pip-licenses",
@@ -36,25 +36,7 @@
       "license": "MIT",
       "source_url": "https://pypi.org/project/pip-licenses/",
       "sha256": "f4c4c6d9e6a03612cf59f29f19dc8ab54904d82e055b8e191498f2279a224e14",
-      "notes": "Dev dependency for license scanning"
-    },
-    {
-      "name": "prettytable",
-      "version": "3.18.0",
-      "type": "library",
-      "license": "BSD-3-Clause",
-      "source_url": "https://pypi.org/project/prettytable/",
-      "sha256": "b3346e0e6f79180833aebaac088ae926340586cf6d7d991b9eb125b65f72313a",
-      "notes": "Dependency of pip-licenses"
-    },
-    {
-      "name": "wcwidth",
-      "version": "0.9.3",
-      "type": "library",
-      "license": "MIT",
-      "source_url": "https://pypi.org/project/wcwidth/",
-      "sha256": "9ab8bfee107e08de09e15f9f6afb9fe0f64c8d64fd296d0d8557bafe71ea3f93",
-      "notes": "Dependency of prettytable"
+      "notes": "Direct dev dependency for license scanning"
     },
     {
       "name": "jsonschema",
@@ -63,7 +45,1025 @@
       "license": "MIT",
       "source_url": "https://pypi.org/project/jsonschema/",
       "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
-      "notes": "Schema validation for manifest"
+      "notes": "Direct dev dependency for schema validation"
+    },
+    {
+      "name": "prettytable",
+      "version": "3.18.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/prettytable/",
+      "sha256": "b3346e0e6f79180833aebaac088ae926340586cf6d7d991b9eb125b65f72313a",
+      "notes": "Transitive dependency of pip-licenses"
+    },
+    {
+      "name": "wcwidth",
+      "version": "0.9.3",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/wcwidth/",
+      "sha256": "9ab8bfee107e08de09e15f9f6afb9fe0f64c8d64fd296d0d8557bafe71ea3f93",
+      "notes": "Transitive dependency of prettytable"
+    },
+    {
+      "name": "attrs",
+      "version": "26.1.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/attrs/",
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+      "notes": "Transitive dependency of jsonschema"
+    },
+    {
+      "name": "coverage",
+      "version": "7.16.2",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://pypi.org/project/coverage/",
+      "sha256": "5375ebd99038021b35e99dc88255022912c06565d316212f4a576e4b08d30f5d",
+      "notes": "Transitive dependency of pytest-cov"
+    },
+    {
+      "name": "iniconfig",
+      "version": "2.3.1",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/iniconfig/",
+      "sha256": "9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7",
+      "notes": "Transitive dependency of pytest"
+    },
+    {
+      "name": "pluggy",
+      "version": "1.7.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/pluggy/",
+      "sha256": "7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec",
+      "notes": "Transitive dependency of pytest"
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://pypi.org/project/packaging/",
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+      "notes": "Transitive dependency of pytest"
+    },
+    {
+      "name": "Pygments",
+      "version": "2.21.0",
+      "type": "library",
+      "license": "BSD-2-Clause",
+      "source_url": "https://pypi.org/project/Pygments/",
+      "sha256": "2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9",
+      "notes": "Transitive dependency of pip-licenses"
+    },
+    {
+      "name": "arrow",
+      "version": "1.4.0",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://pypi.org/project/arrow/",
+      "sha256": "749f0769958ebdc79c173ff0b0670d59051a535fa26e8eba02953dc19eb43205",
+      "notes": "Transitive dependency of isoduration"
+    },
+    {
+      "name": "fqdn",
+      "version": "1.6.0",
+      "type": "library",
+      "license": "MPL-2.0",
+      "source_url": "https://pypi.org/project/fqdn/",
+      "sha256": "6c793c312ccfa29981e1135b3ef5e1277ebe639731a6b0f7350d90e96e63f0b4",
+      "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "idna",
+      "version": "3.20",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/idna/",
+      "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c",
+      "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "isoduration",
+      "version": "20.11.0",
+      "type": "library",
+      "license": "ISC",
+      "source_url": "https://pypi.org/project/isoduration/",
+      "sha256": "b2904c2a4228c3d44f409c8ae8e2370eb21a26f7ac2ec5446df141dde3452042",
+      "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "jsonpointer",
+      "version": "3.4",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/jsonpointer/",
+      "sha256": "136e2e3273fd82a1502274f56ec172f331b6a1703d86a1824d503af4d9a96142",
+      "notes": "Transitive dependency of jsonschema"
+    },
+    {
+      "name": "jsonschema-specifications",
+      "version": "2025.9.1",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/jsonschema-specifications/",
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe",
+      "notes": "Transitive dependency of jsonschema"
+    },
+    {
+      "name": "lark",
+      "version": "1.3.1",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/lark/",
+      "sha256": "c629b661023a014c37da873b4ff58a817398d12635d3bbb2c5a03be7fe5d1e12",
+      "notes": "Transitive dependency of rfc3987-syntax"
+    },
+    {
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://pypi.org/project/python-dateutil/",
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "notes": "Transitive dependency of arrow"
+    },
+    {
+      "name": "referencing",
+      "version": "0.37.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/referencing/",
+      "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231",
+      "notes": "Transitive dependency of jsonschema"
+    },
+    {
+      "name": "rfc3339-validator",
+      "version": "0.1.4",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/rfc3339-validator/",
+      "sha256": "24f6ec1eda14ef823da9e36ec7113124b39c04d50a4d3d3a3c2859577e7791fa",
+      "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "rfc3986-validator",
+      "version": "0.1.1",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/rfc3986-validator/",
+      "sha256": "2f235c432ef459970b4306369336b9d5dbdda31b510ca1e327636e01f528bfa9",
+      "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "rfc3987-syntax",
+      "version": "1.1.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/rfc3987-syntax/",
+      "sha256": "6c3d97604e4c5ce9f714898e05401a0445a641cfa276432b0a648c80856f6a3f",
+      "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "rpds-py",
+      "version": "2026.9.1",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/rpds-py/",
+      "sha256": "addeda51556dac7c1a2f14cda62db8b621cd12afba3091d03a96c72932387eab",
+      "notes": "Transitive dependency of jsonschema"
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/six/",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "notes": "Transitive dependency of python-dateutil"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "type": "library",
+      "license": "PSF-2.0",
+      "source_url": "https://pypi.org/project/typing-extensions/",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "notes": "Transitive dependency of jsonschema"
+    },
+    {
+      "name": "tzdata",
+      "version": "2026.5",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://pypi.org/project/tzdata/",
+      "sha256": "b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac",
+      "notes": "Transitive dependency of python-dateutil"
+    },
+    {
+      "name": "uri-template",
+      "version": "1.3.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://pypi.org/project/uri-template/",
+      "sha256": "a44a133ea12d44a0c0f06d7d42a52d71282e77e2f937d8abd5655b8d56fc1363",
+      "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "webcolors",
+      "version": "25.10.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/webcolors/",
+      "sha256": "032c727334856fc0b968f63daa252a1ac93d33db2f5267756623c210e57a4f1d",
+      "notes": "Transitive dependency of jsonschema format checkers"
+    },
+    {
+      "name": "Pillow",
+      "version": "13.0.0",
+      "type": "library",
+      "license": "MIT-CMU",
+      "source_url": "https://pypi.org/project/Pillow/13.0.0/",
+      "sha256": "a625df9a2a5597fa5e5266e01aefc82604bb85d291e3547981e863560d75da6c",
+      "notes": "Image processing for perceptual hashing (T1). cp311 manylinux wheel. PyPI license expression MIT-CMU. File: pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
+      "name": "libavif",
+      "version": "1.4.2",
+      "type": "library",
+      "license": "BSD-2-Clause AND BSD-3-Clause",
+      "source_url": "https://github.com/AOMediaCodec/libavif",
+      "sha256": "d12ec0b696860b292114b130ecac6082fc75c198c1b4fa57b26089e9b0a7eb6a",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libavif-c6062d5f.so.16.4.2",
+      "notes": "Bundled in pillow.libs/libavif-c6062d5f.so.16.4.2 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names libavif 1.4.2 as BSD-2-Clause. The same file contains dav1d and AOMedia AV1 encoder 3.14.1, both BSD-2-Clause in the wheel LICENSE, and libyuv, which that LICENSE licenses as BSD-3-Clause."
+    },
+    {
+      "name": "brotli",
+      "version": "1.2.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://github.com/google/brotli",
+      "sha256": "72c1ab487e4bd44c906336747bf1926cbf5f164f9d05e0b4fd18b7d8d113b7fe",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libbrotlicommon-53534446.so.1.2.0",
+      "notes": "Bundled in pillow.libs/libbrotlicommon-53534446.so.1.2.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The wheel LICENSE BROTLI section is the MIT grant. Version 1.2.0 is the shared-object name. The SBOM does not list brotli."
+    },
+    {
+      "name": "brotli",
+      "version": "1.2.0",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://github.com/google/brotli",
+      "sha256": "1b497acc3d8d8e1fc286088f0c288be7c0c54bf5a8fa94b12b23e54de205d48c",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libbrotlidec-7e5462ba.so.1.2.0",
+      "notes": "Bundled in pillow.libs/libbrotlidec-7e5462ba.so.1.2.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The wheel LICENSE BROTLI section is the MIT grant. Version 1.2.0 is the shared-object name. The SBOM does not list brotli."
+    },
+    {
+      "name": "libjpeg-turbo",
+      "version": "3.2.0",
+      "type": "library",
+      "license": "IJG AND BSD-3-Clause",
+      "source_url": "https://libjpeg-turbo.org",
+      "sha256": "cc04bc42fd6296e81d24d13955fb95bd829624f6c74105eaf4a7fcf2ce42e048",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libjpeg-6dc8d115.so.62.4.0",
+      "notes": "Bundled in pillow.libs/libjpeg-6dc8d115.so.62.4.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so says libjpeg-turbo version 3.2.0. The SBOM lists IJG and BSD-3-Clause. The wheel LICENSE LIBJPEG section is the IJG grant. The filename suffix 62.4.0 is the soname."
+    },
+    {
+      "name": "lcms2",
+      "version": "2.19.1",
+      "type": "library",
+      "license": "MIT",
+      "source_url": "https://www.littlecms.com",
+      "sha256": "4cf9f69016c7804bcb4fa56f5bbc55640cb1b7196ac7b93ba29ed9df9bd9ff4d",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/liblcms2-88eaba2f.so.2.0.19",
+      "notes": "Bundled in pillow.libs/liblcms2-88eaba2f.so.2.0.19 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names Little CMS 2 version 2.19.1, MIT. The wheel LICENSE LCMS2 section is the MIT grant. The filename suffix 2.0.19 is the soname."
+    },
+    {
+      "name": "liblzma",
+      "version": "5.8.4",
+      "type": "library",
+      "license": "Public Domain",
+      "source_url": "http://tukaani.org/xz/",
+      "sha256": "ab4d2f260d6777088cc4bd96ce4997a5199d20b94e146a764b02c37d42477ce9",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/liblzma-de26b416.so.5.8.4",
+      "notes": "Bundled in pillow.libs/liblzma-de26b416.so.5.8.4 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The wheel LICENSE LIBLZMA section says liblzma is in the public domain, and that the GPL files in XZ Utils do not end up in the binaries. The .so contains the version string 5.8.4. The SBOM does not list liblzma."
+    },
+    {
+      "name": "OpenJPEG",
+      "version": "2.5.4",
+      "type": "library",
+      "license": "BSD-2-Clause",
+      "source_url": "https://github.com/uclouvain/openjpeg",
+      "sha256": "eea7a2058e0f2084d41ba88c561bddc866bd38e74f76b5ca4fccb965e2fb1c24",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libopenjp2-e530e1bf.so.2.5.4",
+      "notes": "Bundled in pillow.libs/libopenjp2-e530e1bf.so.2.5.4 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names OpenJPEG 2.5.4, BSD-2-Clause. The wheel LICENSE OPENJPEG section says the copyright is under the 2-clause BSD license. The build path in the .so is openjpeg-2.5.4."
+    },
+    {
+      "name": "libsharpyuv",
+      "version": "1.6.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://chromium.googlesource.com/webm/libwebp",
+      "sha256": "8abd5c39ee3b26330288b2e833d4d9b5d4b5ed4c881649057354df17326b6996",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libsharpyuv-0066295b.so.0.1.2",
+      "notes": "Bundled in pillow.libs/libsharpyuv-0066295b.so.0.1.2 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. Part of libwebp. SBOM names libwebp 1.6.0, BSD-3-Clause. The wheel LICENSE LIBWEBP section is that 3-clause BSD grant. The filename suffix 0.1.2 is the soname."
+    },
+    {
+      "name": "libtiff",
+      "version": "4.7.2",
+      "type": "library",
+      "license": "libtiff AND Zlib",
+      "source_url": "https://libtiff.gitlab.io/libtiff/",
+      "sha256": "729883f61144533eb3215d405e4daad528a68f89e9a1fccf51e9862819f30020",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libtiff-20b7e810.so.6.3.0",
+      "notes": "Bundled in pillow.libs/libtiff-20b7e810.so.6.3.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so says LIBTIFF, Version 4.7.2, matching the SBOM. The wheel LICENSE LIBTIFF section is the libtiff grant. The same file contains zlib-ng (string 1.3.1.zlib-ng). The SBOM names zlib 2.3.3 under Zlib. The filename suffix 6.3.0 is the soname."
+    },
+    {
+      "name": "libwebp",
+      "version": "1.6.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://chromium.googlesource.com/webm/libwebp",
+      "sha256": "6a97159a7c36acacb112618eb74720c97bbab4ecc499a8bfeb495dd726285259",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libwebp-51b0b3f7.so.7.2.0",
+      "notes": "Bundled in pillow.libs/libwebp-51b0b3f7.so.7.2.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names libwebp 1.6.0, BSD-3-Clause. The wheel LICENSE LIBWEBP section is that 3-clause BSD grant. The filename suffix 7.2.0 is the soname."
+    },
+    {
+      "name": "libwebpdemux",
+      "version": "1.6.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://chromium.googlesource.com/webm/libwebp",
+      "sha256": "5d728787db553c48c74dccd93d2763ec88234850a5f2f821df11483c8d28d2a7",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libwebpdemux-9fe2abcc.so.2.0.17",
+      "notes": "Bundled in pillow.libs/libwebpdemux-9fe2abcc.so.2.0.17 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. Part of libwebp. SBOM names libwebp 1.6.0, BSD-3-Clause. The wheel LICENSE LIBWEBP section is that 3-clause BSD grant. The filename suffix 2.0.17 is the soname."
+    },
+    {
+      "name": "libwebpmux",
+      "version": "1.6.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://chromium.googlesource.com/webm/libwebp",
+      "sha256": "6bdb41f738f088e7420374d67a4a6523cc4786f340d355d2bf4f124dcf3d5820",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libwebpmux-8fb1c9f6.so.3.1.2",
+      "notes": "Bundled in pillow.libs/libwebpmux-8fb1c9f6.so.3.1.2 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. Part of libwebp. SBOM names libwebp 1.6.0, BSD-3-Clause. The wheel LICENSE LIBWEBP section is that 3-clause BSD grant. The filename suffix 3.1.2 is the soname."
+    },
+    {
+      "name": "zstd",
+      "version": "1.5.7",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/facebook/zstd",
+      "sha256": "95a5af7845018639470635243c36b428f90af32b728804af6d951e7fcb08bbea",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libzstd-40ad5e7e.so.1.5.7",
+      "notes": "Bundled in pillow.libs/libzstd-40ad5e7e.so.1.5.7 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The wheel LICENSE ZSTD section is the 3-clause BSD grant. The .so build path is zstd-1.5.7. The SBOM does not list zstd."
+    },
+    {
+      "name": "FreeType",
+      "version": "2.14.3",
+      "type": "library",
+      "license": "FTL",
+      "source_url": "https://freetype.org",
+      "sha256": "5be086dea47fd1c3fadd431ee79fe0b5e5a0c6c38e78f1db55cf2dad17dea430",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_package": "Pillow",
+      "bundled_package_version": "13.0.0",
+      "bundled_file": "pillow.libs/libfreetype-57f805ba.so.6.20.6",
+      "notes": "Bundled in pillow.libs/libfreetype-57f805ba.so.6.20.6 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names FreeType 2.14.3, licence id FTL. The wheel LICENSE FREETYPE2 section is the FreeType Project License. The filename suffix 6.20.6 is the soname. Named exception for this file only (Shitanshu Sharma: \"Do all of it, FreeType under FTL only.\"). The same file contains the strings 1.3.1.zlib-ng and bzip2/libbzip2 with 1.0.8, 13-Jul-2019. Those are separate rows. This row stays FTL."
+    },
+    {
+      "name": "HarfBuzz",
+      "version": "14.5.0",
+      "type": "library",
+      "license": "MIT-Modern-Variant",
+      "source_url": "https://harfbuzz.github.io",
+      "sha256": "4a30b9e3a12a72691b70b14945f3e8adaa8c2bc191bd8b706aae6ed0f0fa9fc0",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libharfbuzz-fb49c9fc.so.0.61450.0",
+      "notes": "Bundled in pillow.libs/libharfbuzz-fb49c9fc.so.0.61450.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names HarfBuzz 14.5.0. The wheel LICENSE HARFBUZZ section is the Old MIT grant, SPDX MIT-Modern-Variant. The SBOM licence id is MIT. The .so contains the version string 14.5.0. The filename suffix 0.61450.0 is the soname."
+    },
+    {
+      "name": "libpng",
+      "version": "1.6.58",
+      "type": "library",
+      "license": "libpng-2.0",
+      "source_url": "http://www.libpng.org/pub/png/libpng.html",
+      "sha256": "38d5a01026f61afba1bb94698846722840067fc87b2ee9003fe8dcccf1bc155f",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libpng16-1d1ba958.so.16.58.0",
+      "notes": "Bundled in pillow.libs/libpng16-1d1ba958.so.16.58.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so contains 'libpng version 1.6.58'. The wheel LICENSE LIBPNG section is the PNG Reference Library License version 2, SPDX libpng-2.0. The Pillow SBOM does not list libpng. The filename suffix 16.58.0 is the soname. The same file contains the string 1.3.1.zlib-ng. That component is a separate row. This row stays libpng-2.0."
+    },
+    {
+      "name": "libXau",
+      "version": "1.0.9-3.el8",
+      "type": "library",
+      "license": "MIT-open-group",
+      "source_url": "https://gitlab.freedesktop.org/xorg/lib/libxau",
+      "sha256": "8b5a93469805d3550471766696d4755f05bc6ca0587f22c03037ca7d12545c8b",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libXau-154567c4.so.6.0.0",
+      "notes": "Bundled in pillow.libs/libXau-154567c4.so.6.0.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so contains the version string 1.0.9-3.el8. The wheel LICENSE XAU section is the Open Group grant, SPDX MIT-open-group. auditwheel records libXau 1.0.9-3.el8 with no licence id. The Pillow SBOM does not list libXau. The filename suffix 6.0.0 is the soname."
+    },
+    {
+      "name": "libxcb",
+      "version": "1.17.0",
+      "type": "library",
+      "license": "X11",
+      "source_url": "https://xcb.freedesktop.org",
+      "sha256": "f3707868b0b2e78dbdac0994d2977b0ec4303c9c6250f03576b1bd93c42cad63",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libxcb-9065bb12.so.1.1.0",
+      "notes": "Bundled in pillow.libs/libxcb-9065bb12.so.1.1.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names libxcb 1.17.0, licence id X11. The wheel LICENSE XCB section is that grant. The filename suffix 1.1.0 is the soname."
+    },
+    {
+      "name": "bzip2",
+      "version": "1.0.8",
+      "type": "library",
+      "license": "bzip2-1.0.6",
+      "source_url": "https://sourceware.org/bzip2/",
+      "sha256": "5be086dea47fd1c3fadd431ee79fe0b5e5a0c6c38e78f1db55cf2dad17dea430",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libfreetype-57f805ba.so.6.20.6",
+      "notes": "Statically contained in pillow.libs/libfreetype-57f805ba.so.6.20.6 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. sha256 is that file; the wheel ships no separate object for this library. The .so contains bzip2/libbzip2, 1.0.8, 13-Jul-2019, and the build path bzip2-1.0.8. The wheel LICENSE BZIP2 section is the Julian Seward grant and states bzip2/libbzip2 version 1.0.8 of 13 July 2019. That grant is SPDX bzip2-1.0.6. The Pillow SBOM does not list bzip2. The FreeType row stays FTL."
+    },
+    {
+      "name": "zlib-ng",
+      "version": "2.3.3",
+      "type": "library",
+      "license": "Zlib",
+      "source_url": "https://github.com/zlib-ng/zlib-ng",
+      "sha256": "5be086dea47fd1c3fadd431ee79fe0b5e5a0c6c38e78f1db55cf2dad17dea430",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libfreetype-57f805ba.so.6.20.6",
+      "notes": "Statically contained in pillow.libs/libfreetype-57f805ba.so.6.20.6 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. sha256 is that file; the wheel ships no separate object for this library. The .so contains the string 1.3.1.zlib-ng and does not contain 2.3.3. The Pillow SBOM names this component zlib, version 2.3.3, licence id Zlib. The wheel LICENSE ZLIB section is the Jean-loup Gailly and Mark Adler grant. The FreeType row stays FTL."
+    },
+    {
+      "name": "zlib-ng",
+      "version": "2.3.3",
+      "type": "library",
+      "license": "Zlib",
+      "source_url": "https://github.com/zlib-ng/zlib-ng",
+      "sha256": "38d5a01026f61afba1bb94698846722840067fc87b2ee9003fe8dcccf1bc155f",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libpng16-1d1ba958.so.16.58.0",
+      "notes": "Statically contained in pillow.libs/libpng16-1d1ba958.so.16.58.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. sha256 is that file; the wheel ships no separate object for this library. The .so contains the string 1.3.1.zlib-ng and does not contain 2.3.3. The Pillow SBOM names this component zlib, version 2.3.3, licence id Zlib. The wheel LICENSE ZLIB section is the Jean-loup Gailly and Mark Adler grant. The libpng row stays libpng-2.0."
+    },
+    {
+      "name": "ImageHash",
+      "version": "4.3.2",
+      "type": "library",
+      "license": "BSD-2-Clause",
+      "source_url": "https://pypi.org/project/imagehash/4.3.2/",
+      "sha256": "02b0f965f8c77cd813f61d7d39031ea27d4780e7ebcad56c6cd6a709acc06e5f",
+      "notes": "Perceptual hashing for fixture separation (T1). Universal wheel. PyPI License field is '2-clause BSD License'; this row uses the SPDX id. File: ImageHash-4.3.2-py2.py3-none-any.whl"
+    },
+    {
+      "name": "PyWavelets",
+      "version": "1.9.0",
+      "type": "library",
+      "license": "MIT AND BSD-3-Clause",
+      "source_url": "https://pypi.org/project/PyWavelets/1.9.0/",
+      "sha256": "d76b7fa8fc500b09201d689b4f15bf5887e30ffbe2e1f338eb8470590eb4521a",
+      "notes": "Dependency of ImageHash. cp311 manylinux wheel. PyPI license expression MIT AND BSD-3-Clause. File: pywavelets-1.9.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
+      "name": "scipy",
+      "version": "1.17.1",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/scipy/1.17.1/",
+      "sha256": "43af8d1f3bea642559019edfe64e9b11192a8978efbd1539d7bc2aaa23d92de4",
+      "notes": "Dependency of ImageHash. cp311 manylinux wheel. File: scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
+      "name": "libgfortran",
+      "version": "5.0.0",
+      "type": "library",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "source_url": "https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libgfortran",
+      "sha256": "c6090048eccc763522c12ef016f81da6b627cb3a044f55cf0479a839c41c0980",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libgfortran-040039e1-0352e75f.so.5.0.0",
+      "notes": "Bundled in scipy.libs/libgfortran-040039e1-0352e75f.so.5.0.0 of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. License from that wheel's LICENSE.txt: GPL-3.0-or-later WITH GCC-exception-3.1."
+    },
+    {
+      "name": "libgfortran",
+      "version": "5.0.0",
+      "type": "library",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "source_url": "https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libgfortran",
+      "sha256": "a95cc4ac4afad889f2d83088f46b5e6fa6cd5efd729db887e1e639147ec55b73",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libgfortran-8f1e9814.so.5.0.0",
+      "notes": "Bundled in scipy.libs/libgfortran-8f1e9814.so.5.0.0 of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. License from that wheel's LICENSE.txt: GPL-3.0-or-later WITH GCC-exception-3.1."
+    },
+    {
+      "name": "libquadmath",
+      "version": "0.0.0",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libquadmath",
+      "sha256": "71bdc2ec57ab2fc939360597968f73230426b1c6764048e62a2cb6c8d8c3a1fd",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libquadmath-828275a7.so.0.0.0",
+      "notes": "Bundled in scipy.libs/libquadmath-828275a7.so.0.0.0 of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. License from that wheel's LICENSE.txt: LGPL-2.1-or-later."
+    },
+    {
+      "name": "libquadmath",
+      "version": "0.0.0",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libquadmath",
+      "sha256": "6ed5137f412781ad7863439fb543613f620b43c32b63292a0029246162f5bbc6",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libquadmath-96973f99-934c22de.so.0.0.0",
+      "notes": "Bundled in scipy.libs/libquadmath-96973f99-934c22de.so.0.0.0 of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. License from that wheel's LICENSE.txt: LGPL-2.1-or-later."
+    },
+    {
+      "name": "OpenBLAS",
+      "version": "0.3.30",
+      "type": "library",
+      "license": "BSD-3-Clause AND BSD-3-Clause-Open-MPI",
+      "source_url": "https://github.com/OpenMathLib/OpenBLAS/",
+      "sha256": "8fb864c29cac4b25f6e2c139491ea96f2724dde42d51394f84e9c4a622e34790",
+      "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "scipy.libs/libscipy_openblas-6cdc3b4a.so",
+      "notes": "Bundled in scipy.libs/libscipy_openblas-6cdc3b4a.so of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so identifies itself as OpenBLAS 0.3.30. LICENSE.txt names this file OpenBLAS, BSD-3-Clause, and LAPACK bundled in that file, BSD-3-Clause-Open-MPI."
+    },
+    {
+      "name": "numpy",
+      "version": "1.26.4",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://pypi.org/project/numpy/1.26.4/",
+      "sha256": "666dbfb6ec68962c033a450943ded891bed2d54e6755e35e5835d63f4f6931d5",
+      "notes": "T2 video ingest. Exact pin numpy==1.26.4. CI wheel (Python 3.11, manylinux x86_64): numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 copied from the PyPI JSON API digests.sha256 for that filename."
+    },
+    {
+      "name": "opencv-python-headless",
+      "version": "4.10.0.84",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://pypi.org/project/opencv-python-headless/4.10.0.84/",
+      "sha256": "377d08a7e48a1405b5e84afcbe4798464ce7ee17081c1c23619c8b398ff18295",
+      "notes": "T2 video ingest. Exact pin opencv-python-headless==4.10.0.84. CI wheel (cp37-abi3, manylinux x86_64): opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 copied from the PyPI JSON API digests.sha256 for that filename. 4.10.0.84 ships FFmpeg 5.1 (avcodec 59.x), OpenSSL 1.1.1w, OpenBLAS, libgfortran, libquadmath, libpng, and libvpx, plus the static libraries listed in cv2.getBuildInformation() 3rdparty dependencies. It does not ship libaom, dav1d, libavif, or libdrm (those appear in later 4.14+ wheels)."
+    },
+    {
+      "name": "FFmpeg-libavcodec",
+      "version": "59.37.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "82a8362a2fba0bb6d6b8f565c472f2ae30fafa0f6836c7701a0ea4641dad0616",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libavcodec-9aae324f.so.59.37.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. LGPL verified by check_ffmpeg_lgpl_compliance() via avcodec_license() and avcodec_configuration()."
+    },
+    {
+      "name": "FFmpeg-libavformat",
+      "version": "59.27.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "fc0dacc9de38f9e2527f89e71267d7df7ec4f574f95acb44f0839bd9b7ecf068",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libavformat-3ff1be5b.so.59.27.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl."
+    },
+    {
+      "name": "FFmpeg-libavutil",
+      "version": "57.28.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "fc78622aa7f0647edf67de47958583f69dc034eb9c50f2efa853c7be1c53aba6",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libavutil-a0a0531e.so.57.28.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl."
+    },
+    {
+      "name": "OpenSSL-libcrypto",
+      "version": "1.1.1w",
+      "type": "library",
+      "license": "OpenSSL",
+      "source_url": "https://www.openssl.org/",
+      "sha256": "d28a738e776f5f5c17b3577b16b6dfc093132060612769d03cf4048eba10b7aa",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "bundled_package": "opencv-python-headless",
+      "bundled_package_version": "4.10.0.84",
+      "bundled_file": "opencv_python_headless.libs/libcrypto-337dac8b.so.1.1",
+      "notes": "Bundled in opencv_python_headless.libs/libcrypto-337dac8b.so.1.1 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. OpenSSL_version(0) on that libcrypto returns 'OpenSSL 1.1.1w  11 Sep 2023'. SPDX id is OpenSSL (OpenSSL License and original SSLeay license). 1.1.1 is end of life. Named exception (Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST) for this file only. Counsel confirmation required before release."
+    },
+    {
+      "name": "libgfortran",
+      "version": "3.0.0",
+      "type": "library",
+      "license": "GPL-3.0 WITH GCC-exception-3.1",
+      "source_url": "https://gcc.gnu.org/onlinedocs/libgfortran/",
+      "sha256": "55e3eb67306c2ff17e6f8a0810eaa0dcb26e94cd83924c5065d5040e87814608",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libgfortran-91cc3cb1.so.3.0.0 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Owner-approved GCC runtime exception (spec rev 3a)."
+    },
+    {
+      "name": "OpenBLAS",
+      "version": "0.3.3",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://www.openblas.net/",
+      "sha256": "79ec02b53f573cd7116a89f04c397473018e7fda05720b354d43505c19d47958",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libopenblas-r0-f650aae0.3.3.so of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Version 0.3.3 from the library's embedded name libopenblas-r0.3.3.so.debug."
+    },
+    {
+      "name": "libpng",
+      "version": "1.6.43",
+      "type": "library",
+      "license": "Libpng",
+      "source_url": "http://www.libpng.org/pub/png/libpng.html",
+      "sha256": "d368f960b9545b7af38e55dd6a44671ddf39dbff61589e9d6ef67e2b0a1ec766",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libpng16-1bde1c40.so.16.43.0 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Library version 1.6.43 (the file suffix 16.43.0 is the soname). cv2.getBuildInformation() reports PNG ver 1.6.43, and the .so contains 'libpng version 1.6.43'."
+    },
+    {
+      "name": "libquadmath",
+      "version": "0.0.0",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://gcc.gnu.org/onlinedocs/libquadmath/",
+      "sha256": "934c22ded0e7d169c4d4678876c96051adf3d94545da962f60b41659b075da3b",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libquadmath-96973f99.so.0.0.0 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. libquadmath is covered by the GNU Lesser General Public License, LGPL-2.1-or-later (GCC COPYING.LIB), not GPL-3.0 WITH GCC-exception-3.1. libgfortran remains on that GCC runtime exception."
+    },
+    {
+      "name": "OpenSSL-libssl",
+      "version": "1.1.1w",
+      "type": "library",
+      "license": "OpenSSL",
+      "source_url": "https://www.openssl.org/",
+      "sha256": "cedc4cdd914b92099831b6684ea346aa3ff2720ae7eb86ba59af4d8bae805a65",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "bundled_package": "opencv-python-headless",
+      "bundled_package_version": "4.10.0.84",
+      "bundled_file": "opencv_python_headless.libs/libssl-28bef1ac.so.1.1",
+      "notes": "Bundled in opencv_python_headless.libs/libssl-28bef1ac.so.1.1 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Same OpenSSL 1.1.1w build as libcrypto (OpenSSL_version(0) returned 'OpenSSL 1.1.1w  11 Sep 2023'). SPDX id is OpenSSL. Named exception (Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST) for this file only. Counsel confirmation required before release."
+    },
+    {
+      "name": "FFmpeg-libswresample",
+      "version": "4.7.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "e774be33f1a7d3ace801a51b62475a32e2ef5c45aed8cbf5fd82e4896da827d2",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libswresample-2ec4394e.so.4.7.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl."
+    },
+    {
+      "name": "FFmpeg-libswscale",
+      "version": "6.7.100",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://ffmpeg.org/",
+      "sha256": "2e9d87cf0bc36262075146b2d33e15a8ba398c80a6550af7678b83d42d485d50",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libswscale-2c3c8be7.so.6.7.100 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl."
+    },
+    {
+      "name": "libvpx",
+      "version": "1.14.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://chromium.googlesource.com/webm/libvpx/",
+      "sha256": "2061d817820fce0fc00797fd2dec8686eaf4646cb8c608bf8ff7090546dd545f",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in opencv_python_headless.libs/libvpx-c3a7933e.so.9.0.0 of opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Library version 1.14.0 from the strings 'WebM Project VP8 Encoder v1.14.0' and 'WebM Project VP9 Encoder v1.14.0'. The filename suffix 9.0.0 is the soname."
+    },
+    {
+      "name": "libjpeg-turbo",
+      "version": "3.0.3",
+      "type": "library",
+      "license": "IJG AND BSD-3-Clause AND Zlib",
+      "source_url": "https://github.com/libjpeg-turbo/libjpeg-turbo",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. cv2.getBuildInformation() reports JPEG build-libjpeg-turbo ver 3.0.3-70. The library version is 3.0.3; 70 is JPEG_LIB_VERSION from the OpenCV 4.10.0 libjpeg-turbo build. The cv2.abi3.so string is 'OpenCV version 3.0.3 (build opencv-4.10.0-libjpeg-turbo)'. Wheel LICENSE-3RD-PARTY.txt says libjpeg-turbo is covered by the IJG license, the modified 3-clause BSD license, and the zlib license."
+    },
+    {
+      "name": "libtiff",
+      "version": "4.6.0",
+      "type": "library",
+      "license": "libtiff",
+      "source_url": "https://libtiff.gitlab.io/libtiff/",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. cv2.getBuildInformation() reports TIFF build ver 42 - 4.6.0. OpenCV 4.10.0 3rdparty/libtiff sets LIBTIFF 4.6.0. Wheel LICENSE-3RD-PARTY.txt reproduces the libtiff license (Sam Leffler and Silicon Graphics)."
+    },
+    {
+      "name": "libwebp",
+      "version": "1.4.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://chromium.googlesource.com/webm/libwebp/",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. cv2.getBuildInformation() reports WEBP encoder ABI 0x020f, which is WEBP_ENCODER_ABI_VERSION, not the library version. OpenCV 4.10.0 3rdparty/libwebp sets ENC, DEC, and MUX versions to 1.4.0. Wheel LICENSE-3RD-PARTY.txt reproduces the 3-clause BSD license (Copyright 2010 Google Inc.)."
+    },
+    {
+      "name": "OpenJPEG",
+      "version": "2.5.0",
+      "type": "library",
+      "license": "BSD-2-Clause",
+      "source_url": "https://github.com/uclouvain/openjpeg",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name libopenjp2. cv2.getBuildInformation() reports JPEG 2000 build ver 2.5.0. OpenCV 4.10.0 3rdparty/openjpeg sets OPENJPEG_VERSION 2.5.0. Wheel LICENSE-3RD-PARTY.txt says the OpenJPEG copyright is made available under the 2-clause BSD license."
+    },
+    {
+      "name": "OpenEXR",
+      "version": "2.3.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://www.openexr.com/",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name IlmImf. cv2.getBuildInformation() reports OpenEXR build ver 2.3.0. OpenCV 4.10.0 3rdparty/openexr sets OPENEXR_VERSION 2.3.0. Wheel LICENSE-3RD-PARTY.txt reproduces the 3-clause BSD license (Copyright 2006 Industrial Light & Magic)."
+    },
+    {
+      "name": "protobuf",
+      "version": "3.19.1",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/protocolbuffers/protobuf",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name libprotobuf. cv2.getBuildInformation() reports Protobuf build 3.19.1. Wheel LICENSE-3RD-PARTY.txt reproduces the 3-clause BSD license (Copyright 2008 Google Inc.)."
+    },
+    {
+      "name": "flatbuffers",
+      "version": "23.5.9",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/google/flatbuffers",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. cv2.getBuildInformation() reports Flatbuffers builtin/3rdparty 23.5.9. OpenCV 4.10.0 3rdparty/flatbuffers defines FLATBUFFERS_VERSION 23.5.9. Wheel LICENSE-3RD-PARTY.txt includes the Apache License 2.0 for Flatbuffers."
+    },
+    {
+      "name": "ade",
+      "version": "0.1.2d",
+      "type": "library",
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/opencv/ade/releases/tag/v0.1.2d",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. Listed in cv2.getBuildInformation() 3rdparty dependencies. OpenCV 4.10.0 modules/gapi/cmake/DownloadADE.cmake fetches ade v0.1.2d. That tag's LICENSE is Apache-2.0. The wheel LICENSE-3RD-PARTY.txt has no ade section."
+    },
+    {
+      "name": "ittnotify",
+      "version": "3.0",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/opencv/opencv/tree/4.10.0/3rdparty/ittnotify",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. Listed in cv2.getBuildInformation() 3rdparty dependencies (Trace: YES with Intel ITT). OpenCV 4.10.0 3rdparty/ittnotify/include/ittnotify.h sets ITT_MAJOR 3 and ITT_MINOR 0 (API_VERSION_BUILD 20151119). The header is dual-licensed BSD-3-Clause OR GPL-2.0-only and says either license may be used. This row records the BSD-3-Clause option. The wheel LICENSE-3RD-PARTY.txt has no ittnotify section."
+    },
+    {
+      "name": "quirc",
+      "version": "1.0",
+      "type": "library",
+      "license": "ISC",
+      "source_url": "https://github.com/dlbeer/quirc",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. Wheel LICENSE-3RD-PARTY.txt includes the QUIRC notice (Copyright 2010-2012 Daniel Beer), which is the ISC license. OpenCV 4.10.0 3rdparty/quirc/src/quirc.c returns \"1.0\" from quirc_version(). cv2.abi3.so references QUIRC_DATA_TYPE_BYTE."
+    },
+    {
+      "name": "libspng",
+      "version": "0.7.4",
+      "type": "library",
+      "license": "BSD-2-Clause",
+      "source_url": "https://libspng.org/",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. Wheel LICENSE-3RD-PARTY.txt says Libspng is redistributed as a build option under the BSD 2-Clause License (Copyright 2018-2022 Randy). OpenCV 4.10.0 3rdparty/libspng/spng.h sets SPNG_VERSION 0.7.4."
+    },
+    {
+      "name": "Intel IPP ICV",
+      "version": "2021.11.0",
+      "type": "library",
+      "license": "LicenseRef-Intel-Simplified-Software-License",
+      "source_url": "https://www.intel.com/content/www/us/en/developer/tools/oneapi/ipp.html",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "bundled_package": "opencv-python-headless",
+      "bundled_package_version": "4.10.0.84",
+      "bundled_file": "cv2/cv2.abi3.so",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name ippicv. cv2.getBuildInformation() reports Intel IPP 2021.11.0 and links with --exclude-libs,libippicv.a. The package name in OpenCV 4.10.0 is ippicv_2021.11.0_lnx_intel64_20240201_general. Wheel LICENSE-3RD-PARTY.txt and that package's EULA.txt are the Intel Simplified Software License (Version October 2022). Named exception (Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST) for this file only. Counsel confirmation required before release."
+    },
+    {
+      "name": "Intel IPP IW",
+      "version": "2021.11.0",
+      "type": "library",
+      "license": "LicenseRef-Intel-Simplified-Software-License",
+      "source_url": "https://www.intel.com/content/www/us/en/developer/tools/oneapi/ipp.html",
+      "sha256": "72c7fe9b389ecd9549b6e9cdca35ee11940de15d13d46722b8412865cafabc78",
+      "bundled_in": "opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "bundled_package": "opencv-python-headless",
+      "bundled_package_version": "4.10.0.84",
+      "bundled_file": "cv2/cv2.abi3.so",
+      "notes": "Statically linked into cv2/cv2.abi3.so in opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. sha256 is that cv2.abi3.so; the wheel ships no separate object for this library. 3rdparty name ippiw. cv2.getBuildInformation() reports Intel IPP IW sources 2021.11.0 and links with --exclude-libs,libippiw.a. ippicv_lnx/iw/include/iw/iw_version.h sets IW_VERSION_STR 2021.11.0. The IW sources say use is governed by the license under which they were provided; that package EULA is the Intel Simplified Software License (Version October 2022), the same text the wheel prints for Intel IPP ICV. Named exception (Shitanshu Sharma, 21 Oct 2026, 7:45 AM IST) for this file only. Counsel confirmation required before release."
+    },
+    {
+      "name": "libgfortran",
+      "version": "5.0.0",
+      "type": "library",
+      "license": "GPL-3.0 WITH GCC-exception-3.1",
+      "source_url": "https://gcc.gnu.org/onlinedocs/libgfortran/",
+      "sha256": "14afb3129b1a8b50bc40a3b0820c7f1152ea9bc10121aab152943f7057472886",
+      "bundled_in": "numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in numpy.libs/libgfortran-040039e1.so.5.0.0 of numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. Owner-approved GCC runtime exception (spec rev 3a)."
+    },
+    {
+      "name": "OpenBLAS",
+      "version": "0.3.23.dev",
+      "type": "library",
+      "license": "BSD-3-Clause",
+      "source_url": "https://www.openblas.net/",
+      "sha256": "9254d0854dd7615e11de28d771ae408878ca8123a7ac204f21e4cc7a376cc2e5",
+      "bundled_in": "numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in numpy.libs/libopenblas64_p-r0-0cf96a72.3.23.dev.so of numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. The .so identifies itself as 'OpenBLAS 0.3.23.dev'."
+    },
+    {
+      "name": "libquadmath",
+      "version": "0.0.0",
+      "type": "library",
+      "license": "LGPL-2.1-or-later",
+      "source_url": "https://gcc.gnu.org/onlinedocs/libquadmath/",
+      "sha256": "934c22ded0e7d169c4d4678876c96051adf3d94545da962f60b41659b075da3b",
+      "bundled_in": "numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "notes": "Bundled in numpy.libs/libquadmath-96973f99.so.0.0.0 of numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl. libquadmath is covered by the GNU Lesser General Public License, LGPL-2.1-or-later (GCC COPYING.LIB), not GPL-3.0 WITH GCC-exception-3.1. libgfortran remains on that GCC runtime exception."
+    },
+    {
+      "name": "Synthetic smoke clip: corridor_normal",
+      "version": "1.0.0",
+      "type": "synthetic_clip",
+      "license": "MIT",
+      "source_url": "https://github.com/shitanshusharma/trace-search",
+      "sha256": "e5176ba50ea726dd08e9b6e3767a24b30f13bd63c712106342161e9dd012de59",
+      "license_version": "N/A (synthetic)",
+      "date_checked_ist": "2026-10-20",
+      "phash": [
+        "c1e7c35b3e1c1c34",
+        "c1e6c1d97c38393c",
+        "c3e6d39236383c2e",
+        "c3e7c3893c3c6c2c",
+        "c3e7c93c3c6c183a",
+        "c9e7cc6e66b81838",
+        "c967e3673e181866",
+        "c966e3c71c3c323c",
+        "cf67c3cc3c39380c",
+        "cf63c3cc36381c3c"
+      ],
+      "use": "SMOKE_ONLY",
+      "fixture_id": "FX-SMOKE-SYN-001",
+      "generator": "SyntheticVideoGenerator",
+      "generator_version": "1.0.0",
+      "generator_license": "MIT",
+      "seed": "{\"base_seed\": 42, \"offset\": 0, \"config\": {\"name\": \"corridor_normal\", \"duration_sec\": 12.0, \"num_figures\": 3, \"background_brightness\": 1.0, \"num_obstructions\": 2}}",
+      "notes": "Deterministic synthetic clip for smoke testing. Config: corridor_normal",
+      "path": "smoke/FX-SMOKE-SYN-001_corridor_normal.mp4"
+    },
+    {
+      "name": "Synthetic smoke clip: entrance_lowlight",
+      "version": "1.0.0",
+      "type": "synthetic_clip",
+      "license": "MIT",
+      "source_url": "https://github.com/shitanshusharma/trace-search",
+      "sha256": "906973f18529a861913dc734446a60635eb216bfdc56dfbf249e57764205150b",
+      "license_version": "N/A (synthetic)",
+      "date_checked_ist": "2026-10-20",
+      "phash": [
+        "cc99333399cc6666",
+        "8c9933339bcc6666",
+        "9c9933336ccc6c6c",
+        "9c9833736ccc6c6c",
+        "9c9833636dcccd92",
+        "9c9c73636dcc9292",
+        "8c9c73634d9c9696",
+        "8c9c7363ce9494cb",
+        "8c9c7363b594ce4a",
+        "8c9c7273b58d4a5a"
+      ],
+      "use": "SMOKE_ONLY",
+      "fixture_id": "FX-SMOKE-SYN-002",
+      "generator": "SyntheticVideoGenerator",
+      "generator_version": "1.0.0",
+      "generator_license": "MIT",
+      "seed": "{\"base_seed\": 42, \"offset\": 1, \"config\": {\"name\": \"entrance_lowlight\", \"duration_sec\": 10.0, \"num_figures\": 2, \"background_brightness\": 0.3, \"num_obstructions\": 1}}",
+      "notes": "Deterministic synthetic clip for smoke testing. Config: entrance_lowlight",
+      "path": "smoke/FX-SMOKE-SYN-002_entrance_lowlight.mp4"
+    },
+    {
+      "name": "Synthetic smoke clip: hallway_crowded",
+      "version": "1.0.0",
+      "type": "synthetic_clip",
+      "license": "MIT",
+      "source_url": "https://github.com/shitanshusharma/trace-search",
+      "sha256": "2cda6c41f8005ade7a136da39b622c08361359c67ea12afcee3d7b1cf11ef09a",
+      "license_version": "N/A (synthetic)",
+      "date_checked_ist": "2026-10-20",
+      "phash": [
+        "c29c1ccc691f92f3",
+        "c3991cc8693f3672",
+        "c3991eea602e65f1",
+        "c3bb1e60711f9193",
+        "c2ba3f41711eb2aa",
+        "c7b93e40701ce5e3",
+        "c53d1ecab11e42e3",
+        "c3351ee0b95e42e5",
+        "c3301ceaf94d69a3",
+        "c3111eaa716de8d5"
+      ],
+      "use": "SMOKE_ONLY",
+      "fixture_id": "FX-SMOKE-SYN-003",
+      "generator": "SyntheticVideoGenerator",
+      "generator_version": "1.0.0",
+      "generator_license": "MIT",
+      "seed": "{\"base_seed\": 42, \"offset\": 2, \"config\": {\"name\": \"hallway_crowded\", \"duration_sec\": 15.0, \"num_figures\": 5, \"background_brightness\": 0.85, \"num_obstructions\": 3}}",
+      "notes": "Deterministic synthetic clip for smoke testing. Config: hallway_crowded",
+      "path": "smoke/FX-SMOKE-SYN-003_hallway_crowded.mp4"
+    },
+    {
+      "name": "Synthetic smoke clip: parking_sparse",
+      "version": "1.0.0",
+      "type": "synthetic_clip",
+      "license": "MIT",
+      "source_url": "https://github.com/shitanshusharma/trace-search",
+      "sha256": "670f7d05a0c294a596019c75070ec46094a22bdd5927f6e194f96423b31bdc4b",
+      "license_version": "N/A (synthetic)",
+      "date_checked_ist": "2026-10-20",
+      "phash": [
+        "e0f0e0e1b896971f",
+        "e0f0e8e3b436870f",
+        "e0e0e8e3b43c4f4b",
+        "e1e0e8c3b53c4f4a",
+        "e1e0f0c3b53c4b1e",
+        "e1e0f0e1a53c4e1f",
+        "e1e0d0e1ad1e570f",
+        "e1e0d0e1a91c57af",
+        "e0e0d0e3aa1c57af",
+        "e0f0d0e2aa5d1faa"
+      ],
+      "use": "SMOKE_ONLY",
+      "fixture_id": "FX-SMOKE-SYN-004",
+      "generator": "SyntheticVideoGenerator",
+      "generator_version": "1.0.0",
+      "generator_license": "MIT",
+      "seed": "{\"base_seed\": 42, \"offset\": 3, \"config\": {\"name\": \"parking_sparse\", \"duration_sec\": 8.0, \"num_figures\": 2, \"background_brightness\": 0.95, \"num_obstructions\": 1}}",
+      "notes": "Deterministic synthetic clip for smoke testing. Config: parking_sparse",
+      "path": "smoke/FX-SMOKE-SYN-004_parking_sparse.mp4"
+    },
+    {
+      "name": "Synthetic smoke clip: lobby_occlusion",
+      "version": "1.0.0",
+      "type": "synthetic_clip",
+      "license": "MIT",
+      "source_url": "https://github.com/shitanshusharma/trace-search",
+      "sha256": "2bd4ead16ae01cc068ee591d2fad5e364c2e6de00195e6ccf1812d9c97ffb79a",
+      "license_version": "N/A (synthetic)",
+      "date_checked_ist": "2026-10-20",
+      "phash": [
+        "b393c24a483cb5fc",
+        "b793c248083cb7b7",
+        "b393834a4e1cb4d7",
+        "b193d34a6c0fb4f0",
+        "b193134b6e3c95b4",
+        "b193174a6e5cb4b2",
+        "b393d36a6a1cb4b0",
+        "b393936a681cb5d2",
+        "9793935a783cb483",
+        "9793834a683eb596"
+      ],
+      "use": "SMOKE_ONLY",
+      "fixture_id": "FX-SMOKE-SYN-005",
+      "generator": "SyntheticVideoGenerator",
+      "generator_version": "1.0.0",
+      "generator_license": "MIT",
+      "seed": "{\"base_seed\": 42, \"offset\": 4, \"config\": {\"name\": \"lobby_occlusion\", \"duration_sec\": 14.0, \"num_figures\": 4, \"background_brightness\": 0.75, \"num_obstructions\": 4}}",
+      "notes": "Deterministic synthetic clip for smoke testing. Config: lobby_occlusion",
+      "path": "smoke/FX-SMOKE-SYN-005_lobby_occlusion.mp4"
     }
   ]
 }

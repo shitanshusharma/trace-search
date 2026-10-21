@@ -7,13 +7,18 @@ name = "trace-search"
 version = "0.1.0"
 description = "Anonymous same-day cross-camera person route reconstruction for forensic search (code-only prototype)"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 license = {text = "MIT"}
 authors = [
     {name = "Shitanshu Sharma"}
 ]
 dependencies = [
-    "numpy==1.26.4",  # BSD-3-Clause
+    "numpy==1.26.4",
+    "opencv-python-headless==4.10.0.84",
+    "Pillow==13.0.0",
+    "imagehash==4.3.2",
+    "PyWavelets==1.9.0",
+    "scipy==1.17.1",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +34,24 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Semgrep --test fixtures are planted imports. Keep them out of ruff.
+extend-exclude = ["tests/semgrep"]
+
+# Main's copies of these files do not pass ruff format --check.
+# Do not reformat them. This is the only format exclude.
+[tool.ruff.format]
+exclude = [
+    "scripts/check_licenses.py",
+    "scripts/demo_planted_cases.py",
+    "src/trace_search/ingest/ffmpeg_check.py",
+    "tests/__init__.py",
+    "tests/test_comprehensive_fence.py",
+    "tests/test_full_closure_fence.py",
+    "tests/test_license_fence.py",
+    "tests/test_license_scanning.py",
+    "tests/test_package.py",
+    "tests/test_planted_fence.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
@@ -40,3 +63,6 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --strict-markers"
+markers = [
+    "ffmpeg_real: marks tests that load a real libavcodec",
+]

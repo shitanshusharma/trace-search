@@ -1,3 +1,19 @@
-# Core dependencies will be added by later tasks (T2-T7)
-# This file is maintained by the license fence process
-numpy==1.26.4
+# T1 runtime pins. SHA-256 values are the digests.sha256 fields from the PyPI JSON API
+# for the wheels pip selects on CPython 3.11 / manylinux x86_64.
+Pillow==13.0.0 \
+    --hash=sha256:a625df9a2a5597fa5e5266e01aefc82604bb85d291e3547981e863560d75da6c
+imagehash==4.3.2 \
+    --hash=sha256:02b0f965f8c77cd813f61d7d39031ea27d4780e7ebcad56c6cd6a709acc06e5f
+PyWavelets==1.9.0 \
+    --hash=sha256:d76b7fa8fc500b09201d689b4f15bf5887e30ffbe2e1f338eb8470590eb4521a
+scipy==1.17.1 \
+    --hash=sha256:43af8d1f3bea642559019edfe64e9b11192a8978efbd1539d7bc2aaa23d92de4
+
+# T2 runtime pins. Hashes are the PyPI JSON API digests.sha256 values for
+# the wheels CI installs (Python 3.11, manylinux2014 x86_64).
+# numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+numpy==1.26.4 \
+    --hash=sha256:666dbfb6ec68962c033a450943ded891bed2d54e6755e35e5835d63f4f6931d5
+# opencv_python_headless-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+opencv-python-headless==4.10.0.84 \
+    --hash=sha256:377d08a7e48a1405b5e84afcbe4798464ce7ee17081c1c23619c8b398ff18295
