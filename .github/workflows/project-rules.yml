@@ -52,7 +52,7 @@ jobs:
     
     - name: Upload violations report
       if: failure()
-      uses: actions/upload-artifact@604373da6381bf24206979c74d06a550515601b9 # v4.4.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: project-rules-violations
         path: project-rules-violations.json
