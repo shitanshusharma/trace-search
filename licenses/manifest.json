@@ -444,7 +444,7 @@
       "bundled_package": "Pillow",
       "bundled_package_version": "13.0.0",
       "bundled_file": "pillow.libs/libfreetype-57f805ba.so.6.20.6",
-      "notes": "Bundled in pillow.libs/libfreetype-57f805ba.so.6.20.6 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names FreeType 2.14.3, licence id FTL. The wheel LICENSE FREETYPE2 section is the FreeType Project License. The filename suffix 6.20.6 is the soname. Named exception for this file only (Shitanshu Sharma: \"Do all of it, FreeType under FTL only.\"). The same file contains the strings 1.3.1.zlib-ng and bzip2/libbzip2 with 1.0.8, 13-Jul-2019."
+      "notes": "Bundled in pillow.libs/libfreetype-57f805ba.so.6.20.6 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names FreeType 2.14.3, licence id FTL. The wheel LICENSE FREETYPE2 section is the FreeType Project License. The filename suffix 6.20.6 is the soname. Named exception for this file only (Shitanshu Sharma: \"Do all of it, FreeType under FTL only.\"). The same file contains the strings 1.3.1.zlib-ng and bzip2/libbzip2 with 1.0.8, 13-Jul-2019. Those are separate rows. This row stays FTL."
     },
     {
       "name": "HarfBuzz",
@@ -466,18 +466,18 @@
       "sha256": "38d5a01026f61afba1bb94698846722840067fc87b2ee9003fe8dcccf1bc155f",
       "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "bundled_file": "pillow.libs/libpng16-1d1ba958.so.16.58.0",
-      "notes": "Bundled in pillow.libs/libpng16-1d1ba958.so.16.58.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so contains 'libpng version 1.6.58'. The wheel LICENSE LIBPNG section is the PNG Reference Library License version 2, SPDX libpng-2.0. The Pillow SBOM does not list libpng. The filename suffix 16.58.0 is the soname. The same file contains the string 1.3.1.zlib-ng."
+      "notes": "Bundled in pillow.libs/libpng16-1d1ba958.so.16.58.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so contains 'libpng version 1.6.58'. The wheel LICENSE LIBPNG section is the PNG Reference Library License version 2, SPDX libpng-2.0. The Pillow SBOM does not list libpng. The filename suffix 16.58.0 is the soname. The same file contains the string 1.3.1.zlib-ng. That component is a separate row. This row stays libpng-2.0."
     },
     {
       "name": "libXau",
       "version": "1.0.9-3.el8",
       "type": "library",
-      "license": "X11",
+      "license": "MIT-open-group",
       "source_url": "https://gitlab.freedesktop.org/xorg/lib/libxau",
       "sha256": "8b5a93469805d3550471766696d4755f05bc6ca0587f22c03037ca7d12545c8b",
       "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "bundled_file": "pillow.libs/libXau-154567c4.so.6.0.0",
-      "notes": "Bundled in pillow.libs/libXau-154567c4.so.6.0.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so contains the version string 1.0.9-3.el8. The wheel LICENSE XAU section is the Open Group grant, SPDX X11. auditwheel records libXau 1.0.9-3.el8 with no licence id. The Pillow SBOM does not list libXau. The filename suffix 6.0.0 is the soname."
+      "notes": "Bundled in pillow.libs/libXau-154567c4.so.6.0.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so contains the version string 1.0.9-3.el8. The wheel LICENSE XAU section is the Open Group grant, SPDX MIT-open-group. auditwheel records libXau 1.0.9-3.el8 with no licence id. The Pillow SBOM does not list libXau. The filename suffix 6.0.0 is the soname."
     },
     {
       "name": "libxcb",
@@ -489,6 +489,39 @@
       "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "bundled_file": "pillow.libs/libxcb-9065bb12.so.1.1.0",
       "notes": "Bundled in pillow.libs/libxcb-9065bb12.so.1.1.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names libxcb 1.17.0, licence id X11. The wheel LICENSE XCB section is that grant. The filename suffix 1.1.0 is the soname."
+    },
+    {
+      "name": "bzip2",
+      "version": "1.0.8",
+      "type": "library",
+      "license": "bzip2-1.0.6",
+      "source_url": "https://sourceware.org/bzip2/",
+      "sha256": "5be086dea47fd1c3fadd431ee79fe0b5e5a0c6c38e78f1db55cf2dad17dea430",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libfreetype-57f805ba.so.6.20.6",
+      "notes": "Statically contained in pillow.libs/libfreetype-57f805ba.so.6.20.6 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. sha256 is that file; the wheel ships no separate object for this library. The .so contains bzip2/libbzip2, 1.0.8, 13-Jul-2019, and the build path bzip2-1.0.8. The wheel LICENSE BZIP2 section is the Julian Seward grant and states bzip2/libbzip2 version 1.0.8 of 13 July 2019. That grant is SPDX bzip2-1.0.6. The Pillow SBOM does not list bzip2. The FreeType row stays FTL."
+    },
+    {
+      "name": "zlib-ng",
+      "version": "2.3.3",
+      "type": "library",
+      "license": "Zlib",
+      "source_url": "https://github.com/zlib-ng/zlib-ng",
+      "sha256": "5be086dea47fd1c3fadd431ee79fe0b5e5a0c6c38e78f1db55cf2dad17dea430",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libfreetype-57f805ba.so.6.20.6",
+      "notes": "Statically contained in pillow.libs/libfreetype-57f805ba.so.6.20.6 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. sha256 is that file; the wheel ships no separate object for this library. The .so contains the string 1.3.1.zlib-ng and does not contain 2.3.3. The Pillow SBOM names this component zlib, version 2.3.3, licence id Zlib. The wheel LICENSE ZLIB section is the Jean-loup Gailly and Mark Adler grant. The FreeType row stays FTL."
+    },
+    {
+      "name": "zlib-ng",
+      "version": "2.3.3",
+      "type": "library",
+      "license": "Zlib",
+      "source_url": "https://github.com/zlib-ng/zlib-ng",
+      "sha256": "38d5a01026f61afba1bb94698846722840067fc87b2ee9003fe8dcccf1bc155f",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libpng16-1d1ba958.so.16.58.0",
+      "notes": "Statically contained in pillow.libs/libpng16-1d1ba958.so.16.58.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. sha256 is that file; the wheel ships no separate object for this library. The .so contains the string 1.3.1.zlib-ng and does not contain 2.3.3. The Pillow SBOM names this component zlib, version 2.3.3, licence id Zlib. The wheel LICENSE ZLIB section is the Jean-loup Gailly and Mark Adler grant. The libpng row stays libpng-2.0."
     },
     {
       "name": "ImageHash",

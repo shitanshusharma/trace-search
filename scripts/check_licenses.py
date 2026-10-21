@@ -179,8 +179,10 @@ ALLOWED_SPDX = {
     # ALLOWED_NON_SPDX before it was added. FTL is not one of them.
     'MIT-Modern-Variant',  # HarfBuzz Old MIT grant in the Pillow wheel
     'libpng-2.0',  # PNG Reference Library License version 2
-    'X11',  # libXau and libxcb in the Pillow wheel
+    'X11',  # libxcb in the Pillow wheel
     'BSD-3-Clause-Open-MPI',  # LAPACK inside scipy's OpenBLAS shared object
+    'MIT-open-group',  # libXau Open Group grant in the Pillow wheel
+    'bzip2-1.0.6',  # bzip2 1.0.8 statically contained in Pillow's libfreetype
 }
 
 # OpenSSL and LicenseRef-Intel-Simplified-Software-License are not
@@ -210,7 +212,7 @@ ALLOWED_NON_SPDX = {
     'MIT CMU License (MIT-CMU)',
     'Pexels License',  # For stock footage (§2a)
     'Pixabay Content License',
-    'Zlib',  # opencv-python-headless bundled libs
+    'Zlib',  # opencv bundled libs, and zlib-ng inside Pillow libfreetype and libpng
     'Libpng',  # opencv-python-headless bundled libs
     'libtiff',  # opencv-python-headless bundled libs
 }

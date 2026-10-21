@@ -19,4 +19,4 @@ Pillow's bundled FreeType is not on the global allowlist. Shitanshu Sharma: "Do 
 
 A match also requires the manifest row name (`FreeType`) and that file's sha256. The same installed-closure hash check applies. `FTL` on any other file fails. The FreeType credit line is in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
-`MIT-Modern-Variant`, `libpng-2.0`, `X11`, and `BSD-3-Clause-Open-MPI` are plain allowlist identifiers for the other Pillow bundled libraries and for LAPACK inside scipy's OpenBLAS file. They are not named exceptions.
+`MIT-Modern-Variant`, `libpng-2.0`, `X11`, `BSD-3-Clause-Open-MPI`, `MIT-open-group`, and `bzip2-1.0.6` are plain allowlist identifiers. `X11` is libxcb. `MIT-open-group` is libXau. `bzip2-1.0.6` is bzip2 1.0.8 inside Pillow's libfreetype. zlib-ng uses the existing non-SPDX identifier `Zlib`. They are not named exceptions.

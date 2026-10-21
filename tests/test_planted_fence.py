@@ -1456,9 +1456,10 @@ _NEW_PILLOW_FILES = {
     "pillow.libs/libfreetype-57f805ba.so.6.20.6": "FTL",
     "pillow.libs/libharfbuzz-fb49c9fc.so.0.61450.0": "MIT-Modern-Variant",
     "pillow.libs/libpng16-1d1ba958.so.16.58.0": "libpng-2.0",
-    "pillow.libs/libXau-154567c4.so.6.0.0": "X11",
+    "pillow.libs/libXau-154567c4.so.6.0.0": "MIT-open-group",
     "pillow.libs/libxcb-9065bb12.so.1.1.0": "X11",
 }
+_PRIMARY_PILLOW_NAMES = {"FreeType", "HarfBuzz", "libpng", "libXau", "libxcb"}
 _OPENBLAS_FILE = "scipy.libs/libscipy_openblas-6cdc3b4a.so"
 _OPENBLAS_LICENSE = "BSD-3-Clause AND BSD-3-Clause-Open-MPI"
 _ADDED_SPDX = {
@@ -1466,7 +1467,14 @@ _ADDED_SPDX = {
     "libpng-2.0",
     "X11",
     "BSD-3-Clause-Open-MPI",
+    "MIT-open-group",
+    "bzip2-1.0.6",
 }
+_CONTAINED_COMPONENTS = (
+    ("bzip2", "pillow.libs/libfreetype-57f805ba.so.6.20.6", "1.0.8", "bzip2-1.0.6"),
+    ("zlib-ng", "pillow.libs/libfreetype-57f805ba.so.6.20.6", "2.3.3", "Zlib"),
+    ("zlib-ng", "pillow.libs/libpng16-1d1ba958.so.16.58.0", "2.3.3", "Zlib"),
+)
 
 
 def _manifest_entries():
@@ -1478,7 +1486,9 @@ def _new_pillow_rows():
     rows = [
         entry
         for entry in _manifest_entries()
-        if entry.get("bundled_file") in _NEW_PILLOW_FILES
+        if entry.get("name") in _PRIMARY_PILLOW_NAMES
+        and str(entry.get("bundled_in", "")).startswith("pillow-13.0.0")
+        and entry.get("bundled_file") in _NEW_PILLOW_FILES
     ]
     assert len(rows) == 5
     return rows
@@ -1487,11 +1497,30 @@ def _new_pillow_rows():
 def _freetype_row():
     rows = [
         entry
-        for entry in _new_pillow_rows()
-        if entry["bundled_file"] == "pillow.libs/libfreetype-57f805ba.so.6.20.6"
+        for entry in _manifest_entries()
+        if entry.get("name") == "FreeType"
+        and entry.get("bundled_file") == "pillow.libs/libfreetype-57f805ba.so.6.20.6"
     ]
     assert len(rows) == 1
     return dict(rows[0])
+
+
+def _contained_component_rows():
+    found = []
+    for name, bundled_file, version, licence in _CONTAINED_COMPONENTS:
+        matches = [
+            entry
+            for entry in _manifest_entries()
+            if entry.get("name") == name
+            and entry.get("bundled_file") == bundled_file
+            and str(entry.get("bundled_in", "")).startswith("pillow-13.0.0")
+        ]
+        assert len(matches) == 1
+        row = matches[0]
+        assert row["version"] == version
+        assert row["license"] == licence
+        found.append(row)
+    return found
 
 
 def _openblas_row():
@@ -1533,7 +1562,10 @@ def test_planted_freetype_gpl_fails(planted):
     manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
     changed = False
     for entry in manifest["entries"]:
-        if entry.get("bundled_file") == "pillow.libs/libfreetype-57f805ba.so.6.20.6":
+        if (
+            entry.get("name") == "FreeType"
+            and entry.get("bundled_file") == "pillow.libs/libfreetype-57f805ba.so.6.20.6"
+        ):
             assert entry["license"] == "FTL"
             entry["license"] = planted
             changed = True
@@ -1628,7 +1660,7 @@ def test_openblas_expression_with_gpl_still_fails():
 
 
 def test_allowlist_adds_only_the_four_plain_strings():
-    """FTL stays off the allowlist. The four new ids are the only additions."""
+    """FTL stays off the allowlist. The plain ids in _ADDED_SPDX are the only additions."""
     previous = {
         "MIT",
         "Apache-2.0",
@@ -1693,6 +1725,10 @@ def test_allowlist_adds_only_the_four_plain_strings():
         "LicenseRef-Intel-Simplified-Software-License",
     ]
     assert "FTL" not in {spec["license"] for spec in cl.OPENCV_BUNDLED_FILE_EXCEPTIONS}
+    assert "Zlib" in cl.ALLOWED_NON_SPDX
+    assert "Zlib" not in cl.ALLOWED_SPDX
+    assert "bzip2-1.0.6" not in cl.ALLOWED_NON_SPDX
+    assert "MIT-open-group" not in cl.ALLOWED_NON_SPDX
 
 
 def test_freetype_credit_line_uses_the_wheel_sentence():
@@ -1753,3 +1789,65 @@ def test_missing_libfreetype_on_disk_fails(tmp_path, monkeypatch):
         f"FreeType: bundled file {relative} is missing "
         f"(manifest sha256 {row['sha256']}, pinned sha256 {row['sha256']})"
     ) in stdout
+
+
+def test_libxau_row_licence_is_mit_open_group():
+    """libXau is MIT-open-group. libxcb stays X11."""
+    rows = [
+        entry
+        for entry in _manifest_entries()
+        if entry.get("bundled_file") == "pillow.libs/libXau-154567c4.so.6.0.0"
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["name"] == "libXau"
+    assert row["license"] == "MIT-open-group"
+    xcb = [
+        entry
+        for entry in _new_pillow_rows()
+        if entry["bundled_file"] == "pillow.libs/libxcb-9065bb12.so.1.1.0"
+    ]
+    assert len(xcb) == 1
+    assert xcb[0]["license"] == "X11"
+    assert "MIT-open-group" in cl.ALLOWED_SPDX
+    assert "X11" in cl.ALLOWED_SPDX
+    code, stdout, _ = invoke_main(make_manifest([row, xcb[0]]))
+    assert code == 0, stdout
+    assert "License fence check PASSED" in stdout
+
+
+def test_contained_bzip2_and_zlib_rows_pass():
+    """bzip2 and zlib-ng rows pass, and the FreeType row stays bare FTL."""
+    rows = _contained_component_rows()
+    freetype = _freetype_row()
+    libpng = [
+        entry
+        for entry in _new_pillow_rows()
+        if entry["name"] == "libpng"
+    ]
+    assert len(libpng) == 1
+    assert freetype["license"] == "FTL"
+    assert libpng[0]["license"] == "libpng-2.0"
+    assert cl.PILLOW_BUNDLED_FILE_EXCEPTIONS[0]["license"] == "FTL"
+    assert cl.PILLOW_BUNDLED_FILE_EXCEPTIONS[0]["sha256"] == freetype["sha256"]
+    by_file = {entry["bundled_file"]: entry["sha256"] for entry in (freetype, libpng[0])}
+    for row in rows:
+        assert row["sha256"] == by_file[row["bundled_file"]]
+    assert cl.is_license_allowed("bzip2-1.0.6") is True
+    assert cl.is_license_allowed("Zlib") is True
+    code, stdout, _ = invoke_main(make_manifest(rows + [freetype, libpng[0]]))
+    assert code == 0, stdout
+    assert "License fence check PASSED" in stdout
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_contained_component_row_with_gpl_fails(index):
+    """A bzip2 or zlib-ng row recorded as GPL-2.0 fails the fence."""
+    row = dict(_contained_component_rows()[index])
+    assert "GPL" not in row["license"]
+    row["license"] = "GPL-2.0"
+    code, stdout, _ = invoke_main(make_manifest([row]))
+    assert code == 1, stdout
+    assert row["name"] in stdout
+    assert "banned license 'GPL-2.0'" in stdout
+    assert "banned pattern '^GPL-[123]'" in stdout
