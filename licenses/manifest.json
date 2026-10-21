@@ -434,6 +434,63 @@
       "notes": "Bundled in pillow.libs/libzstd-40ad5e7e.so.1.5.7 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The wheel LICENSE ZSTD section is the 3-clause BSD grant. The .so build path is zstd-1.5.7. The SBOM does not list zstd."
     },
     {
+      "name": "FreeType",
+      "version": "2.14.3",
+      "type": "library",
+      "license": "FTL",
+      "source_url": "https://freetype.org",
+      "sha256": "5be086dea47fd1c3fadd431ee79fe0b5e5a0c6c38e78f1db55cf2dad17dea430",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_package": "Pillow",
+      "bundled_package_version": "13.0.0",
+      "bundled_file": "pillow.libs/libfreetype-57f805ba.so.6.20.6",
+      "notes": "Bundled in pillow.libs/libfreetype-57f805ba.so.6.20.6 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names FreeType 2.14.3, licence id FTL. The wheel LICENSE FREETYPE2 section is the FreeType Project License. The filename suffix 6.20.6 is the soname. Named exception for this file only (Shitanshu Sharma: \"Do all of it, FreeType under FTL only.\"). The same file contains the strings 1.3.1.zlib-ng and bzip2/libbzip2 with 1.0.8, 13-Jul-2019."
+    },
+    {
+      "name": "HarfBuzz",
+      "version": "14.5.0",
+      "type": "library",
+      "license": "MIT-Modern-Variant",
+      "source_url": "https://harfbuzz.github.io",
+      "sha256": "4a30b9e3a12a72691b70b14945f3e8adaa8c2bc191bd8b706aae6ed0f0fa9fc0",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libharfbuzz-fb49c9fc.so.0.61450.0",
+      "notes": "Bundled in pillow.libs/libharfbuzz-fb49c9fc.so.0.61450.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names HarfBuzz 14.5.0. The wheel LICENSE HARFBUZZ section is the Old MIT grant, SPDX MIT-Modern-Variant. The SBOM licence id is MIT. The .so contains the version string 14.5.0. The filename suffix 0.61450.0 is the soname."
+    },
+    {
+      "name": "libpng",
+      "version": "1.6.58",
+      "type": "library",
+      "license": "libpng-2.0",
+      "source_url": "http://www.libpng.org/pub/png/libpng.html",
+      "sha256": "38d5a01026f61afba1bb94698846722840067fc87b2ee9003fe8dcccf1bc155f",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libpng16-1d1ba958.so.16.58.0",
+      "notes": "Bundled in pillow.libs/libpng16-1d1ba958.so.16.58.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so contains 'libpng version 1.6.58'. The wheel LICENSE LIBPNG section is the PNG Reference Library License version 2, SPDX libpng-2.0. The Pillow SBOM does not list libpng. The filename suffix 16.58.0 is the soname. The same file contains the string 1.3.1.zlib-ng."
+    },
+    {
+      "name": "libXau",
+      "version": "1.0.9-3.el8",
+      "type": "library",
+      "license": "X11",
+      "source_url": "https://gitlab.freedesktop.org/xorg/lib/libxau",
+      "sha256": "8b5a93469805d3550471766696d4755f05bc6ca0587f22c03037ca7d12545c8b",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libXau-154567c4.so.6.0.0",
+      "notes": "Bundled in pillow.libs/libXau-154567c4.so.6.0.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so contains the version string 1.0.9-3.el8. The wheel LICENSE XAU section is the Open Group grant, SPDX X11. auditwheel records libXau 1.0.9-3.el8 with no licence id. The Pillow SBOM does not list libXau. The filename suffix 6.0.0 is the soname."
+    },
+    {
+      "name": "libxcb",
+      "version": "1.17.0",
+      "type": "library",
+      "license": "X11",
+      "source_url": "https://xcb.freedesktop.org",
+      "sha256": "f3707868b0b2e78dbdac0994d2977b0ec4303c9c6250f03576b1bd93c42cad63",
+      "bundled_in": "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "bundled_file": "pillow.libs/libxcb-9065bb12.so.1.1.0",
+      "notes": "Bundled in pillow.libs/libxcb-9065bb12.so.1.1.0 of pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. SBOM names libxcb 1.17.0, licence id X11. The wheel LICENSE XCB section is that grant. The filename suffix 1.1.0 is the soname."
+    },
+    {
       "name": "ImageHash",
       "version": "4.3.2",
       "type": "library",
@@ -508,12 +565,12 @@
       "name": "OpenBLAS",
       "version": "0.3.30",
       "type": "library",
-      "license": "BSD-3-Clause",
+      "license": "BSD-3-Clause AND BSD-3-Clause-Open-MPI",
       "source_url": "https://github.com/OpenMathLib/OpenBLAS/",
       "sha256": "8fb864c29cac4b25f6e2c139491ea96f2724dde42d51394f84e9c4a622e34790",
       "bundled_in": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "bundled_file": "scipy.libs/libscipy_openblas-6cdc3b4a.so",
-      "notes": "Bundled in scipy.libs/libscipy_openblas-6cdc3b4a.so of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so identifies itself as OpenBLAS 0.3.30. LICENSE.txt names this file OpenBLAS, BSD-3-Clause."
+      "notes": "Bundled in scipy.libs/libscipy_openblas-6cdc3b4a.so of scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl. The .so identifies itself as OpenBLAS 0.3.30. LICENSE.txt names this file OpenBLAS, BSD-3-Clause, and LAPACK bundled in that file, BSD-3-Clause-Open-MPI."
     },
     {
       "name": "numpy",

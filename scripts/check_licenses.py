@@ -133,6 +133,28 @@ OPENCV_BUNDLED_FILE_EXCEPTIONS = (
     },
 )
 
+# Named exception for Pillow's bundled FreeType only.
+# Shitanshu Sharma: "Do all of it, FreeType under FTL only."
+# FTL stays out of ALLOWED_SPDX and ALLOWED_NON_SPDX. A row matches only
+# when the licence string is the single bare term FTL, and the library
+# version, the bundling package, that package's version, the file path,
+# the manifest row name, and that file's sha256 all match. The
+# installed-closure scan hashes the file in site-packages. The exception
+# applies only when that on-disk sha256 matches both the manifest row and
+# the pinned value. A missing file or a mismatch fails closed. Any other
+# package, version, file, name, or hash fails.
+PILLOW_BUNDLED_FILE_EXCEPTIONS = (
+    {
+        'license': 'FTL',
+        'version': '2.14.3',
+        'package': 'Pillow',
+        'package_version': '13.0.0',
+        'name': 'FreeType',
+        'file': 'pillow.libs/libfreetype-57f805ba.so.6.20.6',
+        'sha256': '5be086dea47fd1c3fadd431ee79fe0b5e5a0c6c38e78f1db55cf2dad17dea430',
+    },
+)
+
 # Exact allowed SPDX identifiers (case-sensitive for SPDX compliance)
 ALLOWED_SPDX = {
     'MIT',
@@ -153,10 +175,17 @@ ALLOWED_SPDX = {
     'HPND',
     'MIT-CMU',
     'IJG',  # Independent JPEG Group; libjpeg-turbo ships IJG AND BSD-3-Clause AND Zlib
+    # Pillow / scipy bundled libs. Each id was checked against this set and
+    # ALLOWED_NON_SPDX before it was added. FTL is not one of them.
+    'MIT-Modern-Variant',  # HarfBuzz Old MIT grant in the Pillow wheel
+    'libpng-2.0',  # PNG Reference Library License version 2
+    'X11',  # libXau and libxcb in the Pillow wheel
+    'BSD-3-Clause-Open-MPI',  # LAPACK inside scipy's OpenBLAS shared object
 }
 
 # OpenSSL and LicenseRef-Intel-Simplified-Software-License are not
 # allowlisted here. See OPENCV_BUNDLED_FILE_EXCEPTIONS.
+# FTL is not allowlisted here. See PILLOW_BUNDLED_FILE_EXCEPTIONS.
 
 # (normalized package name, exact pip-licenses string) -> SPDX id.
 # The license text is exact, including case, and only that package is rewritten.
@@ -296,17 +325,18 @@ def is_gcc_runtime_exception(license_str: str, component_name: str) -> bool:
     )
 
 
-def is_opencv_bundled_file_exception(
+def _matches_bundled_file_exception(
     license_str: str,
     entry: dict | None,
-    on_disk: dict[str, list[str]] | None = None,
+    on_disk: dict[str, list[str]] | None,
+    specs: tuple[dict, ...],
 ) -> bool:
-    """True only for one named file inside opencv-python-headless 4.10.0.84.
+    """True when license_str is one whole bare term and one spec matches.
 
-    license_str must be the entry's whole licence. A component split out of
-    OR, AND, or WITH does not match, so a banned term still fails.
-    When on_disk is set, the installed file's sha256 must match the manifest
-    row and the pinned value. None means the disk check is not running.
+    A component split out of OR, AND, or WITH does not match, so a banned
+    term still fails. When on_disk is set, the installed file's sha256 must
+    match the manifest row and the pinned value. None means the disk check
+    is not running.
     """
     if not isinstance(entry, dict):
         return False
@@ -323,7 +353,7 @@ def is_opencv_bundled_file_exception(
     if not all(isinstance(value, str) and value for value in fields):
         return False
     package_norm = normalize_package_name(package)
-    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+    for spec in specs:
         if (
             license_str.strip() == spec['license']
             and version == spec['version']
@@ -338,6 +368,28 @@ def is_opencv_bundled_file_exception(
             digests = on_disk.get(bundled_file, [])
             return digests == [spec['sha256']]
     return False
+
+
+def is_opencv_bundled_file_exception(
+    license_str: str,
+    entry: dict | None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> bool:
+    """True only for one named file inside opencv-python-headless 4.10.0.84."""
+    return _matches_bundled_file_exception(
+        license_str, entry, on_disk, OPENCV_BUNDLED_FILE_EXCEPTIONS
+    )
+
+
+def is_pillow_bundled_file_exception(
+    license_str: str,
+    entry: dict | None,
+    on_disk: dict[str, list[str]] | None = None,
+) -> bool:
+    """True only for Pillow 13.0.0 libfreetype under the bare licence FTL."""
+    return _matches_bundled_file_exception(
+        license_str, entry, on_disk, PILLOW_BUNDLED_FILE_EXCEPTIONS
+    )
 
 
 def installed_site_roots() -> list[Path]:
@@ -411,11 +463,11 @@ def collect_opencv_bundled_hashes(
     manifest: dict,
     roots: list[Path] | None = None,
 ) -> dict[str, list[str]]:
-    """Hash each named OpenCV file that the manifest claims."""
+    """Hash each named OpenCV file, and Pillow's libfreetype, that the manifest claims."""
     if roots is None:
         roots = installed_site_roots()
     on_disk: dict[str, list[str]] = {}
-    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS + PILLOW_BUNDLED_FILE_EXCEPTIONS:
         relative = spec['file']
         if relative in on_disk:
             continue
@@ -438,7 +490,7 @@ def opencv_bundled_hash_violations(
     violations: list[str] = []
     ok_lines: list[str] = []
     reported_ok: set[str] = set()
-    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS:
+    for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS + PILLOW_BUNDLED_FILE_EXCEPTIONS:
         row = _opencv_exception_row(manifest, spec)
         if row is None:
             continue
@@ -663,15 +715,16 @@ def _license_decision(
     operator. WITH is allowed only for the named GCC runtime exception.
 
     A single bare term is allowed first when it matches
-    OPENCV_BUNDLED_FILE_EXCEPTIONS. OR, AND, and WITH skip that exception and
-    use the parser below unchanged.
+    OPENCV_BUNDLED_FILE_EXCEPTIONS or PILLOW_BUNDLED_FILE_EXCEPTIONS.
+    OR, AND, and WITH skip those exceptions and use the parser below unchanged.
     """
     license_str = license_str.strip()
     if not license_str:
         return True, False, "empty license"
 
-    if _is_single_bare_license_term(license_str) and is_opencv_bundled_file_exception(
-        license_str, entry, on_disk
+    if _is_single_bare_license_term(license_str) and (
+        is_opencv_bundled_file_exception(license_str, entry, on_disk)
+        or is_pillow_bundled_file_exception(license_str, entry, on_disk)
     ):
         return False, True, ""
 
@@ -1231,15 +1284,26 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
         if on_disk:
-            print("=== Checking OpenCV bundled file hashes ===")
+            opencv_on_disk = any(
+                spec['file'] in on_disk for spec in OPENCV_BUNDLED_FILE_EXCEPTIONS
+            )
+            pillow_on_disk = any(
+                spec['file'] in on_disk for spec in PILLOW_BUNDLED_FILE_EXCEPTIONS
+            )
+            if opencv_on_disk:
+                print("=== Checking OpenCV bundled file hashes ===")
+            if pillow_on_disk:
+                print("=== Checking Pillow bundled file hashes ===")
             hash_violations, hash_ok = opencv_bundled_hash_violations(manifest, on_disk)
             for violation in hash_violations:
                 print(f"ERROR: {violation}")
                 all_violations.append(violation)
             for line in hash_ok:
                 print(f"✓ {line}")
-            if not hash_violations:
+            if not hash_violations and opencv_on_disk:
                 print("✓ Installed OpenCV bundled files match the manifest and the pin")
+            if not hash_violations and pillow_on_disk:
+                print("✓ Installed Pillow bundled FreeType file matches the manifest and the pin")
             print()
 
     ffmpeg_status = 'NOT_A_DEPENDENCY'

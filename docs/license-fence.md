@@ -10,3 +10,13 @@ OpenSSL and Intel IPP are not on the global allowlist. Shitanshu Sharma, 21 Oct 
 | `LicenseRef-Intel-Simplified-Software-License` | 2021.11.0 | opencv-python-headless 4.10.0.84 | `cv2/cv2.abi3.so` (Intel IPP ICV and Intel IPP IW) |
 
 A match also requires the manifest row name (`OpenSSL-libcrypto`, `OpenSSL-libssl`, `Intel IPP ICV`, `Intel IPP IW`) and that file's sha256. The installed-closure check hashes each named file in site-packages. The exception applies only when that on-disk sha256 matches both the manifest row and the pinned value. A missing file or a mismatch fails closed and names the file and both hashes. The same licence fails for any other package, version, file, name, or hash. `IJG` is an allowlist identifier because libjpeg-turbo ships `IJG AND BSD-3-Clause AND Zlib`. It is not one of these named exceptions.
+
+Pillow's bundled FreeType is not on the global allowlist. Shitanshu Sharma: "Do all of it, FreeType under FTL only."
+
+| Licence | Version | Package | Files |
+|---|---|---|---|
+| `FTL` | 2.14.3 | Pillow 13.0.0 | `pillow.libs/libfreetype-57f805ba.so.6.20.6` |
+
+A match also requires the manifest row name (`FreeType`) and that file's sha256. The same installed-closure hash check applies. `FTL` on any other file fails. The FreeType credit line is in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
+
+`MIT-Modern-Variant`, `libpng-2.0`, `X11`, and `BSD-3-Clause-Open-MPI` are plain allowlist identifiers for the other Pillow bundled libraries and for LAPACK inside scipy's OpenBLAS file. They are not named exceptions.
