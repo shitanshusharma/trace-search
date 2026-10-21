@@ -106,9 +106,17 @@ def _build_detector(choice: str, weights: Path | None) -> Detector:
 def _clip_paths(directory: Path) -> list[Path]:
     if not directory.is_dir():
         raise FileNotFoundError(f"clips directory not found: {directory}")
-    clips = [
-        path for path in directory.iterdir() if path.is_file() and path.suffix.lower() == ".mp4"
-    ]
+    clips: list[Path] = []
+    skipped: list[Path] = []
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix.lower() == ".mp4":
+            clips.append(path)
+        else:
+            skipped.append(path)
+    for path in sorted(skipped, key=lambda item: item.name):
+        print(f"skipped: {path.name}")
     clips.sort(key=lambda path: path.name)
     return clips
 

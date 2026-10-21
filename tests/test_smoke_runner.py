@@ -130,6 +130,31 @@ def test_scripted_figures_on_five_synthetic_clips(
     assert _smoke_files() == before_smoke
 
 
+def test_non_mp4_file_is_printed_as_skipped(tmp_path: Path) -> None:
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    (clips / "notes.mov").write_bytes(b"not a clip")
+    (clips / "also.avi").write_bytes(b"not a clip")
+    code, output = _run(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--clips-dir",
+            str(clips),
+            "--db",
+            str(tmp_path / "smoke.sqlite"),
+            "--detector",
+            "scripted-figures",
+            "--min-clips",
+            "1",
+        ]
+    )
+    assert code == 1, output
+    assert "skipped: also.avi" in output
+    assert "skipped: notes.mov" in output
+    assert output.index("skipped: also.avi") < output.index("skipped: notes.mov")
+
+
 @pytest.mark.parametrize("min_clips", ["0", "-1"])
 def test_min_clips_below_one_exits_1(tmp_path: Path, min_clips: str) -> None:
     clips = tmp_path / "clips"
