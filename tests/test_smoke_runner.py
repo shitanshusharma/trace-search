@@ -124,8 +124,12 @@ def test_scripted_figures_on_five_synthetic_clips(
         assert fixture_id in output
         assert "frames=" in output
         assert "detections=" in output
-        assert "tracks=" in output
-        assert store.count(camera_id=fixture_id, run_id=run_id, derived_from="SMOKE") > 0
+        rows = store.read(fixture_id, run_id)
+        distinct = len({row.track_id for row in rows})
+        assert distinct > 0
+        assert distinct < len(rows)
+        assert f"tracks={distinct}" in output
+        assert store.count(camera_id=fixture_id, run_id=run_id, derived_from="SMOKE") == len(rows)
     assert _porcelain() == before_status
     assert _smoke_files() == before_smoke
 

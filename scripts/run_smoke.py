@@ -146,8 +146,16 @@ def _new_tracker() -> ByteTracker:
     return ByteTracker()
 
 
-def _report_clip(fixture_id: str, stats: RunStats) -> None:
-    print(f"{fixture_id} frames={stats.frames} detections={stats.detections} tracks={stats.tracks}")
+def _distinct_tracks(store: TrackStore, camera_id: str, run_id: str) -> int:
+    """Count track ids for this run. ``RunStats.tracks`` counts observation rows."""
+    rows = store.read(camera_id, run_id)
+    return len({row.track_id for row in rows})
+
+
+def _report_clip(fixture_id: str, stats: RunStats, distinct_tracks: int) -> None:
+    print(
+        f"{fixture_id} frames={stats.frames} detections={stats.detections} tracks={distinct_tracks}"
+    )
 
 
 def _run_clip(
@@ -169,7 +177,7 @@ def _run_clip(
         _DERIVED_FROM,
     )
     stats = stats_by_camera[fixture_id]
-    _report_clip(fixture_id, stats)
+    _report_clip(fixture_id, stats, _distinct_tracks(store, fixture_id, run_id))
     recorded = store.count(camera_id=fixture_id, run_id=run_id, derived_from=_DERIVED_FROM)
     if recorded < 1:
         raise RuntimeError(f"{fixture_id} has no persisted SMOKE observations")
