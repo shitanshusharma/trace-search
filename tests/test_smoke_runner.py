@@ -130,6 +130,29 @@ def test_scripted_figures_on_five_synthetic_clips(
     assert _smoke_files() == before_smoke
 
 
+@pytest.mark.parametrize("min_clips", ["0", "-1"])
+def test_min_clips_below_one_exits_1(tmp_path: Path, min_clips: str) -> None:
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    code, output = _run(
+        [
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--clips-dir",
+            str(clips),
+            "--db",
+            str(tmp_path / "smoke.sqlite"),
+            "--detector",
+            "scripted-figures",
+            "--min-clips",
+            min_clips,
+        ]
+    )
+    assert code == 1, output
+    assert "--min-clips must be at least 1" in output
+    assert "0 clips, 0 errors" not in output
+
+
 def test_min_clips_six_on_five_clips_exits_1(
     five_synthetic_clips: tuple[Path, Path, list[str]],
     tmp_path: Path,

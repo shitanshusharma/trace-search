@@ -207,9 +207,11 @@ def _run_all(args: _Args, detector: Detector) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run every clip in ``--clips-dir`` and return the process status."""
-    args = _parse(argv)
-    print(_BANNER)
     try:
+        args = _parse(argv)
+        if args.min_clips < 1:
+            raise ValueError("--min-clips must be at least 1")
+        print(_BANNER)
         detector = _build_detector(args.detector, args.weights)
         return _run_all(args, detector)
     except (FileNotFoundError, ValueError, OSError) as exc:
