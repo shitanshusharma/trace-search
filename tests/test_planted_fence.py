@@ -1032,8 +1032,6 @@ def test_openssl_or_gpl_still_fails_on_a_named_file():
 
 
 def test_openssl_and_ipp_are_not_globally_allowed():
-    import scripts.check_licenses as cl
-
     assert cl.is_license_allowed("OpenSSL") is False
     assert cl.is_license_allowed("LicenseRef-Intel-Simplified-Software-License") is False
     assert "OpenSSL" not in cl.ALLOWED_SPDX
@@ -1135,8 +1133,6 @@ def test_swapped_bundled_binary_fails_installed_closure(tmp_path, monkeypatch):
     """A different file at the named path fails while the manifest stays pinned."""
     import hashlib
 
-    import scripts.check_licenses as cl
-
     rows = _real_rows(
         "OpenSSL-libcrypto",
         "OpenSSL-libssl",
@@ -1177,8 +1173,6 @@ def test_swapped_bundled_binary_fails_installed_closure(tmp_path, monkeypatch):
 
 def _run_installed_closure(rows, tmp_path, monkeypatch, roots):
     """Run the installed-closure fence against the given site roots."""
-    import scripts.check_licenses as cl
-
     monkeypatch.setattr(cl, "installed_site_roots", lambda: list(roots))
     monkeypatch.setattr(
         cl,
@@ -1259,8 +1253,6 @@ def test_two_site_roots_different_digests_fail_installed_closure(tmp_path, monke
 
 def test_installed_opencv_bundled_files_match_passes(tmp_path, monkeypatch):
     """All three named files hashing to the pin passes the installed closure."""
-    import scripts.check_licenses as cl
-
     rows = _real_rows(
         "OpenSSL-libcrypto",
         "OpenSSL-libssl",
