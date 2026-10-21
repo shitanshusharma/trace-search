@@ -241,6 +241,99 @@ def test_score_not_above_threshold_is_dropped() -> None:
     assert found[0].score == pytest.approx(0.26)
 
 
+def _person_scores(*values: float) -> np.ndarray:
+    scores = np.zeros((len(values), 80), dtype=np.float64)
+    scores[:, _PERSON] = values
+    return scores
+
+
+def _inclusive_iou(left: np.ndarray, right: np.ndarray) -> float:
+    """Upstream pixel-inclusive overlap. Tests use it only as a contrast."""
+    x1 = max(float(left[0]), float(right[0]))
+    y1 = max(float(left[1]), float(right[1]))
+    x2 = min(float(left[2]), float(right[2]))
+    y2 = min(float(left[3]), float(right[3]))
+    width = max(0.0, x2 - x1 + 1.0)
+    height = max(0.0, y2 - y1 + 1.0)
+    intersection = width * height
+    left_area = (float(left[2]) - float(left[0]) + 1.0) * (float(left[3]) - float(left[1]) + 1.0)
+    right_area = (float(right[2]) - float(right[0]) + 1.0) * (
+        float(right[3]) - float(right[1]) + 1.0
+    )
+    return intersection / (left_area + right_area - intersection)
+
+
+def test_three_box_chain_suppresses_the_overlapping_tail() -> None:
+    """A overlaps nothing, B overlaps C, and scores fall A > B > C."""
+    boxes = np.array(
+        [
+            [0.0, 0.0, 10.0, 10.0],
+            [20.0, 0.0, 30.0, 10.0],
+            [22.0, 0.0, 32.0, 10.0],
+        ],
+        dtype=np.float64,
+    )
+    assert _continuous_iou(boxes[0], boxes[1]) == pytest.approx(0.0)
+    assert _continuous_iou(boxes[1], boxes[2]) == pytest.approx(2.0 / 3.0)
+    kept = nms(boxes, _person_scores(0.9, 0.8, 0.7), iou=0.45)
+    assert kept.shape[0] == 2
+    assert kept[:, 4].tolist() == pytest.approx([0.9, 0.8])
+
+
+def test_small_box_inside_a_large_one_is_kept() -> None:
+    large = np.array([0.0, 0.0, 10.0, 10.0], dtype=np.float64)
+    small = np.array([1.0, 1.0, 3.0, 3.0], dtype=np.float64)
+    assert _continuous_iou(large, small) == pytest.approx(0.04)
+    assert _continuous_iou(large, small) < 0.45
+    kept = nms(np.stack((large, small)), _person_scores(0.9, 0.8), iou=0.45)
+    assert kept.shape[0] == 2
+
+
+def test_iou_equal_to_the_threshold_keeps_both() -> None:
+    first = np.array([0.0, 0.0, 10.0, 10.0], dtype=np.float64)
+    second = np.array([0.0, 0.0, 10.0, 5.0], dtype=np.float64)
+    assert _continuous_iou(first, second) == pytest.approx(0.5)
+    kept = nms(np.stack((first, second)), _person_scores(0.9, 0.8), iou=0.5)
+    assert kept.shape[0] == 2
+
+
+def test_nms_honours_a_non_default_iou() -> None:
+    first = np.array([0.0, 0.0, 100.0, 100.0], dtype=np.float64)
+    second = np.array([0.0, 0.0, 100.0, 80.0], dtype=np.float64)
+    assert _continuous_iou(first, second) == pytest.approx(0.8)
+    boxes = np.stack((first, second))
+    scores = _person_scores(0.95, 0.7)
+    assert nms(boxes, scores, iou=0.9).shape[0] == 2
+    assert nms(boxes, scores, iou=0.2).shape[0] == 1
+
+
+def test_equal_scores_keep_the_lower_index() -> None:
+    first = np.array([0.0, 0.0, 10.0, 10.0], dtype=np.float64)
+    second = np.array([1.0, 0.0, 11.0, 10.0], dtype=np.float64)
+    assert _continuous_iou(first, second) > 0.45
+    kept = nms(np.stack((first, second)), _person_scores(0.8, 0.8), iou=0.45)
+    assert kept.shape[0] == 1
+    assert kept[0, 0] == pytest.approx(0.0)
+    assert kept[0, 2] == pytest.approx(10.0)
+
+
+def test_zero_area_boxes_are_both_kept() -> None:
+    boxes = np.zeros((2, 4), dtype=np.float64)
+    kept = nms(boxes, _person_scores(0.9, 0.8), iou=0.45)
+    assert kept.shape[0] == 2
+
+
+def test_offset_pair_uses_continuous_iou_not_the_plus_one_convention() -> None:
+    first = np.array([0.0, 0.0, 2.0, 2.0], dtype=np.float64)
+    second = np.array([1.0, 0.0, 3.0, 2.0], dtype=np.float64)
+    assert _continuous_iou(first, second) == pytest.approx(1.0 / 3.0)
+    assert _continuous_iou(first, second) < 0.45
+    assert _inclusive_iou(first, second) == pytest.approx(0.5)
+    assert _inclusive_iou(first, second) > 0.45
+    kept = nms(np.stack((first, second)), _person_scores(0.9, 0.8), iou=0.45)
+    assert kept.shape[0] == 2
+
+
 def test_disjoint_same_class_boxes_are_both_kept() -> None:
     first = np.array([0.0, 0.0, 10.0, 10.0], dtype=np.float64)
     second = np.array([100.0, 100.0, 120.0, 130.0], dtype=np.float64)
@@ -279,6 +372,9 @@ def test_module_docstring_cites_the_reference_functions() -> None:
     assert "yolox/utils/demo_utils.py" in source
     assert "demo_postprocess" in source
     assert "multiclass_nms" in source
+    assert "6ddff482" in source
+    assert "deliberately has no +1" in source
+    assert "Class-aware NMS is deliberate." in source
 
 
 def test_postprocess_does_not_import_a_model_runtime() -> None:
