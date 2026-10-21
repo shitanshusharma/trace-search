@@ -541,14 +541,11 @@ def test_opencv_contrib_wheel_lgpl_passes(monkeypatch):
 def test_opencv_contrib_wheel_without_clean_libavcodec_fails(tmp_path):
     """A contrib wheel is an FFmpeg distribution, so a missing libavcodec fails."""
     import scripts.check_licenses as cl
-    from trace_search.ingest.ffmpeg_check import (
-        OPENCV_FFMPEG_DISTRIBUTIONS,
-        is_opencv_ffmpeg_distribution,
-    )
+    import trace_search.ingest.ffmpeg_check as ffmpeg_check
 
-    assert cl.is_opencv_ffmpeg_distribution is is_opencv_ffmpeg_distribution
-    assert "opencv-contrib-python" in OPENCV_FFMPEG_DISTRIBUTIONS
-    assert "opencv-contrib-python-headless" in OPENCV_FFMPEG_DISTRIBUTIONS
+    assert cl.is_opencv_ffmpeg_distribution is ffmpeg_check.is_opencv_ffmpeg_distribution
+    assert "opencv-contrib-python" in ffmpeg_check.OPENCV_FFMPEG_DISTRIBUTIONS
+    assert "opencv-contrib-python-headless" in ffmpeg_check.OPENCV_FFMPEG_DISTRIBUTIONS
     code, stdout, _ = invoke_main(
         make_manifest([library_entry(name="opencv-contrib-python")]),
         tmp_dir=tmp_path,
