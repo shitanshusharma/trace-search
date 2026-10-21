@@ -115,3 +115,17 @@ def test_caller_dict_mutation_does_not_change_detector_output() -> None:
     del script[("cam-a", 3)]
 
     assert detector.detect(frame) == before == [person]
+
+
+def test_caller_list_append_does_not_change_detector_output() -> None:
+    """Appending to the caller's list after construction does not change detect."""
+    person = _detection()
+    recorded = [person]
+    script = {("cam-a", 3): recorded}
+    detector = ScriptedDetector(script)
+    frame = _frame("cam-a", 3)
+    before = detector.detect(frame)
+
+    recorded.append(_detection(det_class=DetClass.BACKPACK, score=0.3))
+
+    assert detector.detect(frame) == before == [person]
