@@ -337,11 +337,14 @@ python scripts/check_project_rules.py
 
 ### Action SHA pins (`rules / validate-action-shas`)
 
-**What it checks:** Every `uses:` in `.github/workflows` is `./`, `docker://`, or `owner/repo@<40-hex> # vX.Y.Z`. Each pin is the peeled upstream tag commit. The commits API returns 200 and compare against that tag is `identical`.
+**What it checks:** Every `uses:` in `.github/workflows` is `./`, `docker://`, or `owner/repo@<40-hex> # vX.Y.Z`. Each pin is the peeled upstream tag commit. The commits API returns 200 and compare against that tag is `identical`. One action, `owner/repo` with any sub-path ignored, must use a single SHA across those workflows. `github/codeql-action/init` and `github/codeql-action/analyze` count as one action.
 
 **Fails on:**
 - A SHA with no version comment, a comment without `v`, or a mutable tag
 - A pin that is not the peeled commit for the named tag
+- The same owner/repo pinned to more than one SHA. The output lists every mismatched `file:line` and SHA.
+
+**How to fix a mixed SHA:** Pick one pin for that action, usually the peeled commit for the tag you want, and set every `uses:` of that `owner/repo` to that same SHA and its `# vX.Y.Z` comment. Different actions may keep different SHAs. Re-run the command below.
 
 **Run locally:**
 ```bash
@@ -667,7 +670,7 @@ jobs:
 | pip-audit | `security / pip-audit` | High/critical CVEs | `pip-audit --strict` |
 | Dep Review | `security / dependency-review` | High CVEs, banned licenses (PRs) | `gh api .../dependency-graph/compare/...` |
 | Project Rules | `rules / project-rules` | Banned imports, media files | `python scripts/check_project_rules.py` |
-| Action pins | `rules / validate-action-shas` | Unpinned or unverified actions | `python scripts/validate_action_shas.py` |
+| Action pins | `rules / validate-action-shas` | Unpinned, unverified, or mixed SHAs for one action | `python scripts/validate_action_shas.py` |
 | License Fence | `Lint, Test, and License Check` | AGPL/GPL/NC, missing manifest | `python scripts/check_licenses.py` |
 
 ---
