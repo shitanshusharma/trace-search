@@ -7,6 +7,8 @@ Enforces PRD hard-stops:
 2. No research-only datasets or weights (Market-1501, MSMT17, DukeMTMC, Objects365, etc.).
 3. No media files committed unless a clip or synthetic_clip manifest entry lists
    that exact repo-relative path and sha256 with an approved use tag.
+   Generated SMOKE_ONLY clips at smoke/*.mp4 are not stored in git. Their file
+   check is replaced by a structure check, and the regenerate test hashes them.
    The allow-list cannot waive this check.
 4. Reviewed allow-list entries in .project-rules-allow for false positives
    other than media.
@@ -20,6 +22,7 @@ import ast
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -119,6 +122,8 @@ MEDIA_EXTENSIONS = {
 # CODE_TEST is the other schema use. FX-CODE is a fixture_id, not a use.
 APPROVED_MEDIA_USES = {"SMOKE_ONLY", "CODE_TEST"}
 MEDIA_ENTRY_TYPES = {"clip", "synthetic_clip"}
+# Whole-repo tracked clips. Suffixes are compared case-insensitively.
+TRACKED_MEDIA_SUFFIXES = {".mp4", ".avi", ".mkv", ".mov", ".webm"}
 SKIP_DIR_PARTS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}
 
 # Exact repo-relative paths. A path is exempt only when it equals one of these,
@@ -515,18 +520,167 @@ def hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def check_media_files(allow_list: set[str] | None = None) -> list[dict[str, Any]]:
-    """Hash media against entries[].path. The allow-list is not consulted."""
-    del allow_list
-    allow_list = set()
-    violations: list[dict[str, Any]] = []
-    allowed = manifest_media_by_path(load_manifest())
-    checked: set[str] = set()
+def _script_repo() -> Path:
+    return Path(__file__).resolve().parent.parent
 
-    for rel, expected in sorted(allowed.items()):
-        path = Path(rel)
+
+def _smoke_rows():
+    src = _script_repo() / "src"
+    src_text = str(src)
+    if src_text not in sys.path:
+        sys.path.insert(0, src_text)
+    from trace_search.fixtures import smoke_rows
+
+    return smoke_rows
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def recorded_seed_is_int(seed: object) -> bool:
+    """The deterministic seed is an int.
+
+    A bare int counts. The manifest stores a JSON object whose base_seed and
+    offset are both ints; that pair is the generator seed.
+    """
+    if _is_int(seed):
+        return True
+    if not isinstance(seed, str):
+        return False
+    try:
+        parsed = json.loads(seed)
+    except json.JSONDecodeError:
+        return False
+    if _is_int(parsed):
+        return True
+    if not isinstance(parsed, dict):
+        return False
+    return _is_int(parsed.get("base_seed")) and _is_int(parsed.get("offset"))
+
+
+def _phash_is_well_formed(phash: object) -> bool:
+    if not isinstance(phash, list) or len(phash) != 10:
+        return False
+    if len(set(phash)) != 10:
+        return False
+    return all(isinstance(item, str) and re.fullmatch(r"[a-f0-9]{16}", item) for item in phash)
+
+
+def _generator_class_exists(name: object) -> bool:
+    if not isinstance(name, str) or not name.isidentifier():
+        return False
+    pattern = re.compile(rf"^class[ \t]+{re.escape(name)}\b", re.MULTILINE)
+    root = _script_repo()
+    for path in root.rglob("*.py"):
+        if not path.is_file() or skip_path(path):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if pattern.search(text):
+            return True
+    return False
+
+
+def _hash_listed_file(
+    violations: list[dict[str, Any]],
+    allow_list: set[str],
+    rel: str,
+    expected: str,
+) -> None:
+    path = Path(rel)
+    try:
+        digest = hash_file(path)
+    except OSError as exc:
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=rel,
+            message=f"Unreadable media file: {rel} ({exc})",
+        )
+        return
+    if digest.lower() != expected:
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=rel,
+            message=f"Media file {rel} sha256 does not match entries[].path",
+        )
+
+
+def generated_smoke_clip_violations(
+    manifest: dict[str, Any],
+    allow_list: set[str],
+    checked: set[str],
+) -> list[dict[str, Any]]:
+    """Structure-check generated smoke clips and do not require the mp4 on disk."""
+    violations: list[dict[str, Any]] = []
+    entries = manifest.get("entries")
+    if not isinstance(entries, list):
+        return violations
+    predicate = _smoke_rows().is_generated_smoke_clip
+    for entry in entries:
+        if not isinstance(entry, dict) or not predicate(entry):
+            continue
+        rel = entry.get("path")
+        if not isinstance(rel, str):
+            continue
         checked.add(rel)
-        if not path.is_file():
+        sha = entry.get("sha256")
+        if not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha):
+            add_violation(
+                violations,
+                allow_list,
+                kind="media_file",
+                file=rel,
+                message=f"Media file {rel} sha256 must be 64 lowercase hex characters",
+            )
+        if not recorded_seed_is_int(entry.get("seed")):
+            add_violation(
+                violations,
+                allow_list,
+                kind="media_file",
+                file=rel,
+                message=f"Media file {rel} seed is not an int",
+            )
+        if not _phash_is_well_formed(entry.get("phash")):
+            add_violation(
+                violations,
+                allow_list,
+                kind="media_file",
+                file=rel,
+                message=f"Media file {rel} pHash is not well-formed",
+            )
+        generator = entry.get("generator")
+        if not _generator_class_exists(generator):
+            add_violation(
+                violations,
+                allow_list,
+                kind="media_file",
+                file=rel,
+                message=f"Media file {rel} generator path named by the row is missing",
+            )
+        if isinstance(sha, str) and re.fullmatch(r"[a-f0-9]{64}", sha) and Path(rel).is_file():
+            _hash_listed_file(violations, allow_list, rel, sha)
+    return violations
+
+
+def listed_media_violations(
+    manifest: dict[str, Any],
+    allow_list: set[str],
+    checked: set[str],
+) -> list[dict[str, Any]]:
+    """Hash every other clip row. A missing file still fails."""
+    violations: list[dict[str, Any]] = []
+    for rel, expected in sorted(manifest_media_by_path(manifest).items()):
+        if rel in checked:
+            continue
+        checked.add(rel)
+        if not Path(rel).is_file():
             add_violation(
                 violations,
                 allow_list,
@@ -535,26 +689,15 @@ def check_media_files(allow_list: set[str] | None = None) -> list[dict[str, Any]
                 message=f"Manifest lists {rel} but the file is missing",
             )
             continue
-        try:
-            digest = hash_file(path)
-        except OSError as exc:
-            add_violation(
-                violations,
-                allow_list,
-                kind="media_file",
-                file=rel,
-                message=f"Unreadable media file: {rel} ({exc})",
-            )
-            continue
-        if digest.lower() != expected:
-            add_violation(
-                violations,
-                allow_list,
-                kind="media_file",
-                file=rel,
-                message=f"Media file {rel} sha256 does not match entries[].path",
-            )
+        _hash_listed_file(violations, allow_list, rel, expected)
+    return violations
 
+
+def unlisted_media_violations(
+    allow_list: set[str],
+    checked: set[str],
+) -> list[dict[str, Any]]:
+    violations: list[dict[str, Any]] = []
     for path in Path(".").rglob("*"):
         if not path.is_file() or skip_path(path):
             continue
@@ -584,6 +727,164 @@ def check_media_files(allow_list: set[str] | None = None) -> list[dict[str, Any]
                 f"with an approved use tag"
             ),
         )
+    return violations
+
+
+def _git_text(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def tracked_media_violations(allow_list: set[str]) -> list[dict[str, Any]]:
+    """Fail when git tracks a media file anywhere, or when smoke/ is not gitignored.
+
+    Outside a checkout, nothing is tracked.
+    """
+    violations: list[dict[str, Any]] = []
+    probe = _git_text(["git", "rev-parse", "--is-inside-work-tree"])
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return violations
+    listed = _git_text(["git", "ls-files"])
+    if listed.returncode != 0:
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=".",
+            message="git ls-files failed",
+        )
+    else:
+        for rel in listed.stdout.splitlines():
+            if Path(rel).suffix.lower() not in TRACKED_MEDIA_SUFFIXES:
+                continue
+            add_violation(
+                violations,
+                allow_list,
+                kind="media_file",
+                file=rel,
+                message=f"Tracked media file: {rel}",
+            )
+    ignored = _git_text(["git", "check-ignore", "-q", "--", "smoke/"])
+    if ignored.returncode != 0:
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=".gitignore",
+            message="smoke/ is not gitignored",
+        )
+    return violations
+
+
+def _decorator_parts(node: ast.AST) -> tuple[str, ...]:
+    if isinstance(node, ast.Call):
+        node = node.func
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return tuple(reversed(parts))
+
+
+def _is_skip_or_xfail(node: ast.AST) -> bool:
+    return any(part in {"skip", "skipif", "xfail"} for part in _decorator_parts(node))
+
+
+def _marked_skipped(node: ast.AST) -> bool:
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return any(_is_skip_or_xfail(item) for item in node.elts)
+    return _is_skip_or_xfail(node)
+
+
+def _find_regenerate_test(
+    tree: ast.AST, test_name: str
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    found: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == test_name:
+            found = node
+    return found
+
+
+def _module_has_skip_marker(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "pytestmark"
+                and _marked_skipped(node.value)
+            ):
+                return True
+    return False
+
+
+def regenerate_test_violations(allow_list: set[str]) -> list[dict[str, Any]]:
+    """The regenerate test must stay collected so every generated row is hashed."""
+    violations: list[dict[str, Any]] = []
+    rel = "tests/test_t1_integration.py"
+    path = _script_repo() / rel
+    test_name = "test_regenerate_matches_manifest_entries_byte_for_byte"
+    if not path.is_file():
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=rel,
+            message=f"{test_name} is missing",
+        )
+        return violations
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, SyntaxError) as exc:
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=rel,
+            message=f"{test_name} could not be parsed: {exc}",
+        )
+        return violations
+    found = _find_regenerate_test(tree, test_name)
+    skipped = found is not None and any(_is_skip_or_xfail(dec) for dec in found.decorator_list)
+    if found is None:
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=rel,
+            message=f"{test_name} is missing",
+        )
+    elif skipped or _module_has_skip_marker(tree):
+        add_violation(
+            violations,
+            allow_list,
+            kind="media_file",
+            file=rel,
+            message=f"{test_name} has a skip or xfail marker",
+        )
+    return violations
+
+
+def check_media_files(allow_list: set[str] | None = None) -> list[dict[str, Any]]:
+    """Hash media against entries[].path. The allow-list is not consulted."""
+    del allow_list
+    allow_list = set()
+    manifest = load_manifest()
+    checked: set[str] = set()
+    violations = generated_smoke_clip_violations(manifest, allow_list, checked)
+    violations.extend(listed_media_violations(manifest, allow_list, checked))
+    violations.extend(unlisted_media_violations(allow_list, checked))
+    violations.extend(tracked_media_violations(allow_list))
+    violations.extend(regenerate_test_violations(allow_list))
     return violations
 
 
