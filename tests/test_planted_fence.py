@@ -1155,8 +1155,18 @@ def test_ijg_and_bsd_and_zlib_passes():
 
 def test_real_libjpeg_turbo_row_passes():
     rows = _real_rows("libjpeg-turbo")
-    assert len(rows) == 1
-    assert rows[0]["license"] == "IJG AND BSD-3-Clause AND Zlib"
+    opencv = [
+        row for row in rows
+        if str(row.get("bundled_in", "")).startswith("opencv_python_headless-")
+    ]
+    pillow = [
+        row for row in rows
+        if str(row.get("bundled_in", "")).startswith("pillow-")
+    ]
+    assert len(opencv) == 1
+    assert opencv[0]["license"] == "IJG AND BSD-3-Clause AND Zlib"
+    assert len(pillow) == 1
+    assert pillow[0]["license"] == "IJG AND BSD-3-Clause"
     code, stdout, _ = invoke_main(make_manifest(rows))
     assert code == 0, stdout
 
