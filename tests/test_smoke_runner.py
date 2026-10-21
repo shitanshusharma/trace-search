@@ -141,6 +141,65 @@ def test_min_clips_six_on_five_clips_exits_1(
     assert code == 1, output
 
 
+def _tagged_plant(
+    tmp_path: Path,
+    use: str,
+    seed: int,
+) -> tuple[Path, Path]:
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    planted = clips / "planted.mp4"
+    generator = SyntheticVideoGenerator(seed=seed)
+    generator.generate_clip(
+        planted,
+        duration_sec=1.0,
+        fps=10,
+        width=320,
+        height=240,
+        num_figures=1,
+        num_obstructions=0,
+    )
+    manifest = tmp_path / "manifest.json"
+    _write_manifest(
+        manifest,
+        [
+            {
+                "use": use,
+                "type": "synthetic_clip",
+                "sha256": generator.compute_sha256(planted),
+                "phash": [],
+                "fixture_id": "FX-PLANTED-001",
+            }
+        ],
+    )
+    return clips, manifest
+
+
+@pytest.mark.parametrize(("use", "seed"), [("CODE_TEST", 11), ("HOLD", 13)])
+def test_planted_non_smoke_tag_exits_1(tmp_path: Path, use: str, seed: int) -> None:
+    clips, manifest = _tagged_plant(tmp_path, use, seed)
+    db = tmp_path / "smoke.sqlite"
+    code, output = _run(
+        [
+            "--manifest",
+            str(manifest),
+            "--clips-dir",
+            str(clips),
+            "--db",
+            str(db),
+            "--detector",
+            "scripted-figures",
+            "--min-clips",
+            "1",
+        ]
+    )
+    assert code == 1, output
+    assert "FixtureSeparationError" in output
+    assert use in output
+    assert "FORBIDDEN" in output
+    assert TrackStore(db).count(derived_from="SMOKE") == 0
+
+
 def test_planted_clip_without_a_manifest_row_exits_1(tmp_path: Path) -> None:
     clips = tmp_path / "clips"
     clips.mkdir()

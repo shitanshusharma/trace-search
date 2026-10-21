@@ -20,6 +20,7 @@ from trace_search.detection.scripted_figures import scripted_figures_detector
 from trace_search.detection.types import Detector
 from trace_search.fixtures.guards import (
     FixtureSeparationError,
+    FixtureUseTag,
     LoaderContext,
     check_fixture_allowed,
     identify_fixture_by_content,
@@ -113,14 +114,23 @@ def _clip_paths(directory: Path) -> list[Path]:
 
 
 def _require_fixture(path: Path, manifest: Path) -> str:
-    """Refuse the clip before it is opened. Return the manifest fixture id."""
+    """Refuse the clip before the pipeline opens it. Return the fixture id.
+
+    The guard is the gate for every caller. The tag is read again here so a
+    clip that is not SMOKE_ONLY is still refused if the guard is bypassed.
+    """
     check_fixture_allowed(path, LoaderContext.SMOKE_TEST, manifest)
     identified = identify_fixture_by_content(path, load_manifest_fixtures(manifest))
     if identified is None:
         raise FixtureSeparationError(
             f"FAIL-CLOSED: no manifest row for {path} (refused before the clip is opened)"
         )
-    _use_tag, fixture_id = identified
+    use_tag, fixture_id = identified
+    if use_tag is not FixtureUseTag.SMOKE_ONLY:
+        raise FixtureSeparationError(
+            f"Fixture {path} identified as {fixture_id} with use tag {use_tag.value} "
+            "is FORBIDDEN in smoke_test context (identified by SHA-256 or pHash)."
+        )
     return fixture_id
 
 

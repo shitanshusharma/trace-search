@@ -47,6 +47,12 @@ FORBIDDEN_TAGS_BY_CONTEXT = {
     LoaderContext.TRAINING: {FixtureUseTag.SMOKE_ONLY, FixtureUseTag.CODE_TEST},
     LoaderContext.EVALUATION: {FixtureUseTag.SMOKE_ONLY, FixtureUseTag.CODE_TEST},
     LoaderContext.STUDY: {FixtureUseTag.SMOKE_ONLY, FixtureUseTag.CODE_TEST},
+    LoaderContext.SMOKE_TEST: {
+        FixtureUseTag.CODE_TEST,
+        FixtureUseTag.TRAIN,
+        FixtureUseTag.DEV,
+        FixtureUseTag.HOLD,
+    },
 }
 
 
@@ -122,6 +128,18 @@ def identify_fixture_by_content(
     return None
 
 
+def _deny_unidentified_smoke(file_path: Path, context: LoaderContext) -> None:
+    """Smoke stores rows as SMOKE, so a file with no SMOKE_ONLY row is refused.
+
+    Other contexts still allow a file that is not in the manifest.
+    """
+    if context is not LoaderContext.SMOKE_TEST:
+        return
+    raise FixtureSeparationError(
+        f"FAIL-CLOSED: no manifest row for {file_path} (refused before the clip is opened)"
+    )
+
+
 def _enforce(
     file_path: Path,
     context: LoaderContext,
@@ -130,6 +148,7 @@ def _enforce(
 ) -> None:
     identified = identify_fixture_by_content(file_path, manifest_fixtures, hamming_threshold)
     if identified is None:
+        _deny_unidentified_smoke(file_path, context)
         return
     use_tag, fixture_id = identified
     forbidden = FORBIDDEN_TAGS_BY_CONTEXT.get(context, set())
@@ -146,7 +165,7 @@ def check_fixture_allowed(
     manifest_path: Path,
     hamming_threshold: int = HAMMING_THRESHOLD,
 ) -> None:
-    """Deny forbidden fixtures and any failure to identify the file."""
+    """Deny forbidden fixtures. SMOKE_TEST allows only a SMOKE_ONLY row."""
     _require_context(context)
     fixtures = load_manifest_fixtures(manifest_path)
     _enforce(Path(file_path), context, fixtures, hamming_threshold)
