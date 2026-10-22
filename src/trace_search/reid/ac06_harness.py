@@ -105,6 +105,7 @@ def run(
     that is not ``FX-HOLD`` plus three ASCII digits raises
     ``FixtureSeparationError`` and keeps the original id. Omitted arrays
     are not measured. A non-None ``gallery_mask`` raises ``ValueError``.
+    Callers build query and gallery from load_reid_samples(EVALUATION).
     """
     original = _require_fixture_id(fixture_id)
     checked = _require_mode(mode)

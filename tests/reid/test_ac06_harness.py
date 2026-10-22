@@ -146,7 +146,15 @@ def test_blocked_prefixes_raise_with_original_text(fixture_id: str, phrase: str)
 
 @pytest.mark.parametrize(
     "fixture_id",
-    ["FX-DEV-001", "X-FX-SMOKE-001", "anything", "FX-HOLD-1"],
+    [
+        "FX-DEV-001",
+        "X-FX-SMOKE-001",
+        "anything",
+        "FX-HOLD-1",
+        "FX-HOLD-0012",
+        "FX-HOLD-001-X",
+        "X-FX-HOLD-001",
+    ],
 )
 def test_non_hold_ids_are_refused(fixture_id: str) -> None:
     with pytest.raises(FixtureSeparationError) as caught:
@@ -311,6 +319,18 @@ def test_gallery_mask_is_refused_until_t6() -> None:
     assert calls == []
     with pytest.raises(ValueError, match="T6"):
         run("FX-HOLD-001", gallery_mask=mask, mode="unit_test")
+
+
+def test_gallery_mask_is_refused_in_eval_without_arrays() -> None:
+    calls: list[tuple[EvalItem, EvalItem]] = []
+
+    def mask(left: EvalItem, right: EvalItem) -> bool:
+        calls.append((left, right))
+        return True
+
+    with pytest.raises(ValueError, match="T6"):
+        run("FX-HOLD-001", gallery_mask=mask, mode="eval")
+    assert calls == []
 
 
 def test_payload_keys_and_thresholds() -> None:
