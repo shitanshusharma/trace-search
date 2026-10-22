@@ -52,8 +52,9 @@ CI verifies the full installed closure (direct + transitive dependencies) agains
 trace-search/
 ├── src/trace_search/       # Main package
 │   ├── ingest/             # Video file/RTSP ingest
-│   ├── detection/          # Person detection (YOLOX-based)
-│   ├── tracking/           # Single-camera tracking (OC-SORT/ByteTrack)
+│   ├── detection/          # Person detection (YOLOX-S on onnxruntime, plus scripted detectors)
+│   ├── tracking/           # Single-camera tracking (in-repo ByteTrack)
+│   ├── pipeline/           # Per-camera ingest, detect, track, and persist
 │   ├── attributes/         # Clothing color + bag detection
 │   ├── reid/               # Cross-camera ReID (OSNet, trained on consented data)
 │   ├── matching/           # Route reconstruction with topology constraints
@@ -134,15 +135,15 @@ python3 scripts/check_separation.py --json
 
 ### Smoke runner (M1a)
 
-The runner calls the camera pipeline with `derived_from='SMOKE'`. That output is not evidence for any acceptance criterion.
+`scripts/run_smoke.py` imports `trace_search` from `src/`, so these commands set `PYTHONPATH=src`. It calls `run_cameras` with `derived_from='SMOKE'`. After the arguments are accepted it prints `SMOKE: not evidence for any AC`. That output is not evidence for any acceptance criterion.
 
-CI runs `scripted-figures` on the 5 synthetic clips only. It does not download weights, and it does not run `yolox` against real weights. `yolox` is local-only.
+`--detector` is `scripted-figures` or `yolox`. The script does not download weights.
 
-`scripted-figures` is an OpenCV threshold and contour pass over the synthetic generator's flat-colour figures. It labels every blob that clears the threshold as a person, including the generator's obstructions. The cutoffs are fitted to that generator. It is a SMOKE-wiring stub, not a real detector, and it is not run or tuned on stock clips.
+CI runs `scripted-figures` on the 5 synthetic clips only, through pytest (`tests/test_smoke_runner.py::test_scripted_figures_on_five_synthetic_clips`). That test generates the clips in a temp directory. CI does not run `yolox` and does not download weights. `scripted-figures` is an OpenCV threshold and contour pass over the synthetic generator's flat-colour figures. It labels every blob that clears the threshold as a person, including the generator's obstructions. The cutoffs are fitted to that generator. It is a SMOKE-wiring stub, not a real detector, and it is not run or tuned on stock clips.
 
 ```bash
-# CI shape: 5 synthetic clips, no weights
-python scripts/run_smoke.py \
+# scripted-figures. Generate the clips first; they are not committed.
+PYTHONPATH=src python scripts/run_smoke.py \
   --manifest licenses/manifest.json \
   --clips-dir smoke \
   --db /tmp/smoke.sqlite \
@@ -150,9 +151,11 @@ python scripts/run_smoke.py \
   --min-clips 5
 ```
 
+`yolox` is local only. It needs `--weights` or `TRACE_SEARCH_YOLOX_WEIGHTS`, and that file must sit outside the repo. The runner builds `YoloxDetector` with that path. The detector hashes the file and compares it to the `YOLOX-S COCO` row in the repo `licenses/manifest.json` before it builds an onnxruntime `CPUExecutionProvider` session. `--manifest` on this command is the clip manifest, not the weights hash.
+
 ```bash
-# Local only. Weights stay outside the repo. Set --weights or TRACE_SEARCH_YOLOX_WEIGHTS.
-python scripts/run_smoke.py \
+# Local only. Weights and stock clips stay outside the repo.
+PYTHONPATH=src python scripts/run_smoke.py \
   --manifest /path/outside/the/repo/smoke-manifest.json \
   --clips-dir /path/outside/the/repo/clips \
   --db /tmp/smoke.sqlite \
@@ -161,7 +164,11 @@ python scripts/run_smoke.py \
   --min-clips 5
 ```
 
-Each clip is checked with the fixture guard before the pipeline opens it. The smoke guard allows an identified clip only when its tag is SMOKE_ONLY. Any other tag is refused, and so is a missing row. Each invocation prints its own `run_id` and counts only the `SMOKE` rows written under that id. The `tracks` number on each clip line is the distinct track ids stored for that run. The pipeline's own `tracks` field counts observation rows, and the runner does not print that field. `--min-clips` must be at least 1. A file in the clip directory that is not an `.mp4` is printed as skipped and is not counted. The process exits 0 only when at least `--min-clips` clips finish with 0 errors and each of those clips has at least one observation from this invocation.
+`--db` is required. `TrackStore` refuses a path inside the repo. On a smoke run it creates a missing parent directory and the SQLite file. `--min-clips` defaults to 5 and must be at least 1.
+
+Each clip is checked with `check_fixture_allowed` in the `SMOKE_TEST` context before the pipeline opens it. The runner then identifies the file again. An identified clip is allowed only when its tag is `SMOKE_ONLY`. Any other tag is refused, and so is a missing row. Each invocation prints a new `run_id`. The `tracks` number on each clip line is the distinct track ids from `TrackStore.read` for that camera and `run_id`. `RunStats.tracks` counts observation rows, and the runner does not print that field. A file in the clip directory whose suffix is not `.mp4` is printed as `skipped:` and is not counted. The process exits 0 only when there are 0 errors, at least `--min-clips` clips finished, and each finished clip has at least one `SMOKE` observation for this `run_id`.
+
+`--purge --db PATH` deletes `SMOKE` rows from an existing track database, then prints the deleted count and `SMOKE rows remaining`. It accepts no `--manifest`, `--clips-dir`, `--detector`, `--weights`, or `--min-clips`. It does not create a database and it does not delete other rows.
 
 The T-3-9 local real-weights `yolox` run on 5 Pexels/Pixabay clips (kept outside the repo, not in git) is recorded in [PR #34](https://github.com/shitanshusharma/trace-search/pull/34). SMOKE: not evidence for any AC.
 
@@ -186,7 +193,7 @@ This is a **multi-task build** (T0–T10). Each task = one cloud agent / one PR.
 - ✅ **T0:** Scaffold + license fence
 - **T1:** Synthetic smoke fixtures and separation checks are in this branch. numpy 1.26.4 and its manifest row come from #6.
 - ⏳ **T2:** Ingest (video file + optional RTSP)
-- ⏳ **T3:** Detection + tracking (YOLOX + OC-SORT)
+- ✅ **T3:** Detection and single-camera tracking: YOLOX-S on onnxruntime (CPU; weights stay outside the repo), scripted detectors, an in-repo ByteTrack tracker, a stdlib SQLite track store outside the repo, and the M1a runner `scripts/run_smoke.py`.
 - ⏳ **T4:** Attributes (color + bag)
 - ⏳ **T5:** ReID (OSNet, train from scratch)
 - ⏳ **T6:** Cross-camera matching + route
