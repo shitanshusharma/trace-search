@@ -71,6 +71,8 @@ class AppearanceEmbedder(Protocol):
     placeholder: bool
 
     @property
-    def name(self) -> str: ...
+    def name(self) -> str:
+        raise NotImplementedError
 
-    def embed(self, crops: Sequence[npt.NDArray[np.uint8]]) -> npt.NDArray[np.float32]: ...
+    def embed(self, crops: Sequence[npt.NDArray[np.uint8]]) -> npt.NDArray[np.float32]:
+        raise NotImplementedError

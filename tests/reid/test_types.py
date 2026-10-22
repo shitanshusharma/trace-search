@@ -197,3 +197,8 @@ def test_embedder_protocol_types() -> None:
     getter = name_attr.fget
     assert getter is not None
     assert get_type_hints(getter)["return"] is str
+    with pytest.raises(NotImplementedError):
+        getter(object())
+    embed = AppearanceEmbedder.__dict__["embed"]
+    with pytest.raises(NotImplementedError):
+        embed(object(), ())
