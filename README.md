@@ -163,7 +163,7 @@ python scripts/run_smoke.py \
 
 Each clip is checked with the fixture guard before the pipeline opens it. The smoke guard allows an identified clip only when its tag is SMOKE_ONLY. Any other tag is refused, and so is a missing row. Each invocation prints its own `run_id` and counts only the `SMOKE` rows written under that id. The `tracks` number on each clip line is the distinct track ids stored for that run. The pipeline's own `tracks` field counts observation rows, and the runner does not print that field. `--min-clips` must be at least 1. A file in the clip directory that is not an `.mp4` is printed as skipped and is not counted. The process exits 0 only when at least `--min-clips` clips finish with 0 errors and each of those clips has at least one observation from this invocation.
 
-The T-3-9 local real-weights `yolox` run on 5 Pexels/Pixabay clips (kept outside the repo, not in git) is recorded in the pull request from branch `t3-9-real-weights-run`. SMOKE: not evidence for any AC.
+The T-3-9 local real-weights `yolox` run on 5 Pexels/Pixabay clips (kept outside the repo, not in git) is recorded in [PR #34](https://github.com/shitanshusharma/trace-search/pull/34). SMOKE: not evidence for any AC.
 
 
 ## CI Status
