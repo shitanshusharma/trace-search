@@ -81,6 +81,20 @@ BANNED_DATASETS = (
     r"gait3d",
     r"objects365",
     r"model.?zoo.*reid",
+    # Person-ReID research sets. Boundary is non-alphanumeric, so underscore
+    # counts. Case is ignored by the scanner. MARS is only mars.?(reid|dataset).
+    r"(?<![A-Za-z0-9])viper(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])cuhk.?01(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])cuhk.?02(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])prid(?:2011)?(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])i-?lids-?vid(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])mars.?(reid|dataset)(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])luperson(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])sysu.?30k(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])randperson(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])personx(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])unrealperson(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])clonedperson(?![A-Za-z0-9])",
 )
 
 # Bare `name = "..."` / `name: str` only. camera_name and file_name do not match

@@ -6,7 +6,9 @@ These tests verify that the project rules checker catches various violations:
 - Banned imports (insightface, ultralytics, etc.)
 - Banned identifiers and function calls (watchlist, add_to_watchlist, face_embeddings, etc.)
 - Typed name fields and assignments
-- Research dataset references (market1501, msmt17, duke, cuhk03, casia-b, grew, gait3d, objects365)
+- Research dataset references (market1501, msmt17, duke, cuhk03, casia-b, grew, gait3d, objects365,
+  VIPeR, CUHK01, CUHK02, PRID2011, iLIDS-VID, MARS, LUPerson, SYSU-30k, RandPerson,
+  PersonX, UnrealPerson, ClonedPerson)
 - Media files that miss entries[].path or sha256, including allow-list bypasses
 """
 
@@ -16,6 +18,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 
 def get_checker_path() -> Path:
@@ -1301,3 +1305,67 @@ def test_planted_tracked_clip_under_tests_fails():
         )
     assert result.returncode == 1
     assert "Tracked media file: tests/clip.MP4" in result.stdout
+
+
+def _run_project_rules_on_planted_src(source: str) -> subprocess.CompletedProcess[str]:
+    """Run the real checker against one planted src file in a temp tree."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir)
+        src_dir = tmppath / "src"
+        src_dir.mkdir()
+        (src_dir / "planted.py").write_text(source)
+        (tmppath / ".project-rules-allow").write_text("# No exceptions\n")
+        return subprocess.run(
+            [sys.executable, str(get_checker_path())],
+            cwd=tmppath,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
+# One planted src string per new person-ReID name. MARS is planted only in the
+# mars.?(reid|dataset) form. Ordinary "viper" is not a near-miss: the VIPeR
+# pattern is case-insensitive and word-bounded, so it is meant to catch it.
+_REID_DATASET_PLANTS = (
+    "VIPeR",
+    "CUHK01",
+    "CUHK02",
+    "PRID2011",
+    "prid",
+    "iLIDS-VID",
+    "mars-reid",
+    "MARS dataset",
+    "LUPerson",
+    "SYSU-30k",
+    "RandPerson",
+    "PersonX",
+    "UnrealPerson",
+    "ClonedPerson",
+)
+
+# Plain "mars" stays allowed. "viper" does not: see the comment above.
+_REID_DATASET_NEAR_MISSES = (
+    "marsh",
+    "marshal",
+    "personal",
+    "mars",
+)
+
+
+@pytest.mark.parametrize("planted", _REID_DATASET_PLANTS)
+def test_planted_reid_dataset_reference(planted):
+    """PLANTED FAILURE: a person-ReID research dataset name fails banned_dataset."""
+    result = _run_project_rules_on_planted_src(f'DATASET = "{planted}"\n')
+    assert result.returncode == 1, result.stdout
+    assert "banned_dataset" in result.stdout
+    assert planted.lower() in result.stdout.lower()
+
+
+@pytest.mark.parametrize("planted", _REID_DATASET_NEAR_MISSES)
+def test_reid_dataset_near_miss_passes(planted):
+    """Ordinary words next to the new names do not trip banned_dataset."""
+    result = _run_project_rules_on_planted_src(f'DATASET = "{planted}"\n')
+    assert result.returncode == 0, result.stdout
+    assert "banned_dataset" not in result.stdout
+    assert "All project rules checks passed." in result.stdout

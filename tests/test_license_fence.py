@@ -2,6 +2,8 @@
 
 import hashlib
 
+import pytest
+
 from tests.conftest import invoke_main, library_entry, make_manifest
 
 
@@ -209,3 +211,51 @@ def test_allowed_non_spdx_is_exactly_the_approved_set():
     import scripts.check_licenses as cl
 
     assert cl.ALLOWED_NON_SPDX == _NON_SPDX_WITHOUT_STOCK | _STOCK_NON_SPDX
+
+
+# notes naming the dataset, and the component label the fence must report.
+# "prid" is the short form of PRID2011. MARS is only mars.?(reid|dataset).
+_REID_COMPONENT_PLANTS = (
+    ("VIPeR", "VIPeR dataset"),
+    ("CUHK01", "CUHK01 dataset"),
+    ("CUHK02", "CUHK02 dataset"),
+    ("PRID2011", "PRID2011 dataset"),
+    ("prid", "PRID2011 dataset"),
+    ("iLIDS-VID", "iLIDS-VID dataset"),
+    ("mars-reid", "MARS dataset"),
+    ("MARS dataset", "MARS dataset"),
+    ("LUPerson", "LUPerson dataset"),
+    ("SYSU-30k", "SYSU-30k dataset"),
+    ("RandPerson", "RandPerson dataset"),
+    ("PersonX", "PersonX dataset"),
+    ("UnrealPerson", "UnrealPerson dataset"),
+    ("ClonedPerson", "ClonedPerson dataset"),
+)
+
+_REID_COMPONENT_NEAR_MISSES = (
+    "marsh",
+    "marshal",
+    "personal",
+    "mars",
+)
+
+
+@pytest.mark.parametrize(("notes", "label"), _REID_COMPONENT_PLANTS)
+def test_planted_reid_dataset_notes_fail(notes, label):
+    """PLANTED FAILURE: manifest notes naming a person-ReID set fail closed."""
+    entry = library_entry()
+    entry["notes"] = notes
+    code, stdout, _ = invoke_main(make_manifest([entry]))
+    assert code == 1, stdout
+    assert f"contains banned component '{label}'" in stdout
+
+
+@pytest.mark.parametrize("notes", _REID_COMPONENT_NEAR_MISSES)
+def test_reid_dataset_notes_near_miss_passes(notes):
+    """Ordinary words in notes do not trip a banned component."""
+    entry = library_entry()
+    entry["notes"] = notes
+    code, stdout, _ = invoke_main(make_manifest([entry]))
+    assert code == 0, stdout
+    assert "contains banned component" not in stdout.lower()
+    assert "License fence check PASSED" in stdout
