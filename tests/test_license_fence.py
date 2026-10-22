@@ -222,14 +222,22 @@ _REID_COMPONENT_PLANTS = (
     ("PRID2011", "PRID2011 dataset"),
     ("prid", "PRID2011 dataset"),
     ("iLIDS-VID", "iLIDS-VID dataset"),
+    ("ilids_vid", "iLIDS-VID dataset"),
+    ("ILIDS_VID", "iLIDS-VID dataset"),
+    ("i_lids_vid", "iLIDS-VID dataset"),
     ("mars-reid", "MARS dataset"),
     ("MARS dataset", "MARS dataset"),
     ("LUPerson", "LUPerson dataset"),
+    ("lu_person", "LUPerson dataset"),
+    ("LUPersonNL", "LUPerson dataset"),
     ("SYSU-30k", "SYSU-30k dataset"),
     ("RandPerson", "RandPerson dataset"),
+    ("rand_person", "RandPerson dataset"),
     ("PersonX", "PersonX dataset"),
     ("UnrealPerson", "UnrealPerson dataset"),
+    ("unreal_person", "UnrealPerson dataset"),
     ("ClonedPerson", "ClonedPerson dataset"),
+    ("cloned_person", "ClonedPerson dataset"),
 )
 
 _REID_COMPONENT_NEAR_MISSES = (
@@ -237,6 +245,9 @@ _REID_COMPONENT_NEAR_MISSES = (
     "marshal",
     "personal",
     "mars",
+    "person",
+    "unreal",
+    "cloned",
 )
 
 

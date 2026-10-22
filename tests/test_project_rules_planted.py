@@ -1334,22 +1334,34 @@ _REID_DATASET_PLANTS = (
     "PRID2011",
     "prid",
     "iLIDS-VID",
+    "ilids_vid",
+    "ILIDS_VID",
+    "i_lids_vid",
     "mars-reid",
     "MARS dataset",
     "LUPerson",
+    "lu_person",
+    "LUPersonNL",
     "SYSU-30k",
     "RandPerson",
+    "rand_person",
     "PersonX",
     "UnrealPerson",
+    "unreal_person",
     "ClonedPerson",
+    "cloned_person",
 )
 
 # Plain "mars" stays allowed. "viper" does not: see the comment above.
+# "person", "unreal", and "cloned" stay allowed; personx stays one token.
 _REID_DATASET_NEAR_MISSES = (
     "marsh",
     "marshal",
     "personal",
     "mars",
+    "person",
+    "unreal",
+    "cloned",
 )
 
 

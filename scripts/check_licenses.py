@@ -260,18 +260,19 @@ BANNED_COMPONENTS = [
     (r'(?<![a-z0-9])insecam(?![a-z0-9])', 'Insecam (exposed cameras)'),
     # Person-ReID research sets. Scanned text is already lowercased, with
     # '_' and '.' turned into '-'. MARS is only mars.?(reid|dataset).
+    # personx stays one token. LUPerson also matches an optional NL suffix.
     (r'(?<![a-z0-9])viper(?![a-z0-9])', 'VIPeR dataset'),
     (r'(?<![a-z0-9])cuhk.?01(?![a-z0-9])', 'CUHK01 dataset'),
     (r'(?<![a-z0-9])cuhk.?02(?![a-z0-9])', 'CUHK02 dataset'),
     (r'(?<![a-z0-9])prid(?:2011)?(?![a-z0-9])', 'PRID2011 dataset'),
     (r'(?<![a-z0-9])i-?lids-?vid(?![a-z0-9])', 'iLIDS-VID dataset'),
     (r'(?<![a-z0-9])mars.?(reid|dataset)(?![a-z0-9])', 'MARS dataset'),
-    (r'(?<![a-z0-9])luperson(?![a-z0-9])', 'LUPerson dataset'),
+    (r'(?<![a-z0-9])lu.?person(?:.?nl)?(?![a-z0-9])', 'LUPerson dataset'),
     (r'(?<![a-z0-9])sysu.?30k(?![a-z0-9])', 'SYSU-30k dataset'),
-    (r'(?<![a-z0-9])randperson(?![a-z0-9])', 'RandPerson dataset'),
+    (r'(?<![a-z0-9])rand.?person(?![a-z0-9])', 'RandPerson dataset'),
     (r'(?<![a-z0-9])personx(?![a-z0-9])', 'PersonX dataset'),
-    (r'(?<![a-z0-9])unrealperson(?![a-z0-9])', 'UnrealPerson dataset'),
-    (r'(?<![a-z0-9])clonedperson(?![a-z0-9])', 'ClonedPerson dataset'),
+    (r'(?<![a-z0-9])unreal.?person(?![a-z0-9])', 'UnrealPerson dataset'),
+    (r'(?<![a-z0-9])cloned.?person(?![a-z0-9])', 'ClonedPerson dataset'),
 ]
 
 
