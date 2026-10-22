@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import fields
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import trace_search.reid as reid
@@ -65,6 +66,7 @@ def _sample(
     use: str = "TRAIN",
     *,
     path: Path | None = None,
+    crop: np.ndarray | None = None,
     track_id: int = 1,
     label: int = 0,
 ) -> ReidSample:
@@ -74,7 +76,7 @@ def _sample(
         camera_id="cam-1",
         track_id=track_id,
         label=label,
-        crop=None,
+        crop=crop,
         path=path,
     )
 
@@ -317,11 +319,13 @@ def test_one_planted_sample_refuses_the_whole_batch(
     The planted id still refuses the batch, and the caller gets nothing back.
     """
     monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    crop = np.zeros((2, 2, 3), dtype=np.uint8)
     samples = [
-        _sample(f"FX-BATCH-{index:03d}", track_id=index, label=index) for index in range(1, 10)
+        _sample(f"FX-BATCH-{index:03d}", track_id=index, label=index, crop=crop)
+        for index in range(1, 10)
     ]
     planted_id = "fx-smoke-syn-001"
-    samples.append(_sample(planted_id, track_id=10, label=10))
+    samples.append(_sample(planted_id, track_id=10, label=10, crop=crop))
     manifest = _write_manifest(tmp_path)
     with pytest.raises(FixtureSeparationError) as caught:
         returned = load_reid_samples(samples, context, manifest)
@@ -339,9 +343,10 @@ def test_injected_pattern_returns_a_matching_sample(
 ) -> None:
     """A test-only pattern can accept one id. The production tuple stays empty."""
     monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
-    sample = _sample("FX-BATCH-004", track_id=4, label=2)
+    crop = np.zeros((2, 2, 3), dtype=np.uint8)
+    sample = _sample("FX-BATCH-004", track_id=4, label=2, crop=crop)
     loaded = load_reid_samples([sample], context, _write_manifest(tmp_path))
-    assert loaded == [sample]
+    assert loaded[0] is sample
 
 
 @pytest.mark.parametrize("context", _OTHER_CONTEXTS)
