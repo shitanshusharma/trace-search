@@ -1,9 +1,10 @@
 """Untrained placeholder embedder.
 
-Each crop is resized to 64 pixels high and 32 pixels wide with
-``cv2.resize`` (default interpolation), flattened, and multiplied by a
-Gaussian matrix drawn from ``np.random.default_rng(seed)``. Each output
-row is L2-normalised. The constructor takes ``dim`` and ``seed`` only.
+Each HxWx3 uint8 crop is resized to 64 pixels high and 32 pixels wide
+with ``cv2.resize`` (default interpolation), flattened, and multiplied
+by one Gaussian matrix drawn once from ``np.random.default_rng(seed)``.
+Each output row is L2-normalised. The constructor takes ``dim`` and
+``seed`` only.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from trace_search.reid.types import AppearanceEmbedder
 # Spatial size after resize. OpenCV takes (width, height).
 _HEIGHT = 64
 _WIDTH = 32
+_CHANNELS = 3
+_FLAT = _HEIGHT * _WIDTH * _CHANNELS
 
 
 class UntrainedPlaceholderEmbedder:
@@ -36,6 +39,7 @@ class UntrainedPlaceholderEmbedder:
             raise ValueError(f"dim must be a positive int, got {dim}")
         self.dim = dim
         self._seed = seed
+        self._matrix = _gaussian(seed, _FLAT, dim)
 
     @property
     def name(self) -> str:
@@ -43,12 +47,11 @@ class UntrainedPlaceholderEmbedder:
         return "untrained-placeholder-v1"
 
     def embed(self, crops: Sequence[npt.NDArray[np.uint8]]) -> npt.NDArray[np.float32]:
-        """Project uint8 crops to ``dim`` L2-normalised float32 rows."""
+        """Project HxWx3 uint8 crops to ``dim`` L2-normalised float32 rows."""
         if len(crops) == 0:
             return _empty(self.dim)
         flat = _flat_batch(crops)
-        matrix = _gaussian(self._seed, int(flat.shape[1]), self.dim)
-        return _unit_rows(flat @ matrix)
+        return _unit_rows(flat @ self._matrix)
 
 
 def _as_appearance_embedder(
@@ -69,16 +72,8 @@ def _empty(dim: int) -> npt.NDArray[np.float32]:
 
 def _flat_batch(crops: Sequence[npt.NDArray[np.uint8]]) -> npt.NDArray[np.float64]:
     rows = [_flat_crop(crop) for crop in crops]
-    width = int(rows[0].shape[0])
-    _require_same_width(rows, width)
     stacked = np.ascontiguousarray(np.stack(rows), dtype=np.float64)
     return cast(npt.NDArray[np.float64], stacked)
-
-
-def _require_same_width(rows: Sequence[npt.NDArray[np.float64]], width: int) -> None:
-    for row in rows:
-        if int(row.shape[0]) != width:
-            raise ValueError("crops in one call must flatten to the same length")
 
 
 def _flat_crop(crop: npt.NDArray[np.uint8]) -> npt.NDArray[np.float64]:
@@ -94,10 +89,13 @@ def _require_crop(crop: npt.NDArray[np.uint8]) -> None:
         raise ValueError(f"crop must be a numpy array, got {type(crop).__name__}")
     if crop.dtype != np.uint8:
         raise ValueError(f"crop must be uint8, got {crop.dtype}")
-    if crop.ndim not in (2, 3):
-        raise ValueError(f"crop must be HxW or HxWxC, got ndim {crop.ndim}")
     if crop.size == 0:
         raise ValueError("crop must have a non-zero height and width")
+    if crop.ndim != 3:
+        raise ValueError(f"crop must be HxWx3, got ndim {crop.ndim}")
+    channels = int(crop.shape[2])
+    if channels != _CHANNELS:
+        raise ValueError(f"crop must have 3 channels, got {channels}")
 
 
 def _gaussian(seed: int, in_dim: int, out_dim: int) -> npt.NDArray[np.float64]:

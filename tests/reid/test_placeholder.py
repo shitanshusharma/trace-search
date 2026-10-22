@@ -156,13 +156,63 @@ def test_matches_fixed_gaussian_projection() -> None:
     assert np.allclose(found, expected, atol=1e-5, rtol=1e-5)
 
 
+def test_same_instance_embed_calls_match() -> None:
+    crops = _crops(seed=9, count=2)
+    embedder = UntrainedPlaceholderEmbedder(dim=16, seed=3)
+    assert np.array_equal(embedder.embed(crops), embedder.embed(crops))
+
+
+def test_projection_matrix_is_drawn_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    draws: list[int] = []
+    real_rng = np.random.default_rng
+
+    def counting(seed: int) -> np.random.Generator:
+        draws.append(int(seed))
+        return real_rng(seed)
+
+    crops = _crops(seed=1, count=2)
+    monkeypatch.setattr(np.random, "default_rng", counting)
+    embedder = UntrainedPlaceholderEmbedder(dim=4, seed=5)
+    matrix = embedder._matrix
+    first = embedder.embed(crops)
+    second = embedder.embed(crops)
+    assert np.array_equal(first, second)
+    assert embedder._matrix is matrix
+    assert draws == [5]
+
+
 def test_grayscale_crop_is_a_unit_row() -> None:
-    crops = _crops(seed=6, count=1, shape=(18, 9))
-    found = UntrainedPlaceholderEmbedder(dim=8, seed=2).embed(crops)
-    assert found.shape == (1, 8)
-    assert found.dtype == np.float32
-    norm = float(np.linalg.norm(found[0]))
-    assert abs(norm - 1.0) <= 1e-5
+    """A 2-D crop is refused. It is not an HxWx3 crop."""
+    crop = _crops(seed=6, count=1, shape=(18, 9))[0]
+    assert crop.ndim == 2
+    embedder = UntrainedPlaceholderEmbedder(dim=8, seed=2)
+    with pytest.raises(ValueError, match="HxWx3"):
+        embedder.embed([crop])
+
+
+def test_two_dimensional_crop_raises() -> None:
+    crop = _crops(seed=6, count=1, shape=(18, 9))[0]
+    assert crop.ndim == 2
+    assert crop.size > 0
+    embedder = UntrainedPlaceholderEmbedder(dim=4, seed=0)
+    with pytest.raises(ValueError, match="HxWx3"):
+        embedder.embed([crop])
+
+
+def test_one_channel_crop_raises() -> None:
+    crop = _crops(seed=6, count=1, shape=(12, 8, 1))[0]
+    assert crop.shape[2] == 1
+    embedder = UntrainedPlaceholderEmbedder(dim=4, seed=0)
+    with pytest.raises(ValueError, match="3 channels"):
+        embedder.embed([crop])
+
+
+def test_four_channel_crop_raises() -> None:
+    crop = _crops(seed=6, count=1, shape=(12, 8, 4))[0]
+    assert crop.shape[2] == 4
+    embedder = UntrainedPlaceholderEmbedder(dim=4, seed=0)
+    with pytest.raises(ValueError, match="3 channels"):
+        embedder.embed([crop])
 
 
 def test_different_spatial_shapes_share_one_output_shape() -> None:
@@ -243,7 +293,7 @@ def test_mixed_channel_counts_raise() -> None:
     color = np.asarray(rng.integers(0, 256, size=(10, 12, 3), dtype=np.uint8))
     gray = np.asarray(rng.integers(0, 256, size=(10, 12), dtype=np.uint8))
     embedder = UntrainedPlaceholderEmbedder(dim=4, seed=0)
-    with pytest.raises(ValueError, match="same length"):
+    with pytest.raises(ValueError, match="HxWx3"):
         embedder.embed([color, gray])
 
 
