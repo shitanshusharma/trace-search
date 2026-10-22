@@ -2,9 +2,12 @@
 
 The metric functions are real. ``run`` does not produce an AC-05 result in
 Cut 01. ``status`` is ``DEFERRED``, ``evidence`` is false, and
-``ac05_score`` is null. A fixture id that starts with ``FX-SMOKE`` or
-``FX-CODE`` raises ``FixtureSeparationError`` unless ``mode`` is
-``unit_test``. Unit-test mode still returns no numeric AC-05 score.
+``ac05_score`` is null. Measured numbers live under ``diagnostics`` with a
+note that they are not an AC-05 result. A fixture id is stripped, upper-cased,
+and has ``_`` read as ``-`` before the gate. After that, an id that starts
+with ``FX-SMOKE`` or ``FX-CODE`` raises ``FixtureSeparationError`` unless
+``mode`` is ``unit_test``. The error keeps the original id. Unit-test mode
+still returns no numeric AC-05 score.
 
 IDF1 uses one global min-cost track-id assignment from
 ``scipy.optimize.linear_sum_assignment``. Per-frame pairs are greedy,
@@ -28,10 +31,14 @@ from trace_search.fixtures.guards import FixtureSeparationError
 
 _BLOCKED_PREFIXES: tuple[str, ...] = ("FX-SMOKE", "FX-CODE")
 _UNIT_TEST_MODE = "unit_test"
+_DIAGNOSTICS_NOTE = (
+    "Not an AC-05 result. AC-05 is DEFERRED in Cut 01; these numbers are not evidence."
+)
 
 __all__ = [
     "Ac05RunResult",
     "DetBox",
+    "Diagnostics",
     "Idf1Result",
     "SubsetRecall",
     "SubsetReport",
@@ -66,6 +73,18 @@ class Idf1Result(TypedDict):
     idf1: float
 
 
+class Diagnostics(TypedDict):
+    """Measured numbers. The note says they are not an AC-05 result."""
+
+    note: str
+    recall: float | None
+    idf1: float | None
+    idtp: int | None
+    idfp: int | None
+    idfn: int | None
+    subset: SubsetReport
+
+
 class Ac05RunResult(TypedDict):
     """Cut 01 AC-05 payload. ``ac05_score`` is always null."""
 
@@ -74,12 +93,7 @@ class Ac05RunResult(TypedDict):
     status: Literal["DEFERRED"]
     evidence: Literal[False]
     ac05_score: None
-    recall: float | None
-    idf1: float | None
-    idtp: int | None
-    idfp: int | None
-    idfn: int | None
-    subset: SubsetReport
+    diagnostics: Diagnostics
 
 
 @dataclass(frozen=True)
@@ -192,12 +206,15 @@ def run(
     """Return a Cut 01 AC-05 payload. The payload is never a pass.
 
     ``status`` is ``DEFERRED``, ``evidence`` is false, and ``ac05_score``
-    is null. Metrics are filled in only for a fixture id that does not
-    start with ``FX-SMOKE`` or ``FX-CODE``. Those prefixes raise
-    ``FixtureSeparationError`` unless ``mode`` is ``unit_test``.
-    Unit-test mode still leaves every score null, including when boxes
-    were supplied. Omitted sequences are not measured. An explicit empty
-    sequence uses the empty-input rule.
+    is null. Recall, IDF1, the ID counts, and ``subset`` sit under
+    ``diagnostics`` with a note that they are not an AC-05 result.
+    The fixture id is stripped, upper-cased, and ``_`` is read as ``-``
+    before the prefix check. ``FX-SMOKE`` and ``FX-CODE`` then raise
+    ``FixtureSeparationError`` unless ``mode`` is ``unit_test``. The
+    error and ``fixture_id`` keep the original text. Unit-test mode still
+    leaves every score null, including when boxes were supplied. Omitted
+    sequences are not measured. An explicit empty sequence uses the
+    empty-input rule.
     """
     _require_fixture_id(fixture_id)
     if _blocked_fixture(fixture_id) and mode != _UNIT_TEST_MODE:
@@ -248,12 +265,11 @@ def _unscored(fixture_id: str) -> Ac05RunResult:
     return _pack(fixture_id, None, None, _blank_subset())
 
 
-def _pack(
-    fixture_id: str,
+def _diagnostics(
     recall: float | None,
     scores: Idf1Result | None,
     subset: SubsetReport,
-) -> Ac05RunResult:
+) -> Diagnostics:
     idtp: int | None = None
     idfp: int | None = None
     idfn: int | None = None
@@ -264,17 +280,29 @@ def _pack(
         idfn = scores["idfn"]
         idf1_score = scores["idf1"]
     return {
-        "criterion": "AC-05",
-        "fixture_id": fixture_id,
-        "status": "DEFERRED",
-        "evidence": False,
-        "ac05_score": None,
+        "note": _DIAGNOSTICS_NOTE,
         "recall": recall,
         "idf1": idf1_score,
         "idtp": idtp,
         "idfp": idfp,
         "idfn": idfn,
         "subset": subset,
+    }
+
+
+def _pack(
+    fixture_id: str,
+    recall: float | None,
+    scores: Idf1Result | None,
+    subset: SubsetReport,
+) -> Ac05RunResult:
+    return {
+        "criterion": "AC-05",
+        "fixture_id": fixture_id,
+        "status": "DEFERRED",
+        "evidence": False,
+        "ac05_score": None,
+        "diagnostics": _diagnostics(recall, scores, subset),
     }
 
 
@@ -516,8 +544,13 @@ def _recall_ratio(matched: int, ground_truth: int) -> float:
     return matched / ground_truth
 
 
+def _normalise_fixture_id(fixture_id: str) -> str:
+    """Strip, upper-case, and read ``_`` as ``-`` before the prefix gate."""
+    return fixture_id.strip().upper().replace("_", "-")
+
+
 def _blocked_fixture(fixture_id: str) -> bool:
-    return fixture_id.startswith(_BLOCKED_PREFIXES)
+    return _normalise_fixture_id(fixture_id).startswith(_BLOCKED_PREFIXES)
 
 
 def _reject_blocked(fixture_id: str) -> None:

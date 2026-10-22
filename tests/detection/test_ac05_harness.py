@@ -6,6 +6,8 @@ not produce an AC-05 score from FX-SMOKE or FX-CODE fixtures.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from trace_search.detection.ac05_harness import (
@@ -20,6 +22,26 @@ from trace_search.fixtures.guards import FixtureSeparationError
 _LEFT = (0.0, 0.0, 10.0, 10.0)
 _RIGHT = (100.0, 0.0, 110.0, 10.0)
 _BLOCKED_IDS = ("FX-SMOKE-SYN-001", "FX-SMOKE", "FX-CODE-001", "FX-CODE")
+_DISGUISED_BLOCKED_IDS = (
+    "fx-smoke-syn-001",
+    "Fx-Code-001",
+    " FX-SMOKE-SYN-001",
+    "FX-CODE-001 ",
+    "  Fx-Smoke-001  ",
+    "FX_SMOKE_SYN_001",
+    "fx_code_001",
+)
+_TOP_LEVEL_KEYS = {
+    "criterion",
+    "fixture_id",
+    "status",
+    "evidence",
+    "ac05_score",
+    "diagnostics",
+}
+_DIAGNOSTICS_NOTE = (
+    "Not an AC-05 result. AC-05 is DEFERRED in Cut 01; these numbers are not evidence."
+)
 
 
 def _numeric_leaves(value: object) -> list[object]:
@@ -34,6 +56,16 @@ def _numeric_leaves(value: object) -> list[object]:
             found.extend(_numeric_leaves(nested))
         return found
     raise AssertionError(f"unexpected result value {value!r}")
+
+
+def _numbers_outside_diagnostics(result: dict[str, object]) -> list[object]:
+    """Walk every top-level value except ``diagnostics``. ``False`` is allowed."""
+    found: list[object] = []
+    for key, value in result.items():
+        if key == "diagnostics":
+            continue
+        found.extend(_numeric_leaves(value))
+    return found
 
 
 def test_detection_recall_is_three_quarters() -> None:
@@ -81,7 +113,7 @@ def test_equal_iou_matches_the_earlier_ground_truth_once() -> None:
     pred = [DetBox(0, (3.0, 0.0, 13.0, 10.0))]
     assert detection_recall(gt, pred) == 0.5
     result = run("FX-HOLD-001", gt=gt, pred=pred)
-    assert result["subset"]["low_light"] == {
+    assert result["diagnostics"]["subset"]["low_light"] == {
         "recall": 0.0,
         "matched": 0,
         "ground_truth": 1,
@@ -254,13 +286,13 @@ def test_subset_reports_low_light_and_occluded_separately() -> None:
     assert result["status"] == "DEFERRED"
     assert result["evidence"] is False
     assert result["ac05_score"] is None
-    assert result["recall"] == 0.75
-    assert result["subset"]["low_light"] == {
+    assert result["diagnostics"]["recall"] == 0.75
+    assert result["diagnostics"]["subset"]["low_light"] == {
         "recall": 0.5,
         "matched": 1,
         "ground_truth": 2,
     }
-    assert result["subset"]["occluded"] == {
+    assert result["diagnostics"]["subset"]["occluded"] == {
         "recall": 1.0,
         "matched": 2,
         "ground_truth": 2,
@@ -271,12 +303,12 @@ def test_subset_recall_is_one_when_the_flag_is_absent() -> None:
     gt = [DetBox(0, _LEFT)]
     pred = [DetBox(0, _LEFT)]
     result = run("FX-HOLD-001", gt=gt, pred=pred)
-    assert result["subset"]["low_light"] == {
+    assert result["diagnostics"]["subset"]["low_light"] == {
         "recall": 1.0,
         "matched": 0,
         "ground_truth": 0,
     }
-    assert result["subset"]["occluded"] == {
+    assert result["diagnostics"]["subset"]["occluded"] == {
         "recall": 1.0,
         "matched": 0,
         "ground_truth": 0,
@@ -288,11 +320,12 @@ def test_run_empty_sequences_use_the_empty_rules() -> None:
     assert result["status"] == "DEFERRED"
     assert result["ac05_score"] is None
     assert result["evidence"] is False
-    assert result["recall"] == 1.0
-    assert result["idf1"] == 1.0
-    assert result["idtp"] == 0
-    assert result["idfp"] == 0
-    assert result["idfn"] == 0
+    diagnostics = result["diagnostics"]
+    assert diagnostics["recall"] == 1.0
+    assert diagnostics["idf1"] == 1.0
+    assert diagnostics["idtp"] == 0
+    assert diagnostics["idfp"] == 0
+    assert diagnostics["idfn"] == 0
 
 
 def test_run_measures_one_side_when_the_other_is_omitted() -> None:
@@ -300,12 +333,12 @@ def test_run_measures_one_side_when_the_other_is_omitted() -> None:
     tracks = [TrackBox(0, 1, _LEFT)]
     recall_only = run("FX-HOLD-001", gt=gt)
     track_only = run("FX-HOLD-001", pred_tracks=tracks)
-    assert recall_only["recall"] == 0.0
-    assert recall_only["idf1"] is None
-    assert track_only["recall"] is None
-    assert track_only["idf1"] == 0.0
-    assert track_only["idfp"] == 1
-    assert track_only["idfn"] == 0
+    assert recall_only["diagnostics"]["recall"] == 0.0
+    assert recall_only["diagnostics"]["idf1"] is None
+    assert track_only["diagnostics"]["recall"] is None
+    assert track_only["diagnostics"]["idf1"] == 0.0
+    assert track_only["diagnostics"]["idfp"] == 1
+    assert track_only["diagnostics"]["idfn"] == 0
 
 
 def test_run_hold_without_boxes_is_deferred() -> None:
@@ -315,13 +348,17 @@ def test_run_hold_without_boxes_is_deferred() -> None:
     assert result["status"] == "DEFERRED"
     assert result["evidence"] is False
     assert result["ac05_score"] is None
-    assert result["recall"] is None
-    assert result["idf1"] is None
-    assert result["idtp"] is None
-    assert result["idfp"] is None
-    assert result["idfn"] is None
-    assert result["subset"]["low_light"]["recall"] is None
-    assert result["subset"]["occluded"]["recall"] is None
+    assert set(result) == _TOP_LEVEL_KEYS
+    diagnostics = result["diagnostics"]
+    assert diagnostics["note"] == _DIAGNOSTICS_NOTE
+    assert diagnostics["recall"] is None
+    assert diagnostics["idf1"] is None
+    assert diagnostics["idtp"] is None
+    assert diagnostics["idfp"] is None
+    assert diagnostics["idfn"] is None
+    assert diagnostics["subset"]["low_light"]["recall"] is None
+    assert diagnostics["subset"]["occluded"]["recall"] is None
+    assert _numbers_outside_diagnostics(result) == []
     assert _numeric_leaves(result) == []
 
 
@@ -333,6 +370,33 @@ def test_run_smoke_and_code_raise(fixture_id: str) -> None:
         run(fixture_id, mode="eval")
     with pytest.raises(FixtureSeparationError, match=fixture_id):
         run(fixture_id, mode="UNIT_TEST")
+
+
+@pytest.mark.parametrize("fixture_id", _DISGUISED_BLOCKED_IDS)
+def test_disguised_smoke_and_code_ids_raise(fixture_id: str) -> None:
+    """Lower case, mixed case, surrounding space, and underscores are the same gate."""
+    with pytest.raises(FixtureSeparationError, match=re.escape(fixture_id)):
+        run(fixture_id)
+    gt = [DetBox(0, _LEFT)]
+    pred = [DetBox(0, _LEFT)]
+    tracks = [TrackBox(0, 1, _LEFT)]
+    result = run(
+        fixture_id,
+        gt=gt,
+        pred=pred,
+        gt_tracks=tracks,
+        pred_tracks=tracks,
+        mode="unit_test",
+    )
+    assert result["fixture_id"] == fixture_id
+    assert result["evidence"] is False
+    assert result["status"] == "DEFERRED"
+    assert set(result) == _TOP_LEVEL_KEYS
+    assert result["diagnostics"]["note"] == _DIAGNOSTICS_NOTE
+    assert result["diagnostics"]["recall"] is None
+    assert result["diagnostics"]["idf1"] is None
+    assert _numbers_outside_diagnostics(result) == []
+    assert _numeric_leaves(result) == []
 
 
 def test_embedded_smoke_prefix_is_not_blocked() -> None:
@@ -374,8 +438,21 @@ def test_run_hold_metrics_are_not_an_ac05_score() -> None:
     assert result["status"] == "DEFERRED"
     assert result["evidence"] is False
     assert result["ac05_score"] is None
-    assert result["recall"] == 1.0
-    assert result["idf1"] == 1.0
+    assert set(result) == _TOP_LEVEL_KEYS
+    assert set(result["diagnostics"]) == {
+        "note",
+        "recall",
+        "idf1",
+        "idtp",
+        "idfp",
+        "idfn",
+        "subset",
+    }
+    assert result["diagnostics"]["note"] == _DIAGNOSTICS_NOTE
+    assert result["diagnostics"]["recall"] == 1.0
+    assert result["diagnostics"]["idf1"] == 1.0
+    assert _numbers_outside_diagnostics(result) == []
+    assert _numeric_leaves(result["diagnostics"]) != []
 
 
 def test_rejects_bad_inputs() -> None:
