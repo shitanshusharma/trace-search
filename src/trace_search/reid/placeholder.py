@@ -51,8 +51,15 @@ class UntrainedPlaceholderEmbedder:
         return _unit_rows(flat @ matrix)
 
 
-# mypy --strict on src/ checks this assignment. CI does not type-check tests.
-_PROTOCOL_SAMPLE: AppearanceEmbedder = UntrainedPlaceholderEmbedder()
+def _as_appearance_embedder(
+    embedder: UntrainedPlaceholderEmbedder,
+) -> AppearanceEmbedder:
+    """Return ``embedder`` as an ``AppearanceEmbedder``.
+
+    ``mypy src/ --strict`` checks this assignment. CI does not type-check tests.
+    """
+    checked: AppearanceEmbedder = embedder
+    return checked
 
 
 def _empty(dim: int) -> npt.NDArray[np.float32]:

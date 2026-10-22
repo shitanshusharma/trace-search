@@ -11,7 +11,10 @@ import numpy.typing as npt
 import pytest
 
 from trace_search.reid import AppearanceEmbedder
-from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
+from trace_search.reid.placeholder import (
+    UntrainedPlaceholderEmbedder,
+    _as_appearance_embedder,
+)
 
 _SPEC_DOC = (
     "Untrained placeholder. Similarity scores from this embedder have no "
@@ -86,8 +89,10 @@ def test_name_is_a_read_only_property() -> None:
 
 
 def test_assignable_to_appearance_embedder() -> None:
-    """Same assignment ``mypy src/ --strict`` checks on ``_PROTOCOL_SAMPLE``."""
-    embedder: AppearanceEmbedder = UntrainedPlaceholderEmbedder(dim=8, seed=0)
+    """Same assignment ``mypy src/ --strict`` checks in ``_as_appearance_embedder``."""
+    concrete = UntrainedPlaceholderEmbedder(dim=8, seed=0)
+    embedder: AppearanceEmbedder = concrete
+    assert _as_appearance_embedder(concrete) is embedder
     crops = _crops(seed=1, count=2)
     found = embedder.embed(crops)
     assert embedder.placeholder is True
@@ -256,24 +261,31 @@ def test_signature_is_only_dim_and_seed() -> None:
     assert all(item.kind is not inspect.Parameter.VAR_KEYWORD for item in params.values())
 
 
+def _construct_rejected(keyword: str, value: object) -> None:
+    """Call the constructor with one keyword it does not accept."""
+    rejected: dict[str, object] = {}
+    rejected[keyword] = value
+    UntrainedPlaceholderEmbedder(**rejected)
+
+
 def test_weights_keyword_raises_type_error() -> None:
     with pytest.raises(TypeError, match="'weights'"):
-        UntrainedPlaceholderEmbedder(weights="x")  # type: ignore[call-arg]
+        _construct_rejected("weights", "x")
 
 
 def test_weights_path_keyword_raises_type_error() -> None:
     with pytest.raises(TypeError, match="'weights_path'"):
-        UntrainedPlaceholderEmbedder(weights_path="x")  # type: ignore[call-arg]
+        _construct_rejected("weights_path", "x")
 
 
 def test_checkpoint_keyword_raises_type_error() -> None:
     with pytest.raises(TypeError, match="'checkpoint'"):
-        UntrainedPlaceholderEmbedder(checkpoint="x")  # type: ignore[call-arg]
+        _construct_rejected("checkpoint", "x")
 
 
 def test_pretrained_keyword_raises_type_error() -> None:
     with pytest.raises(TypeError, match="'pretrained'"):
-        UntrainedPlaceholderEmbedder(pretrained=True)  # type: ignore[call-arg]
+        _construct_rejected("pretrained", True)
 
 
 def test_no_network_guard_records_zero_calls(monkeypatch: pytest.MonkeyPatch) -> None:
