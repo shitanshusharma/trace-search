@@ -261,6 +261,7 @@ gitleaks detect --verbose
 
 - `requirements-ci.lock`, installed with `--no-deps` in this job. That lock pins `protobuf==5.29.6`, `mcp==1.30.0`, and `setuptools==84.2.1`. `--no-deps` is required because semgrep 1.182.0 declares `mcp==1.29.0` and pip will not resolve the fixed pin. `pip-audit -r requirements-ci.lock` hits that same resolver conflict, so this job audits the installed CI-tools environment instead.
 - `requirements-dev.lock`, the app lock, via `pip-audit -r requirements-dev.lock`. Its versions match the licence manifest, including `jsonschema==4.26.0`.
+- The installed CI-tools audit ignores only GHSA-xcq7-p3pf-p88h through 2026-11-21 (B-79). The dev-lock audit does not.
 
 **Fails on:**
 - High or critical CVEs in installed packages

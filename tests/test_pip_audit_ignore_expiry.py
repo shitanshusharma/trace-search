@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -12,7 +15,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
 COMMENT = (
     "expires 2026-11-21; affects opentelemetry-api 1.37.0 in semgrep's CI-tools env only; "
     "blocked on semgrep pinning opentelemetry-api~=1.37.0 (latest 1.182.1); "
-    "remove when semgrep allows >=1.45.1; approved by Shitanshu 22 Oct 2026"
+    "remove when semgrep allows >=1.45.1; approved by Shitanshu 22 Oct 2026; B-79"
 )
 
 
@@ -88,3 +91,46 @@ def test_ignore_is_only_on_the_ci_tools_audits() -> None:
         if "--ignore-vuln" in path.read_text(encoding="utf-8")
     ]
     assert workflow_hits == [".github/workflows/security.yml"]
+
+
+def _step_block(workflow: str, step_name: str) -> str:
+    marker = f"- name: {step_name}\n"
+    start = workflow.index(marker)
+    rest = workflow[start + len(marker) :]
+    end = rest.index("\n    - name:")
+    return workflow[start : start + len(marker) + end]
+
+
+def test_cli_after_expiry_exits_1() -> None:
+    """A real process must exit 1. Dropping SystemExit around main() fails this."""
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    completed = subprocess.run(
+        [sys.executable, "scripts/check_pip_audit_ignore_expiry.py", "2026-11-22"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert "expired after 2026-11-21" in completed.stderr
+
+
+def test_expiry_script_runs_before_pip_audit() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    block = _step_block(workflow, "Run pip-audit and name any vulnerable packages")
+    assert "continue-on-error" not in block
+    assert "set +e" not in block
+    script = _pip_audit_script(workflow)
+    commands = [command.lstrip() for command in _shell_commands(script)]
+    expiry_at = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("python scripts/check_pip_audit_ignore_expiry.py")
+    )
+    audit_at = next(
+        index for index, command in enumerate(commands) if command.startswith("pip-audit")
+    )
+    assert expiry_at < audit_at
+    assert commands[expiry_at] == "python scripts/check_pip_audit_ignore_expiry.py"
