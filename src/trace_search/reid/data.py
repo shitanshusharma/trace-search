@@ -3,8 +3,9 @@
 This is the door into ReID training and evaluation. It refuses ids that
 normalise to an ``FX-SMOKE`` or ``FX-CODE`` prefix, ``SMOKE_ONLY`` and
 ``CODE_TEST`` tags, and any unknown tag. A sample path is checked with
-``check_fixture_allowed`` and must have a manifest row. The allowed-id
-set is empty, so every other id is refused. One refusal refuses the batch.
+``check_fixture_allowed`` and must have a manifest row. A sample with
+neither a crop nor a path is refused. The allowed-id set is empty, so
+every other id is refused. One refusal refuses the batch.
 """
 
 from __future__ import annotations
@@ -97,6 +98,7 @@ def _require_sample(sample: ReidSample, context: LoaderContext, manifest_path: P
         _refuse_by_content_guard(sample.path, context, manifest_path)
         _refuse_without_manifest_row(sample.path, manifest_path)
     _refuse_unless_allowlisted(sample.fixture_id, normalised_id)
+    _refuse_without_crop_or_path(sample)
 
 
 def _normalise_fixture_id(fixture_id: str) -> str:
@@ -154,3 +156,12 @@ def _refuse_unless_allowlisted(original: str, normalised: str) -> None:
     if _id_on_allowlist(normalised):
         return
     raise FixtureSeparationError(f"{original} is refused: id is not on the ReID allowlist")
+
+
+def _refuse_without_crop_or_path(sample: ReidSample) -> None:
+    """Refuse a sample that has no crop and no path."""
+    if sample.crop is not None or sample.path is not None:
+        return
+    raise FixtureSeparationError(
+        f"{sample.fixture_id} is refused: sample has neither a crop nor a path"
+    )
