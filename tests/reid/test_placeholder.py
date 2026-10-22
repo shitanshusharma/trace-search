@@ -163,6 +163,7 @@ def test_same_instance_embed_calls_match() -> None:
 
 
 def test_projection_matrix_is_drawn_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One draw per instance. Same crops match across calls and instances."""
     draws: list[int] = []
     real_rng = np.random.default_rng
 
@@ -173,21 +174,14 @@ def test_projection_matrix_is_drawn_once(monkeypatch: pytest.MonkeyPatch) -> Non
     crops = _crops(seed=1, count=2)
     monkeypatch.setattr(np.random, "default_rng", counting)
     embedder = UntrainedPlaceholderEmbedder(dim=4, seed=5)
-    matrix = embedder._matrix
+    other = UntrainedPlaceholderEmbedder(dim=4, seed=5)
+    different = UntrainedPlaceholderEmbedder(dim=4, seed=6)
     first = embedder.embed(crops)
     second = embedder.embed(crops)
     assert np.array_equal(first, second)
-    assert embedder._matrix is matrix
-    assert draws == [5]
-
-
-def test_grayscale_crop_is_a_unit_row() -> None:
-    """A 2-D crop is refused. It is not an HxWx3 crop."""
-    crop = _crops(seed=6, count=1, shape=(18, 9))[0]
-    assert crop.ndim == 2
-    embedder = UntrainedPlaceholderEmbedder(dim=8, seed=2)
-    with pytest.raises(ValueError, match="HxWx3"):
-        embedder.embed([crop])
+    assert np.array_equal(first, other.embed(crops))
+    assert not np.array_equal(first, different.embed(crops))
+    assert draws == [5, 5, 6]
 
 
 def test_two_dimensional_crop_raises() -> None:
