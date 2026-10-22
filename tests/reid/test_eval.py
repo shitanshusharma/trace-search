@@ -24,9 +24,12 @@ import pytest
 import trace_search.reid.data as data_module
 import trace_search.reid.eval as eval_module
 from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
-from trace_search.reid.data import ReidSample, load_reid_samples
-from trace_search.reid.eval import EvalItem, rank1_map
 from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
+
+ReidSample = data_module.ReidSample
+load_reid_samples = data_module.load_reid_samples
+EvalItem = eval_module.EvalItem
+rank1_map = eval_module.rank1_map
 
 _NOTE = "Placeholder or synthetic embeddings. Not an AC-06 result."
 _REPO_ROOT = Path(__file__).resolve().parents[2]

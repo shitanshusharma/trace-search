@@ -27,9 +27,10 @@ import numpy.typing as npt
 
 import trace_search.reid.data as data_module
 from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
-from trace_search.reid.data import ReidSample
 from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
 from trace_search.reid.types import AppearanceEmbedder
+
+ReidSample = data_module.ReidSample
 
 _NOTE = "Placeholder or synthetic embeddings. Not an AC-06 result."
 _PLACEHOLDER = "placeholder"
