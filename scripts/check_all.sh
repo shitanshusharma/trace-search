@@ -63,7 +63,10 @@ echo "✅ Semgrep passed"
 echo ""
 
 echo "→ pip-audit..."
-.venv-ci/bin/pip-audit --strict --vulnerability-service=osv
+.venv-ci/bin/python scripts/check_pip_audit_ignore_expiry.py
+# expires 2026-11-21; affects opentelemetry-api 1.37.0 in semgrep's CI-tools env only; blocked on semgrep pinning opentelemetry-api~=1.37.0 (latest 1.182.1); remove when semgrep allows >=1.45.1; approved by Shitanshu 22 Oct 2026; B-79
+ci_ignore=(--ignore-vuln GHSA-xcq7-p3pf-p88h)
+.venv-ci/bin/pip-audit --strict --vulnerability-service=osv "${ci_ignore[@]}"
 .venv-ci/bin/pip-audit -r requirements-dev.lock --strict --vulnerability-service=osv
 echo "✅ pip-audit passed"
 echo ""
