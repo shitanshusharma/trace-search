@@ -125,15 +125,21 @@ def test_truth_segment_fields_and_frozen() -> None:
 
 
 def test_protocols_use_t_e_6_field_names_and_are_read_only() -> None:
-    import trace_search.matching.route_metrics as metrics
-
+    metrics = inspect.getmodule(TruthSegment)
+    assert metrics is not None
     assert not hasattr(metrics, "Route")
     assert not hasattr(metrics, "RouteSegment")
     assert "trace_search.matching.route" not in metrics.__dict__
-    for name in ("camera_id", "track_id", "t_entry", "t_exit"):
-        assert isinstance(inspect.getattr_static(RouteSegmentLike, name), property)
-    for name in ("seed_camera", "seed_track", "segments"):
-        assert isinstance(inspect.getattr_static(RouteLike, name), property)
+    for cls, names in (
+        (RouteSegmentLike, ("camera_id", "track_id", "t_entry", "t_exit")),
+        (RouteLike, ("seed_camera", "seed_track", "segments")),
+    ):
+        for name in names:
+            prop = inspect.getattr_static(cls, name)
+            assert isinstance(prop, property)
+            assert prop.fget is not None
+            with pytest.raises(NotImplementedError):
+                prop.fget(object())
 
 
 def test_three_of_four_truth_segments_give_recall_0_75() -> None:

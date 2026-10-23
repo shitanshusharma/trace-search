@@ -68,29 +68,36 @@ class RouteSegmentLike(Protocol):
     """Read-only T-E-6 segment fields. This is not a ``RouteSegment`` class."""
 
     @property
-    def camera_id(self) -> str: ...
+    def camera_id(self) -> str:
+        raise NotImplementedError
 
     @property
-    def track_id(self) -> int: ...
+    def track_id(self) -> int:
+        raise NotImplementedError
 
     @property
-    def t_entry(self) -> float: ...
+    def t_entry(self) -> float:
+        raise NotImplementedError
 
     @property
-    def t_exit(self) -> float: ...
+    def t_exit(self) -> float:
+        raise NotImplementedError
 
 
 class RouteLike(Protocol):
     """Read-only T-E-6 route fields. This is not a ``Route`` class."""
 
     @property
-    def seed_camera(self) -> str: ...
+    def seed_camera(self) -> str:
+        raise NotImplementedError
 
     @property
-    def seed_track(self) -> int: ...
+    def seed_track(self) -> int:
+        raise NotImplementedError
 
     @property
-    def segments(self) -> Sequence[RouteSegmentLike]: ...
+    def segments(self) -> Sequence[RouteSegmentLike]:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
