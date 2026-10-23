@@ -7,6 +7,7 @@ The clock is injected, and every path lives under ``tmp_path``.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import sqlite3
 from pathlib import Path
@@ -343,10 +344,10 @@ def test_omitted_audit_root_is_a_type_error(tmp_path: Path) -> None:
         retention_paths.purge_expired(data)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="audit_root"):
         retention_paths.validate_roots(data)  # type: ignore[call-arg]
-    with pytest.raises(TypeError, match="positional"):
-        retention_paths.purge_expired(data, audit)  # type: ignore[misc]
-    with pytest.raises(TypeError, match="positional"):
-        retention_paths.validate_roots(data, audit)  # type: ignore[misc]
+    for fn in (retention_paths.purge_expired, retention_paths.validate_roots):
+        param = inspect.signature(fn).parameters["audit_root"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty
     assert _snapshot(audit) == audit_before
     assert not (data / "tracks.sqlite").exists()
     assert not (data / "attributes.sqlite").exists()
