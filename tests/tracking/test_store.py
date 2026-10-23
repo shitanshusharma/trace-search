@@ -296,6 +296,69 @@ def test_read_filters_by_run_id(tmp_path: Path) -> None:
     assert store.read("cam-a", run_id="missing") == []
 
 
+def test_camera_ids_leaves_out_a_camera_only_in_another_run(tmp_path: Path) -> None:
+    store = TrackStore(tmp_path / "tracks.sqlite", clock=lambda: 5.0)
+    store.write("run-1", "FX-CODE-1", "CODE_TEST", [_observation(camera_id="cam-a")])
+    store.write("run-2", "FX-CODE-2", "CODE_TEST", [_observation(camera_id="cam-z")])
+    assert store.camera_ids("run-1") == ("cam-a",)
+
+
+def test_camera_ids_unknown_run_returns_empty(tmp_path: Path) -> None:
+    store = TrackStore(tmp_path / "tracks.sqlite", clock=lambda: 5.0)
+    store.write("run-1", "FX-CODE-1", "CODE_TEST", [_observation(camera_id="cam-a")])
+    assert store.camera_ids("run-missing") == ()
+
+
+def test_camera_ids_sorts_ids_ascending(tmp_path: Path) -> None:
+    store = TrackStore(tmp_path / "tracks.sqlite", clock=lambda: 5.0)
+    store.write(
+        "run-1",
+        "FX-CODE-1",
+        "CODE_TEST",
+        [
+            _observation(camera_id="cam-b", track_id=1),
+            _observation(camera_id="cam-a", track_id=2),
+        ],
+    )
+    assert store.camera_ids("run-1") == ("cam-a", "cam-b")
+
+
+def test_camera_ids_returns_each_camera_once(tmp_path: Path) -> None:
+    store = TrackStore(tmp_path / "tracks.sqlite", clock=lambda: 5.0)
+    store.write(
+        "run-1",
+        "FX-CODE-1",
+        "CODE_TEST",
+        [
+            _observation(camera_id="cam-a", track_id=1, frame_number=0),
+            _observation(camera_id="cam-a", track_id=1, frame_number=1),
+            _observation(camera_id="cam-b", track_id=2),
+        ],
+    )
+    assert store.camera_ids("run-1") == ("cam-a", "cam-b")
+
+
+def test_camera_ids_drops_eight_day_rows_and_keeps_six_day_rows(tmp_path: Path) -> None:
+    """No write happens after the clock moves. camera_ids purges on its own."""
+    now = 1_800_000_000.0
+    clock = _Clock(now)
+    store = TrackStore(tmp_path / "tracks.sqlite", clock=clock)
+    old = _observation(camera_id="cam-old", track_id=1)
+    fresh = _observation(camera_id="cam-fresh", track_id=2)
+    clock.now = now - 8 * _DAY
+    store.write("run-age", "FX-CODE-1", "CODE_TEST", [old])
+    clock.now = now - 6 * _DAY
+    store.write("run-age", "FX-CODE-1", "CODE_TEST", [fresh])
+    clock.now = now
+    assert store.camera_ids("run-age") == ("cam-fresh",)
+
+
+def test_camera_ids_refuses_a_blank_run_id(tmp_path: Path) -> None:
+    store = TrackStore(tmp_path / "tracks.sqlite", clock=lambda: 1.0)
+    with pytest.raises(ValueError, match="run_id must be a non-empty string"):
+        store.camera_ids("")
+
+
 def test_count_filters_and_empty_store(tmp_path: Path) -> None:
     store = TrackStore(tmp_path / "tracks.sqlite", clock=lambda: 5.0)
     assert store.count() == 0

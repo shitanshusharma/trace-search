@@ -28,6 +28,40 @@ _BAG_ONLY_BOX = (30.0, 30.0, 35.0, 40.0)
 _HANDBAG_BOX = (14.0, 14.0, 18.0, 22.0)
 _CAM_C_BOX = (7.0, 7.0, 11.0, 11.0)
 _OTHER_BOX = (99.0, 99.0, 120.0, 140.0)
+_DAY = 86400.0
+
+
+class _Clock:
+    """Mutable UTC epoch clock. Tests move it; nothing sleeps."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _store_with_aged_rows(db_path: Path) -> TrackStore:
+    """One row 8 days old and one row 6 days old. The clock then sits at now."""
+    now = 1_700_000_000.0
+    clock = _Clock(now)
+    store = TrackStore(db_path, clock=clock)
+    clock.now = now - 8 * _DAY
+    store.write(
+        "run-age",
+        _FIXTURE,
+        "CODE_TEST",
+        [_row("cam-old", 1, 0, 1.0, (0.0, 0.0, 1.0, 2.0))],
+    )
+    clock.now = now - 6 * _DAY
+    store.write(
+        "run-age",
+        _FIXTURE,
+        "CODE_TEST",
+        [_row("cam-fresh", 2, 0, 2.0, (1.0, 1.0, 3.0, 4.0))],
+    )
+    clock.now = now
+    return store
 
 
 @pytest.fixture(autouse=True)
@@ -268,6 +302,23 @@ def test_run_with_no_rows_returns_no_tracklets(store: TrackStore) -> None:
     assert load_tracklets(store, "run-missing") == []
 
 
+def test_expired_rows_stay_out_of_camera_ids_and_tracklets(tmp_path: Path) -> None:
+    """Eight-day rows are gone. Six-day rows stay. Each call uses its own file."""
+    discovery = _store_with_aged_rows(tmp_path / "discovery.sqlite")
+    assert discovery.camera_ids("run-age") == ("cam-fresh",)
+
+    listed = _store_with_aged_rows(tmp_path / "listed.sqlite")
+    assert [item.camera_id for item in load_tracklets(listed, "run-age")] == ["cam-fresh"]
+
+    chosen = _store_with_aged_rows(tmp_path / "chosen.sqlite")
+    explicit = load_tracklets(
+        chosen,
+        "run-age",
+        camera_ids=("cam-old", "cam-fresh"),
+    )
+    assert [item.camera_id for item in explicit] == ["cam-fresh"]
+
+
 def test_sort_puts_camera_id_before_an_earlier_start(store: TrackStore) -> None:
     store.write(
         _RUN,
@@ -404,9 +455,9 @@ def test_ids_are_matched_exactly_without_case_folding(store: TrackStore) -> None
 )
 def test_id_rejects_empty_or_whitespace(store: TrackStore, value: object) -> None:
     """A whitespace-only id is empty. The id is not stripped and then accepted."""
-    with pytest.raises(ValueError, match="non-empty"):
+    with pytest.raises(ValueError, match="non-empty id"):
         load_tracklets(store, value)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="non-empty"):
+    with pytest.raises(ValueError, match="non-empty id"):
         load_tracklets(store, _RUN, camera_ids=(value,))  # type: ignore[arg-type]
 
 

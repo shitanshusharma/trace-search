@@ -6,14 +6,16 @@ run. The record has no cross-camera id.
 Timestamps are the values already stored on the rows. This module does not
 add a clock offset.
 
-Rows inside one tracklet are ordered by ``(timestamp_seconds, frame_number)``.
+Rows inside one tracklet are sorted once, by ``(timestamp_seconds, frame_number)``.
 ``TrackStore.read`` returns ``rowid`` order, and ``sorted`` is stable, so two
 rows with the same timestamp and frame keep that row order. ``t_start`` and
 ``first_box`` come from the first row. ``t_end`` and ``last_box`` come from
 the last row. ``frames`` lists every ``frame_number`` in that order, including
 repeats. ``n_obs`` is the number of rows.
 
-``camera_ids=None`` means every camera that has a row for ``run_id``.
+``camera_ids=None`` asks ``TrackStore.camera_ids`` for every camera that
+still has a row for ``run_id``. Expired rows are purged once before that
+lookup and before any read. This module opens no database connection.
 An empty collection is refused. A bare ``str`` is refused, because a ``str``
 is not a collection of camera ids. An unknown camera id adds no tracklet.
 Repeated camera ids are read once.
@@ -27,7 +29,6 @@ case-folded, and not NFKC-folded.
 
 from __future__ import annotations
 
-import sqlite3
 import unicodedata
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -38,13 +39,6 @@ from trace_search.tracking.store import TrackStore
 from trace_search.tracking.types import TrackObservation
 
 __all__ = ["Tracklet", "load_tracklets"]
-
-_CAMERA_IDS_SQL = """
-SELECT DISTINCT camera_id
-FROM track_observations
-WHERE run_id = ?
-ORDER BY camera_id ASC
-"""
 
 
 @dataclass(frozen=True)
@@ -144,29 +138,14 @@ def _require_det_class(value: object) -> DetClass:
     return value
 
 
-def _camera_ids_for_run(store: TrackStore, run_id: str) -> tuple[str, ...]:
-    """Cameras that have any row for ``run_id``, in camera id order.
-
-    ``TrackStore.read`` needs a camera id, so discovery uses the store file.
-    Rows themselves still come from ``TrackStore.read``.
-    """
-    connection = sqlite3.connect(store.db_path)
-    try:
-        cursor = connection.execute(_CAMERA_IDS_SQL, (run_id,))
-        rows = cursor.fetchall()
-    finally:
-        connection.close()
-    return tuple(str(row[0]) for row in rows)
-
-
 def _cameras_to_read(
     store: TrackStore,
     run_id: str,
     camera_ids: tuple[str, ...] | None,
 ) -> tuple[str, ...]:
-    """Honour ``camera_ids``. ``None`` discovers cameras for this run only."""
+    """Honour ``camera_ids``. ``None`` asks the store for this run only."""
     if camera_ids is None:
-        return _camera_ids_for_run(store, run_id)
+        return store.camera_ids(run_id)
     return camera_ids
 
 
@@ -203,15 +182,13 @@ def _ordered_observations(
     return tuple(sorted(observations, key=_observation_order))
 
 
-def _end_boxes(observations: Sequence[TrackObservation]) -> tuple[Box, Box]:
-    """First and last box in timestamp, then frame, then row order."""
-    ordered = _ordered_observations(observations)
+def _end_boxes(ordered: Sequence[TrackObservation]) -> tuple[Box, Box]:
+    """First and last box. ``ordered`` is already in time, frame, row order."""
     return ordered[0].box, ordered[-1].box
 
 
-def _frame_numbers(observations: Sequence[TrackObservation]) -> tuple[int, ...]:
-    """Frame numbers in timestamp, then frame, then row order."""
-    ordered = _ordered_observations(observations)
+def _frame_numbers(ordered: Sequence[TrackObservation]) -> tuple[int, ...]:
+    """Frame numbers. ``ordered`` is already in time, frame, row order."""
     return tuple(item.frame_number for item in ordered)
 
 
@@ -222,7 +199,7 @@ def _observation_count(observations: Sequence[TrackObservation]) -> int:
 
 def _build_tracklet(run_id: str, observations: Sequence[TrackObservation]) -> Tracklet:
     ordered = _ordered_observations(observations)
-    first_box, last_box = _end_boxes(observations)
+    first_box, last_box = _end_boxes(ordered)
     return Tracklet(
         camera_id=ordered[0].camera_id,
         track_id=ordered[0].track_id,
@@ -230,10 +207,10 @@ def _build_tracklet(run_id: str, observations: Sequence[TrackObservation]) -> Tr
         run_id=run_id,
         t_start=ordered[0].timestamp_seconds,
         t_end=ordered[-1].timestamp_seconds,
-        n_obs=_observation_count(observations),
+        n_obs=_observation_count(ordered),
         first_box=first_box,
         last_box=last_box,
-        frames=_frame_numbers(observations),
+        frames=_frame_numbers(ordered),
     )
 
 
@@ -269,11 +246,13 @@ def load_tracklets(
     ``camera_ids=None`` reads every camera with a row for ``run_id``. An empty
     collection raises ``ValueError``. A bare ``str`` raises ``ValueError``.
     Unknown camera ids contribute no tracklets. Timestamps are the stored
-    ones. ``det_class`` defaults to ``DetClass.PERSON``.
+    ones. ``det_class`` defaults to ``DetClass.PERSON``. Expired rows are
+    purged once before any camera lookup or read.
     """
     checked_run = _require_id("run_id", run_id)
     checked_cameras = _require_camera_ids(camera_ids)
     checked_class = _require_det_class(det_class)
+    store.purge_expired()
     selected = _cameras_to_read(store, checked_run, checked_cameras)
     built: list[Tracklet] = []
     for camera_id in selected:
