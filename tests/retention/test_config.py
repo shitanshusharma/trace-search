@@ -109,7 +109,7 @@ def _count_rows(db_path: Path, table: str) -> int:
 
 
 def _write_aged_pair(store: TrackStore | TrackAttributeStore, clock: _Clock) -> None:
-    """Write the older row first, then the younger one, both still inside 6 days."""
+    """Write the older row first, then the younger one; each is fresh when written."""
     clock.now = _old_created_at()
     if isinstance(store, TrackStore):
         store.write(_RUN, _FIXTURE, "CODE_TEST", [_observation("cam-purged", 1)])

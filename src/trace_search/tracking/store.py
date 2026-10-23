@@ -293,7 +293,7 @@ class TrackStore:
     """SQLite store of ``TrackObservation`` rows for one local data directory.
 
     Construction opens the file, creates ``track_observations`` when missing,
-    and purges rows older than 7 days. ``write`` purges again before it
+    and purges rows older than the shipped footage window (7 days). ``write`` purges again before it
     inserts. The clock is injectable so retention tests do not sleep.
     """
 
@@ -410,9 +410,9 @@ class TrackStore:
     ) -> int:
         """Delete rows whose ``created_at`` is older than ``max_age_days``.
 
-        The default window is 7 days. ``now`` is a UTC epoch timestamp. When
-        it is omitted, the injected clock supplies it. A row is kept when its
-        age is exactly the window.
+        The default window is the shipped footage window (7 days). ``now``
+        is a UTC epoch timestamp. When it is omitted, the injected clock
+        supplies it. A row is kept when its age is exactly the window.
         """
         current = _require_timestamp(self._clock() if now is None else now)
         cutoff = current - float(_retention_seconds(max_age_days))
