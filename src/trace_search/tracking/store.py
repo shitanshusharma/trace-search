@@ -23,10 +23,12 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 from trace_search.detection.types import DetClass
+from trace_search.retention.config import FOOTAGE_DERIVED_DAYS
 from trace_search.tracking.types import TrackObservation
 
 TRACK_DB_ENV = "TRACE_SEARCH_TRACK_DB"
-DEFAULT_MAX_AGE_DAYS = 7
+# Shipped footage-derived window. T-P-7 is the later override.
+DEFAULT_MAX_AGE_DAYS = FOOTAGE_DERIVED_DAYS
 _SECONDS_PER_DAY = 86400
 _DATA_DIR_NAME = "trace-search"
 _DB_FILENAME = "tracks.sqlite"

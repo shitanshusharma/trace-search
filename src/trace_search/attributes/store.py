@@ -74,9 +74,11 @@ from typing import TypeVar, cast
 
 from trace_search.attributes.attributes import AttributeQuery, Color, PersonAttributes
 from trace_search.matching.tracklets import Tracklet
+from trace_search.retention.config import FOOTAGE_DERIVED_DAYS
 from trace_search.tracking.store import _db_path_outside_repo
 
-DEFAULT_MAX_AGE_DAYS = 7
+# Shipped footage-derived window. T-P-7 is the later override.
+DEFAULT_MAX_AGE_DAYS = FOOTAGE_DERIVED_DAYS
 _SECONDS_PER_DAY = 86400
 
 _COLOR_VALUES = frozenset(member.value for member in Color)
