@@ -105,6 +105,7 @@ def _concurrent_worker(log_path: str, key_path: str, process_id: int) -> None:
         log.append(f"proc{process_id}_user{index}", AuditAction.LOGIN)
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 class TestAuditPathHelper:
     """is_audit_path is the purge exemption check T9 imports."""
 
