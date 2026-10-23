@@ -856,3 +856,42 @@ def test_demo_script_prints_json():
     assert proof["tamper"]["delete"]["broken_index"] == 3
     assert proof["tamper"]["swap"]["broken_index"] == 4
     assert proof["chain"] == "HMAC-SHA256"
+
+
+class TestExplicitAuditRoot:
+    """is_audit_path(path, audit_root) follows the given root, not the cwd."""
+
+    def test_explicit_root_from_another_cwd(self, tmp_path, monkeypatch):
+        audit = tmp_path / "configured-audit"
+        nested = audit / "nested"
+        nested.mkdir(parents=True)
+        inside = nested / "audit.jsonl"
+        inside.write_bytes(b"audit")
+        other = tmp_path / "other-cwd"
+        other.mkdir()
+        monkeypatch.chdir(other)
+        assert is_audit_path(inside, audit_root=audit)
+        assert is_audit_path(audit, audit_root=audit)
+        assert not is_audit_path(other / "note.txt", audit_root=audit)
+
+    def test_named_folder_under_the_cwd_is_not_the_explicit_root(self, tmp_path, monkeypatch):
+        audit = tmp_path / "configured-audit"
+        audit.mkdir()
+        target = audit / "audit.jsonl"
+        target.write_bytes(b"audit")
+        other = tmp_path / "other-cwd"
+        decoy_dir = other / AUDIT_LOG_DIR
+        decoy_dir.mkdir(parents=True)
+        decoy = decoy_dir / "crop.json"
+        decoy.write_bytes(b"crop")
+        monkeypatch.chdir(other)
+        assert not is_audit_path(decoy, audit_root=audit)
+        assert not is_audit_path(decoy_dir, audit_root=audit)
+        assert is_audit_path(target, audit_root=audit)
+
+    def test_one_argument_form_warns_and_still_uses_the_cwd(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with pytest.warns(DeprecationWarning, match="audit_root"):
+            assert is_audit_path(AUDIT_LOG_DIR)
+            assert is_audit_path(Path(AUDIT_LOG_DIR) / "audit.jsonl")
+            assert not is_audit_path(tmp_path / "clips" / AUDIT_LOG_DIR / "crop.json")
