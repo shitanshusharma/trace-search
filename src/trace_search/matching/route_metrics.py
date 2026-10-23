@@ -27,10 +27,11 @@ An empty denominator raises ``ValueError``. It is not reported as 0.0 or 1.0.
 A real zero, when the denominator is positive and nothing matched, is 0.0.
 
 ``false_merge_rate`` is the number of cross-camera links whose tracks belong
-to different figures, divided by all cross-camera links in the routes. A link
-is an adjacent pair in ``segments``, in that order. The seed is not an extra
-link. Same-camera adjacencies are not in the denominator. No cross-camera
-link raises ``ValueError`` rather than returning 0.0.
+to different figures, divided by all cross-camera links in the routes.
+Cross-camera links for false-merge are consecutive segments in a route with a different camera_id.
+Same-camera consecutive pairs aren't links in the denominator.
+The seed is not an extra link. No cross-camera link raises ``ValueError``
+rather than returning 0.0.
 
 Camera ids and figures are refused, not rewritten. A whitespace-only value is
 empty. A value also raises when it differs from ``str.strip`` of itself, when
@@ -181,9 +182,11 @@ def segment_precision(
 def false_merge_rate(routes: Sequence[RouteLike], ownership: Ownership) -> float:
     """Bad cross-camera links divided by all cross-camera links.
 
-    Same-camera adjacencies are left out of both counts. No cross-camera
-    link raises ``ValueError`` instead of returning 0.0. Every seed track
-    and every segment track must be in ``ownership``.
+    Cross-camera links for false-merge are consecutive segments in a route
+    with a different camera_id. Same-camera consecutive pairs aren't links
+    in the denominator. The seed is not an extra link. No cross-camera link
+    raises ``ValueError`` instead of returning 0.0. Every seed track and
+    every segment track must be in ``ownership``.
     """
     checked = _checked_ownership(ownership)
     loaded = _load_routes(routes, checked)
@@ -284,7 +287,10 @@ def _gap(start_a: float, end_a: float, start_b: float, end_b: float) -> float:
 
 
 def _link_counts(routes: Sequence[Sequence[_TimedTrack]]) -> tuple[int, int]:
-    """Return ``(bad cross-camera links, all cross-camera links)``."""
+    """Return ``(bad cross-camera links, all cross-camera links)``.
+
+    A link is consecutive segments whose ``camera_id`` differs.
+    """
     bad = 0
     denominator = 0
     for left, right in _adjacent_pairs(routes):
@@ -297,7 +303,7 @@ def _link_counts(routes: Sequence[Sequence[_TimedTrack]]) -> tuple[int, int]:
 
 
 def _is_cross_camera(left: _TimedTrack, right: _TimedTrack) -> bool:
-    """True only when the adjacent segments use different cameras."""
+    """True when these consecutive segments have a different ``camera_id``."""
     return left.camera_id != right.camera_id
 
 
@@ -313,7 +319,7 @@ def _adjacent_pairs(
 def _adjacent_in(
     segments: Sequence[_TimedTrack],
 ) -> tuple[tuple[_TimedTrack, _TimedTrack], ...]:
-    """Adjacent pairs only. Non-neighbours in the same route are not links."""
+    """Consecutive segments in route order. Non-neighbours are not links."""
     items = tuple(segments)
     return tuple(zip(items, items[1:]))
 

@@ -1,8 +1,8 @@
 """Route metrics on hand-built records.
 
 No footage, no T5 route objects, and no files written into the repo tree.
-``Route`` and ``RouteSegment`` are not defined here. The stand-ins are frozen
-dataclasses with T-E-6's field names.
+A frozen ``Route`` and ``RouteSegment`` below match T-E-6's field names.
+The metrics module does not define those classes.
 """
 
 from __future__ import annotations
@@ -155,8 +155,10 @@ def test_one_wrong_segment_of_four_gives_precision_0_75() -> None:
 
 
 def test_false_merge_rate_is_one_bad_cross_camera_link_of_four() -> None:
-    """1/4 = 0.25. Four same-camera links are outside the denominator.
+    """1/4 = 0.25. Four same-camera consecutive pairs are outside the denominator.
 
+    Cross-camera links are consecutive segments with a different camera_id.
+    Same-camera consecutive pairs aren't links in the denominator.
     Counting those four would make the rate 1/8.
     """
     good_a = (("cam-a", 1, "fig-a"), ("cam-b", 2, "fig-a"))
@@ -189,7 +191,7 @@ def test_all_bad_cross_camera_links_are_a_real_one() -> None:
 
 
 def test_false_merge_counts_only_adjacent_pairs() -> None:
-    """The ends share a figure. Only the adjacent cross-camera link is bad."""
+    """The ends share a figure. Only the consecutive cross-camera pair is a link."""
     steps = (
         ("cam-a", 1, "fig-a"),
         ("cam-a", 2, "fig-b"),
@@ -536,3 +538,64 @@ def test_routes_argument_is_a_sequence_of_routes() -> None:
     steps = (("cam-a", 1, "fig-a"), ("cam-b", 2, "fig-a"))
     routes: Sequence[RouteLike] = (_chain(steps),)
     _exact(false_merge_rate(routes, _owns(steps)), 0, 1)
+
+
+def _protocol_attr_names(protocol: type[object]) -> tuple[str, ...]:
+    """Public Protocol names, checked against ``__protocol_attrs__`` when present."""
+    annotations = tuple(getattr(protocol, "__annotations__", {}))
+    declared = tuple(name for name in vars(protocol) if not name.startswith("_"))
+    names = tuple(dict.fromkeys((*annotations, *declared)))
+    proto_attrs = getattr(protocol, "__protocol_attrs__", None)
+    if proto_attrs is not None:
+        assert set(names) == set(proto_attrs)
+    return names
+
+
+@dataclass(frozen=True)
+class RouteSegment:
+    """T-E-6 segment shape. Field order is part of the guard."""
+
+    camera_id: str
+    track_id: int
+    t_entry: float
+    t_exit: float
+
+
+@dataclass(frozen=True)
+class Route:
+    """T-E-6 route shape. Field order is part of the guard."""
+
+    seed_camera: str
+    seed_track: int
+    segments: tuple[RouteSegment, ...]
+
+
+def test_t_e_6_shaped_dataclasses_match_the_protocols_and_run() -> None:
+    """Renaming a field on the dataclass or the Protocol fails this test."""
+    segment_names = tuple(field.name for field in fields(RouteSegment))
+    route_names = tuple(field.name for field in fields(Route))
+    assert segment_names == ("camera_id", "track_id", "t_entry", "t_exit")
+    assert route_names == ("seed_camera", "seed_track", "segments")
+    assert segment_names == _protocol_attr_names(RouteSegmentLike)
+    assert route_names == _protocol_attr_names(RouteLike)
+    segments = (
+        RouteSegment(camera_id="cam-a", track_id=1, t_entry=0.0, t_exit=10.0),
+        RouteSegment(camera_id="cam-a", track_id=2, t_entry=0.0, t_exit=10.0),
+        RouteSegment(camera_id="cam-b", track_id=3, t_entry=0.0, t_exit=10.0),
+    )
+    route = Route(seed_camera="cam-a", seed_track=1, segments=segments)
+    truth = (
+        TruthSegment("fig-a", "cam-a", 0.0, 10.0),
+        TruthSegment("fig-b", "cam-b", 0.0, 10.0),
+    )
+    ownership = {
+        ("cam-a", 1): "fig-a",
+        ("cam-a", 2): "fig-a",
+        ("cam-b", 3): "fig-b",
+    }
+    assert matched_pairs(route.segments, truth, ownership) == ((0, 0), (2, 1))
+    _exact(segment_recall(route.segments, truth, ownership), 2, 2)
+    _exact(segment_precision(route.segments, truth, ownership), 2, 3)
+    # One same-camera consecutive pair, one cross-camera consecutive pair.
+    # The same-camera pair is not a link, so the denominator is 1.
+    _exact(false_merge_rate((route,), ownership), 1, 1)
