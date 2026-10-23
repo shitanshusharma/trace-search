@@ -102,6 +102,13 @@ WHERE camera_id = ?
 ORDER BY rowid ASC
 """
 
+_CAMERA_IDS_SQL = """
+SELECT camera_id
+FROM track_observations
+WHERE run_id = ?
+ORDER BY rowid ASC
+"""
+
 _COUNT_SQL = """
 SELECT COUNT(*)
 FROM track_observations
@@ -331,6 +338,24 @@ class TrackStore:
         def _query(connection: sqlite3.Connection) -> list[TrackObservation]:
             cursor = connection.execute(_READ_SQL, (camera, run, run))
             return [_observation_from_row(row) for row in cursor.fetchall()]
+
+        return self._using(_query)
+
+    def camera_ids(self, run_id: str) -> tuple[str, ...]:
+        """Return the distinct camera ids that still have a row for ``run_id``.
+
+        Expired rows are purged first. ``run_id`` is checked with
+        ``_require_text``, the same helper ``read`` uses. Each camera id
+        appears once, in ascending order.
+        """
+        self.purge_expired()
+        run = _require_text("run_id", run_id)
+
+        def _query(connection: sqlite3.Connection) -> tuple[str, ...]:
+            cursor = connection.execute(_CAMERA_IDS_SQL, (run,))
+            ordered_by_row = [str(row[0]) for row in cursor.fetchall()]
+            unique = tuple(dict.fromkeys(ordered_by_row))
+            return tuple(sorted(unique))
 
         return self._using(_query)
 
