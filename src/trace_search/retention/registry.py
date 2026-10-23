@@ -95,7 +95,7 @@ def purgeables(data_root: Path, *, clock: _Clock | None = None) -> list[Purgeabl
 
     ``data_root`` is expanded and resolved. Each database path is that
     directory plus a fixed filename. Nothing outside that directory is
-    opened or created.     ``clock`` is passed through to each store. When it
+    opened or created. ``clock`` is passed through to each store. When it
     is omitted, the store uses ``time.time``.
 
     ``purge_on_open`` is False. The store constructors otherwise delete
