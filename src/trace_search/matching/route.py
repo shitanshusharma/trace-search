@@ -13,7 +13,9 @@ links forward. The walk is a loop bounded by the number of tracklets. It
 does not call itself. At each step it drops links whose other end was
 already used, is outside ``camera_ids``, or sits outside ``t_window``.
 Among the links that remain, the next track is the highest ``score``.
-Equal scores use the smallest ``(camera_id, track_id)``. The walk stops
+Equal scores use the smallest ``(camera_id, track_id)``. A score is a
+finite number in ``[0, 1]``. A bool, a string, or a missing score is
+refused and is not parsed. The walk stops
 when no link remains. It does not stop while another candidate is open,
 and it does not jump through a blocked track to one beyond it.
 ``camera_ids=None`` allows every camera. ``t_window=None`` allows every
@@ -357,7 +359,7 @@ def _link_ends(link: object) -> tuple[TrackKey, TrackKey, float]:
         _require_camera("to_camera", _read(link, "to_camera")),
         _require_track_id("to_track", _read(link, "to_track")),
     )
-    score = _require_finite("score", _read(link, "score"))
+    score = _require_score(_read(link, "score"))
     return origin, dest, score
 
 
@@ -486,6 +488,14 @@ def _require_track_id(label: str, value: object) -> int:
     if not isinstance(value, int):
         raise ValueError(f"{label} must be an int track id, got {value!r}")
     return value
+
+
+def _require_score(value: object) -> float:
+    """A link score is a finite float in ``[0, 1]``. Bools are not scores."""
+    number = _require_finite("score", value)
+    if number < 0.0 or number > 1.0:
+        raise ValueError(f"score must be in [0, 1], got {number}")
+    return number
 
 
 def _require_finite(label: str, value: object) -> float:

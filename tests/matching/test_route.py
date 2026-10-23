@@ -438,7 +438,7 @@ def test_same_route_on_repeat_and_shuffled_inputs() -> None:
     winner = _tracklet("cam-b", 2, 2.0, 3.0)
     tracklets = [seed, loser, winner]
     links = [
-        FakeLink("cam-a", 1, "cam-c", 1, 1.0, 5.0),
+        FakeLink("cam-a", 1, "cam-c", 1, 1.0, 0.9),
         FakeLink("cam-a", 1, "cam-b", 2, 1.0, 0.1),
     ]
     first = build_route(seed, tracklets, links)
@@ -472,6 +472,74 @@ def test_higher_score_beats_the_smaller_camera_id() -> None:
     route = build_route(seed, catalogue, links)
     assert tuple(item.camera_id for item in route.segments) == ("cam-a", "cam-c", "cam-d", "cam-e")
     assert build_route(seed, catalogue, tuple(reversed(links))) == route
+
+
+def _route_with_score(score: object) -> Route:
+    seed = _tracklet("cam-a", 1, 0.0, 1.0)
+    other = _tracklet("cam-b", 2, 2.0, 3.0)
+    link = FakeLink("cam-a", 1, "cam-b", 2, 1.0, score)  # type: ignore[arg-type]
+    return build_route(seed, (seed, other), (link,))
+
+
+@pytest.mark.parametrize(
+    "score",
+    [float("nan"), float("inf"), float("-inf")],
+    ids=["nan", "pos-inf", "neg-inf"],
+)
+def test_non_finite_scores_are_refused(score: float) -> None:
+    with pytest.raises(ValueError, match="must be finite"):
+        _route_with_score(score)
+
+
+@pytest.mark.parametrize(
+    "score",
+    ["0.5", None, True, False],
+    ids=["str", "none", "true", "false"],
+)
+def test_non_numeric_scores_are_refused(score: object) -> None:
+    """A bool is not a score. It is not read as 0 or 1, and a string is not parsed."""
+    with pytest.raises(ValueError, match="finite number") as caught:
+        _route_with_score(score)
+    assert repr(score) in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "score",
+    [-0.01, -1.0, 1.01, 2, 5.0],
+    ids=["just-under", "negative", "just-over", "int-two", "five"],
+)
+def test_out_of_range_scores_are_refused(score: float) -> None:
+    """Scores outside the closed interval ``[0, 1]`` are refused."""
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        _route_with_score(score)
+
+
+def test_scores_at_zero_and_one_are_kept() -> None:
+    """``0`` and ``1`` are inside the range, including whole-number ints."""
+    for score in (0.0, 1.0, 0, 1):
+        route = _route_with_score(score)
+        assert tuple(item.camera_id for item in route.segments) == ("cam-a", "cam-b")
+
+
+def test_duplicate_link_keeps_the_higher_score() -> None:
+    """Two links for one track pair keep the higher score, not the first or the lower."""
+    seed = _tracklet("cam-a", 1, 0.0, 1.0)
+    paired = _tracklet("cam-b", 1, 2.0, 3.0)
+    rival = _tracklet("cam-c", 1, 2.0, 3.0)
+    higher_second = (
+        FakeLink("cam-a", 1, "cam-b", 1, 1.0, 0.2),
+        FakeLink("cam-a", 1, "cam-c", 1, 1.0, 0.5),
+        FakeLink("cam-a", 1, "cam-b", 1, 1.0, 0.9),
+    )
+    higher_first = (
+        FakeLink("cam-a", 1, "cam-b", 1, 1.0, 0.9),
+        FakeLink("cam-a", 1, "cam-c", 1, 1.0, 0.5),
+        FakeLink("cam-a", 1, "cam-b", 1, 1.0, 0.2),
+    )
+    catalogue = (seed, paired, rival)
+    route = build_route(seed, catalogue, higher_second)
+    assert tuple(item.camera_id for item in route.segments) == ("cam-a", "cam-b")
+    assert build_route(seed, catalogue, higher_first) == route
 
 
 def test_blocked_candidate_falls_through_to_the_next() -> None:
