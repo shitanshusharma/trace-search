@@ -7,9 +7,10 @@ it. It does not open the track database. Callers that need a time window
 pass ``Tracklet`` values in.
 
 ``created_at`` is a UTC epoch from the injected clock, or from
-``time.time`` when no clock is injected. Rows older than 7 days are deleted
-on open and before every ``read``, ``query``, ``count``, and ``write``.
-A row whose age is exactly 7 days is kept. ``delete_where`` does not apply
+``time.time`` when no clock is injected. Rows older than the shipped footage
+window (7 days) are deleted on open and before every ``read``, ``query``,
+``count``, and ``write``. A row whose age is exactly the shipped footage
+window (7 days) is kept. ``delete_where`` does not apply
 that window.
 
 The table stores colours, a bag flag, two confidences, and ``n_frames``.
@@ -74,9 +75,11 @@ from typing import TypeVar, cast
 
 from trace_search.attributes.attributes import AttributeQuery, Color, PersonAttributes
 from trace_search.matching.tracklets import Tracklet
+from trace_search.retention.config import FOOTAGE_DERIVED_DAYS
 from trace_search.tracking.store import _db_path_outside_repo
 
-DEFAULT_MAX_AGE_DAYS = 7
+# Shipped footage-derived window. T-P-7 is the later override.
+DEFAULT_MAX_AGE_DAYS = FOOTAGE_DERIVED_DAYS
 _SECONDS_PER_DAY = 86400
 
 _COLOR_VALUES = frozenset(member.value for member in Color)
@@ -500,9 +503,9 @@ class TrackAttributeStore:
     """SQLite store of per-track colour and bag rows.
 
     Construction opens the file, creates ``track_attributes`` when missing,
-    and purges rows older than 7 days. ``read``, ``query``, ``count``, and
-    ``write`` purge again before they touch the table. The clock is
-    injectable so retention tests do not sleep.
+    and purges rows older than the shipped footage window (7 days).
+    ``read``, ``query``, ``count``, and ``write`` purge again before they
+    touch the table. The clock is injectable so retention tests do not sleep.
     """
 
     def __init__(self, db_path: Path, *, clock: _Clock | None = None) -> None:
@@ -649,8 +652,8 @@ class TrackAttributeStore:
         """Delete rows matching the given filters and return how many went.
 
         At least one of ``derived_from`` and ``run_id`` is required. When
-        both are set, a row must match both. This does not apply the 7-day
-        window. A ``CODE_TEST`` row stays when the filter is ``SMOKE``.
+        both are set, a row must match both. This does not apply the shipped
+        footage window (7 days). A ``CODE_TEST`` row stays when the filter is ``SMOKE``.
         """
         origin = _optional_text_id("derived_from", derived_from)
         run = _optional_text_id("run_id", run_id)
@@ -667,9 +670,9 @@ class TrackAttributeStore:
     ) -> int:
         """Delete rows whose ``created_at`` is older than ``max_age_days``.
 
-        The default window is 7 days. ``now`` is a UTC epoch. When it is
-        omitted, the injected clock supplies it. A row is kept when its age
-        is exactly the window.
+        The default window is the shipped footage window (7 days). ``now``
+        is a UTC epoch. When it is omitted, the injected clock supplies it.
+        A row is kept when its age is exactly the window.
         """
         current = _require_timestamp(self._clock() if now is None else now)
         cutoff = current - float(_retention_seconds(max_age_days))

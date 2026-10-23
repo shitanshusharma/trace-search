@@ -23,10 +23,12 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 from trace_search.detection.types import DetClass
+from trace_search.retention.config import FOOTAGE_DERIVED_DAYS
 from trace_search.tracking.types import TrackObservation
 
 TRACK_DB_ENV = "TRACE_SEARCH_TRACK_DB"
-DEFAULT_MAX_AGE_DAYS = 7
+# Shipped footage-derived window. T-P-7 is the later override.
+DEFAULT_MAX_AGE_DAYS = FOOTAGE_DERIVED_DAYS
 _SECONDS_PER_DAY = 86400
 _DATA_DIR_NAME = "trace-search"
 _DB_FILENAME = "tracks.sqlite"
@@ -291,7 +293,7 @@ class TrackStore:
     """SQLite store of ``TrackObservation`` rows for one local data directory.
 
     Construction opens the file, creates ``track_observations`` when missing,
-    and purges rows older than 7 days. ``write`` purges again before it
+    and purges rows older than the shipped footage window (7 days). ``write`` purges again before it
     inserts. The clock is injectable so retention tests do not sleep.
     """
 
@@ -408,9 +410,9 @@ class TrackStore:
     ) -> int:
         """Delete rows whose ``created_at`` is older than ``max_age_days``.
 
-        The default window is 7 days. ``now`` is a UTC epoch timestamp. When
-        it is omitted, the injected clock supplies it. A row is kept when its
-        age is exactly the window.
+        The default window is the shipped footage window (7 days). ``now``
+        is a UTC epoch timestamp. When it is omitted, the injected clock
+        supplies it. A row is kept when its age is exactly the window.
         """
         current = _require_timestamp(self._clock() if now is None else now)
         cutoff = current - float(_retention_seconds(max_age_days))
