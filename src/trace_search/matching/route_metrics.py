@@ -18,7 +18,8 @@ truth segment, or entirely after it).
 
 Matching is a maximum-cardinality one-to-one assignment. The search is
 Kuhn's algorithm: depth-first augmenting paths over the allowed edges, in
-the standard library only. One truth segment cannot match many predictions,
+the standard library only. Frames sit on an explicit stack. The matcher
+does not call itself. One truth segment cannot match many predictions,
 and one prediction cannot match many truth segments.
 
 The iteration order is fixed, so the same edges always yield the same
@@ -216,6 +217,11 @@ def _unique_second(pairs: Sequence[tuple[int, int]]) -> int:
     return len({truth_index for _pred_index, truth_index in pairs})
 
 
+# One stack frame: prediction, next truth cursor, truth this prediction was
+# released from. The root frame has no released truth.
+_Frame = tuple[int, int, int | None]
+
+
 def _assign(candidates: Sequence[tuple[float, int, int]]) -> tuple[tuple[int, int], ...]:
     """Maximum-cardinality matching. See the module docstring for the order."""
     chosen: list[tuple[int, int]] = []
@@ -263,28 +269,90 @@ def _augment(
     used_truth: set[int],
     seen: set[int],
 ) -> bool:
-    """Assign ``pred_index`` by a free edge or an augmenting path."""
-    for truth_index in adjacency[pred_index]:
-        if _visit(pred_index, truth_index, adjacency, chosen, used_pred, used_truth, seen):
+    """Assign ``pred_index`` by a free edge or an augmenting path.
+
+    The walk is depth-first on ``stack``. Nothing here calls itself.
+    """
+    stack: list[_Frame] = [(pred_index, 0, None)]
+    while stack:
+        if _frame_done(stack, adjacency):
+            _restore_frame(stack, chosen, used_pred, used_truth)
+            continue
+        if _follow(stack, adjacency, chosen, used_pred, used_truth, seen):
             return True
     return False
 
 
-def _visit(
-    pred_index: int,
-    truth_index: int,
+def _frame_done(stack: list[_Frame], adjacency: dict[int, tuple[int, ...]]) -> bool:
+    pred_index, cursor, _released = stack[-1]
+    return cursor >= len(adjacency[pred_index])
+
+
+def _restore_frame(
+    stack: list[_Frame],
+    chosen: list[tuple[int, int]],
+    used_pred: set[int],
+    used_truth: set[int],
+) -> None:
+    """Put a prediction back when its remaining truths did not free a path."""
+    pred_index, _cursor, released = stack.pop()
+    if released is None:
+        return
+    _claim(pred_index, released, chosen, used_pred, used_truth)
+
+
+def _follow(
+    stack: list[_Frame],
     adjacency: dict[int, tuple[int, ...]],
     chosen: list[tuple[int, int]],
     used_pred: set[int],
     used_truth: set[int],
     seen: set[int],
 ) -> bool:
+    """Try the next truth. True means the whole search succeeded."""
+    pred_index, truth_index = _advance(stack, adjacency)
     if truth_index in seen:
         return False
     seen.add(truth_index)
     if _take_if_free(pred_index, truth_index, chosen, used_pred, used_truth):
+        _claim_ancestors(stack, chosen, used_pred, used_truth)
         return True
-    return _reassign(pred_index, truth_index, adjacency, chosen, used_pred, used_truth, seen)
+    _displace(truth_index, stack, chosen, used_pred, used_truth)
+    return False
+
+
+def _advance(stack: list[_Frame], adjacency: dict[int, tuple[int, ...]]) -> tuple[int, int]:
+    pred_index, cursor, released = stack[-1]
+    stack[-1] = (pred_index, cursor + 1, released)
+    return pred_index, adjacency[pred_index][cursor]
+
+
+def _displace(
+    truth_index: int,
+    stack: list[_Frame],
+    chosen: list[tuple[int, int]],
+    used_pred: set[int],
+    used_truth: set[int],
+) -> None:
+    """Free ``truth_index`` and search again from the prediction that held it."""
+    owner = _owner(chosen, truth_index)
+    _drop(chosen, owner, truth_index, used_pred, used_truth)
+    stack.append((owner, 0, truth_index))
+
+
+def _claim_ancestors(
+    stack: list[_Frame],
+    chosen: list[tuple[int, int]],
+    used_pred: set[int],
+    used_truth: set[int],
+) -> None:
+    """Claim each released truth now that a free edge closed the path."""
+    released = stack[-1][2]
+    while released is not None:
+        stack.pop()
+        parent = stack[-1][0]
+        _claim(parent, released, chosen, used_pred, used_truth)
+        released = stack[-1][2]
 
 
 def _take_if_free(
@@ -298,25 +366,6 @@ def _take_if_free(
         return False
     _claim(pred_index, truth_index, chosen, used_pred, used_truth)
     return True
-
-
-def _reassign(
-    pred_index: int,
-    truth_index: int,
-    adjacency: dict[int, tuple[int, ...]],
-    chosen: list[tuple[int, int]],
-    used_pred: set[int],
-    used_truth: set[int],
-    seen: set[int],
-) -> bool:
-    """Free ``truth_index`` along an augmenting path, then claim it."""
-    owner = _owner(chosen, truth_index)
-    _drop(chosen, owner, truth_index, used_pred, used_truth)
-    if _augment(owner, adjacency, chosen, used_pred, used_truth, seen):
-        _claim(pred_index, truth_index, chosen, used_pred, used_truth)
-        return True
-    _claim(owner, truth_index, chosen, used_pred, used_truth)
-    return False
 
 
 def _claim(

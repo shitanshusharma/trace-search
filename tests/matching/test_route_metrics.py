@@ -1,7 +1,7 @@
 """Route metrics on hand-built records.
 
 No footage, no T5 route objects, and no files written into the repo tree.
-A frozen ``Route`` and ``RouteSegment`` below match T-E-6's field names.
+A frozen ``FakeRoute`` and ``FakeRouteSegment`` below match T-E-6's field names.
 The metrics module does not define those classes.
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import random
 import socket
 from collections.abc import Sequence
 from dataclasses import FrozenInstanceError, dataclass, fields
@@ -303,6 +304,112 @@ def test_maximum_matching_covers_the_crossed_pair() -> None:
     _exact(segment_precision(predicted, truth, ownership), 1, 1)
 
 
+def test_long_chain_matches_every_segment() -> None:
+    """A shift of 2001 segments finishes and matches every one.
+
+    Prediction i sits on truth i and can also reach truth i + 1, except the
+    last prediction, which reaches only truth 0. The maximum matching moves
+    each earlier prediction one truth forward and gives the last prediction
+    truth 0. Greedy leaves that last prediction unmatched.
+    """
+    count = 2001
+    predicted = tuple(_chain_segment(index, count) for index in range(count))
+    truth = tuple(
+        TruthSegment("fig-a", "cam-a", 10.0 * index, 10.0 * index) for index in range(count)
+    )
+    ownership = {("cam-a", index + 1): "fig-a" for index in range(count)}
+    expected = tuple((index, index + 1) for index in range(count - 1))
+    expected = (*expected, (count - 1, 0))
+    assert matched_pairs(predicted, truth, ownership) == expected
+    _exact(segment_recall(predicted, truth, ownership), count, count)
+    _exact(segment_precision(predicted, truth, ownership), count, count)
+
+
+def _chain_segment(index: int, count: int) -> _HandSegment:
+    moment = 0.0 if index == count - 1 else 10.0 * index
+    return _HandSegment("cam-a", index + 1, moment, moment)
+
+
+def test_cardinality_matches_exhaustive_search() -> None:
+    """Small one-to-one assignments agree with a seeded exhaustive search."""
+    rng = random.Random(20261023)
+    for _case in range(300):
+        predicted, truth, ownership = _random_case(rng)
+        edges = _allowed_edges(predicted, truth, ownership)
+        found = len(matched_pairs(predicted, truth, ownership))
+        assert found == _exhaustive_cardinality(len(predicted), len(truth), edges)
+
+
+def _random_case(
+    rng: random.Random,
+) -> tuple[tuple[_HandSegment, ...], tuple[TruthSegment, ...], dict[tuple[str, int], str]]:
+    n_pred = rng.randint(0, 6)
+    n_truth = rng.randint(0, 6)
+    cameras = ("cam-a", "cam-b")
+    figures = ("fig-a", "fig-b")
+    predicted: list[_HandSegment] = []
+    ownership: dict[tuple[str, int], str] = {}
+    for index in range(n_pred):
+        camera_id = cameras[rng.randrange(2)]
+        start = rng.uniform(0.0, 40.0)
+        segment = _HandSegment(camera_id, index + 1, start, start + rng.uniform(0.0, 8.0))
+        predicted.append(segment)
+        ownership[(camera_id, index + 1)] = figures[rng.randrange(2)]
+    truth: list[TruthSegment] = []
+    for _index in range(n_truth):
+        camera_id = cameras[rng.randrange(2)]
+        start = rng.uniform(0.0, 40.0)
+        truth.append(
+            TruthSegment(figures[rng.randrange(2)], camera_id, start, start + rng.uniform(0.0, 8.0))
+        )
+    return tuple(predicted), tuple(truth), ownership
+
+
+def _allowed_edges(
+    predicted: tuple[_HandSegment, ...],
+    truth: tuple[TruthSegment, ...],
+    ownership: dict[tuple[str, int], str],
+) -> set[tuple[int, int]]:
+    edges: set[tuple[int, int]] = set()
+    for pred_index, segment in enumerate(predicted):
+        figure = ownership[(segment.camera_id, segment.track_id)]
+        for truth_index, item in enumerate(truth):
+            if figure != item.figure or segment.camera_id != item.camera_id:
+                continue
+            if _interval_gap(segment, item) <= 10.0:
+                edges.add((pred_index, truth_index))
+    return edges
+
+
+def _interval_gap(segment: _HandSegment, item: TruthSegment) -> float:
+    if segment.t_exit < item.t_entry:
+        return item.t_entry - segment.t_exit
+    if item.t_exit < segment.t_entry:
+        return segment.t_entry - item.t_exit
+    return 0.0
+
+
+def _exhaustive_cardinality(n_pred: int, n_truth: int, edges: set[tuple[int, int]]) -> int:
+    best = 0
+
+    def walk(pred_index: int, used: int, count: int) -> None:
+        nonlocal best
+        if count + (n_pred - pred_index) <= best:
+            return
+        if pred_index == n_pred:
+            best = count
+            return
+        walk(pred_index + 1, used, count)
+        for truth_index in range(n_truth):
+            bit = 1 << truth_index
+            if used & bit or (pred_index, truth_index) not in edges:
+                continue
+            walk(pred_index + 1, used | bit, count + 1)
+
+    walk(0, 0, 0)
+    return best
+
+
 def test_later_tighter_gap_updates_the_prediction_order() -> None:
     """The second truth is the tighter edge, so the minimum gap is updated."""
     predicted = (_HandSegment("cam-a", 1, 0.0, 10.0),)
@@ -591,7 +698,7 @@ def _protocol_attr_names(protocol: type[object]) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
-class RouteSegment:
+class FakeRouteSegment:
     """T-E-6 segment shape. Field order is part of the guard."""
 
     camera_id: str
@@ -601,28 +708,28 @@ class RouteSegment:
 
 
 @dataclass(frozen=True)
-class Route:
+class FakeRoute:
     """T-E-6 route shape. Field order is part of the guard."""
 
     seed_camera: str
     seed_track: int
-    segments: tuple[RouteSegment, ...]
+    segments: tuple[FakeRouteSegment, ...]
 
 
 def test_t_e_6_shaped_dataclasses_match_the_protocols_and_run() -> None:
     """Renaming a field on the dataclass or the Protocol fails this test."""
-    segment_names = tuple(field.name for field in fields(RouteSegment))
-    route_names = tuple(field.name for field in fields(Route))
+    segment_names = tuple(field.name for field in fields(FakeRouteSegment))
+    route_names = tuple(field.name for field in fields(FakeRoute))
     assert segment_names == ("camera_id", "track_id", "t_entry", "t_exit")
     assert route_names == ("seed_camera", "seed_track", "segments")
     assert segment_names == _protocol_attr_names(RouteSegmentLike)
     assert route_names == _protocol_attr_names(RouteLike)
     segments = (
-        RouteSegment(camera_id="cam-a", track_id=1, t_entry=0.0, t_exit=10.0),
-        RouteSegment(camera_id="cam-a", track_id=2, t_entry=0.0, t_exit=10.0),
-        RouteSegment(camera_id="cam-b", track_id=3, t_entry=0.0, t_exit=10.0),
+        FakeRouteSegment(camera_id="cam-a", track_id=1, t_entry=0.0, t_exit=10.0),
+        FakeRouteSegment(camera_id="cam-a", track_id=2, t_entry=0.0, t_exit=10.0),
+        FakeRouteSegment(camera_id="cam-b", track_id=3, t_entry=0.0, t_exit=10.0),
     )
-    route = Route(seed_camera="cam-a", seed_track=1, segments=segments)
+    route = FakeRoute(seed_camera="cam-a", seed_track=1, segments=segments)
     truth = (
         TruthSegment("fig-a", "cam-a", 0.0, 10.0),
         TruthSegment("fig-b", "cam-b", 0.0, 10.0),
