@@ -11,7 +11,10 @@ pass ``Tracklet`` values in.
 window (7 days) are deleted on open and before every ``read``, ``query``,
 ``count``, and ``write``. A row whose age is exactly the shipped footage
 window (7 days) is kept. ``delete_where`` does not apply
-that window.
+that window. ``count_older_than`` uses the same cutoff and returns how many
+rows that delete would remove. It does not delete them and it does not call
+``purge_expired``, so the count is not zero just because a later read would
+have purged first.
 
 The table stores colours, a bag flag, two confidences, and ``n_frames``.
 It does not store image bytes or crops. ``write`` appends one row. It does
@@ -75,12 +78,12 @@ from typing import TypeVar, cast
 
 from trace_search.attributes.attributes import AttributeQuery, Color, PersonAttributes
 from trace_search.matching.tracklets import Tracklet
+from trace_search.retention._time import retention_cutoff
 from trace_search.retention.config import FOOTAGE_DERIVED_DAYS
 from trace_search.tracking.store import _db_path_outside_repo
 
 # Shipped footage-derived window. T-P-7 is the later override.
 DEFAULT_MAX_AGE_DAYS = FOOTAGE_DERIVED_DAYS
-_SECONDS_PER_DAY = 86400
 
 _COLOR_VALUES = frozenset(member.value for member in Color)
 _FILTER_KEYS = frozenset({"upper_color", "lower_color", "bag_on_track", "min_confidence"})
@@ -170,6 +173,7 @@ WHERE (? IS NULL OR camera_id = ?)
 """
 
 _PURGE_SQL = "DELETE FROM track_attributes WHERE created_at < ?"
+_COUNT_OLDER_SQL = "SELECT COUNT(*) FROM track_attributes WHERE created_at < ?"
 
 _InsertRow = tuple[str, int, str, str, str, str, int, float, float, int, float]
 _TrackKey = tuple[str, int, str]
@@ -301,12 +305,9 @@ def _require_timestamp(value: object) -> float:
     return timestamp
 
 
-def _retention_seconds(max_age_days: int) -> int:
-    if isinstance(max_age_days, bool) or not isinstance(max_age_days, int):
-        raise TypeError(f"max_age_days must be an int >= 0, got {max_age_days!r}")
-    if max_age_days < 0:
-        raise ValueError(f"max_age_days must be an int >= 0, got {max_age_days!r}")
-    return max_age_days * _SECONDS_PER_DAY
+def _expired_cutoff(clock: _Clock, now: float | None, max_age_days: int) -> float:
+    current = _require_timestamp(clock() if now is None else now)
+    return retention_cutoff(current, max_age_days)
 
 
 def _reject_bare_str(camera_ids: object) -> None:
@@ -502,19 +503,42 @@ def _delete_matching(
 class TrackAttributeStore:
     """SQLite store of per-track colour and bag rows.
 
-    Construction opens the file, creates ``track_attributes`` when missing,
-    and purges rows older than the shipped footage window (7 days).
-    ``read``, ``query``, ``count``, and ``write`` purge again before they
-    touch the table. The clock is injectable so retention tests do not sleep.
+    Construction opens the file and creates ``track_attributes`` when
+    missing. It purges rows older than the shipped footage window (7 days)
+    unless ``purge_on_open`` is False. The default stays True so every
+    other caller still purges on open. The registry passes False: that
+    open-time purge throws the count away, and a fresh registry must still
+    be able to count the expired rows. ``read``, ``query``, ``count``, and
+    ``write`` purge again before they touch the table.
+    ``count_older_than`` uses the same cutoff and does not delete, so it
+    can report rows that those methods would remove first. The clock is
+    injectable so retention tests do not sleep.
     """
 
-    def __init__(self, db_path: Path, *, clock: _Clock | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        clock: _Clock | None = None,
+        purge_on_open: bool = True,
+    ) -> None:
         resolved = _db_path_outside_repo(db_path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.db_path: Path = resolved
         self._clock: _Clock = time.time if clock is None else clock
         self._ensure_schema()
-        self.purge_expired()
+        if purge_on_open:
+            self.purge_expired()
+
+    @property
+    def label(self) -> str:
+        """Registry name for this store."""
+        return "attributes"
+
+    @property
+    def covered_tables(self) -> tuple[str, ...]:
+        """Tables whose ``created_at`` column this store purges."""
+        return ("track_attributes",)
 
     def write(
         self,
@@ -663,6 +687,27 @@ class TrackAttributeStore:
 
         return self._using(_query)
 
+    def count_older_than(
+        self,
+        now: float | None = None,
+        max_age_days: int = DEFAULT_MAX_AGE_DAYS,
+    ) -> int:
+        """Return how many rows ``purge_expired`` would delete.
+
+        The cutoff matches ``purge_expired``. This does not delete, and it
+        does not call ``purge_expired``. ``read``, ``query``, ``count``, and
+        ``write`` still purge first. Counting through those methods would
+        delete the rows and then return zero.
+        """
+        cutoff = _expired_cutoff(self._clock, now, max_age_days)
+
+        def _query(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(_COUNT_OLDER_SQL, (cutoff,))
+            fetched = cast(sqlite3.Row, cursor.fetchone())
+            return int(fetched[0])
+
+        return self._using(_query)
+
     def purge_expired(
         self,
         now: float | None = None,
@@ -673,9 +718,9 @@ class TrackAttributeStore:
         The default window is the shipped footage window (7 days). ``now``
         is a UTC epoch. When it is omitted, the injected clock supplies it.
         A row is kept when its age is exactly the window.
+        The return value is the number of rows deleted.
         """
-        current = _require_timestamp(self._clock() if now is None else now)
-        cutoff = current - float(_retention_seconds(max_age_days))
+        cutoff = _expired_cutoff(self._clock, now, max_age_days)
 
         def _query(connection: sqlite3.Connection) -> int:
             cursor = connection.execute(_PURGE_SQL, (cutoff,))
