@@ -382,14 +382,14 @@ def test_camera_ids_are_exact_and_duplicates_are_one_camera() -> None:
 
 
 def test_tie_break_picks_the_smaller_camera_id() -> None:
-    """The higher score is listed first. The smaller camera id still wins."""
+    """Equal scores ignore gap. The smaller camera id wins."""
     seed = _tracklet("cam-a", 1, 0.0, 1.0)
     loser = _tracklet("cam-c", 1, 2.0, 3.0)
     winner = _tracklet("cam-b", 2, 2.0, 3.0)
     further = _tracklet("cam-d", 1, 4.0, 5.0)
     links = (
-        FakeLink("cam-a", 1, "cam-c", 1, 1.0, 5.0),
-        FakeLink("cam-a", 1, "cam-b", 2, 1.0, 0.1),
+        FakeLink("cam-a", 1, "cam-c", 1, 0.1, 1.0),
+        FakeLink("cam-a", 1, "cam-b", 2, 9.0, 1.0),
         FakeLink("cam-c", 1, "cam-d", 1, 1.0, 1.0),
     )
     catalogue = (seed, loser, winner, further)
@@ -407,8 +407,8 @@ def test_tie_break_picks_the_smaller_track_id() -> None:
     winner = _tracklet("cam-b", 2, 2.0, 3.0)
     further = _tracklet("cam-c", 1, 4.0, 5.0)
     links = (
-        FakeLink("cam-a", 1, "cam-b", 9, 1.0, 4.0),
-        FakeLink("cam-a", 1, "cam-b", 2, 1.0, 0.2),
+        FakeLink("cam-a", 1, "cam-b", 9, 0.1, 1.0),
+        FakeLink("cam-a", 1, "cam-b", 2, 9.0, 1.0),
         FakeLink("cam-b", 9, "cam-c", 1, 1.0, 1.0),
     )
     route = build_route(seed, (seed, loser, winner, further), links)
@@ -424,8 +424,8 @@ def test_backward_tie_break_picks_the_smaller_camera_id() -> None:
     winner = _tracklet("cam-b", 2, 0.0, 1.0)
     further = _tracklet("cam-e", 1, 0.0, 0.5)
     links = (
-        FakeLink("cam-c", 1, "cam-d", 1, 1.0, 5.0),
-        FakeLink("cam-b", 2, "cam-d", 1, 1.0, 0.1),
+        FakeLink("cam-c", 1, "cam-d", 1, 0.1, 1.0),
+        FakeLink("cam-b", 2, "cam-d", 1, 9.0, 1.0),
         FakeLink("cam-e", 1, "cam-c", 1, 1.0, 1.0),
     )
     route = build_route(seed, (seed, loser, winner, further), links)
@@ -452,7 +452,70 @@ def test_same_route_on_repeat_and_shuffled_inputs() -> None:
         rng.shuffle(shuffled_tracks)
         rng.shuffle(shuffled_links)
         assert build_route(seed, shuffled_tracks, shuffled_links) == first
-    assert tuple(item.camera_id for item in first.segments) == ("cam-a", "cam-b")
+    assert tuple(item.camera_id for item in first.segments) == ("cam-a", "cam-c")
+
+
+def test_higher_score_beats_the_smaller_camera_id() -> None:
+    """A higher score wins even when the other camera id sorts first."""
+    seed = _tracklet("cam-a", 1, 0.0, 1.0)
+    dead = _tracklet("cam-b", 1, 2.0, 3.0)
+    live = _tracklet("cam-c", 1, 2.0, 3.0)
+    later = _tracklet("cam-d", 1, 4.0, 5.0)
+    last = _tracklet("cam-e", 1, 6.0, 7.0)
+    links = (
+        FakeLink("cam-a", 1, "cam-b", 1, 1.0, 0.01),
+        FakeLink("cam-a", 1, "cam-c", 1, 9.0, 0.99),
+        FakeLink("cam-c", 1, "cam-d", 1, 1.0, 1.0),
+        FakeLink("cam-d", 1, "cam-e", 1, 1.0, 1.0),
+    )
+    catalogue = (seed, dead, live, later, last)
+    route = build_route(seed, catalogue, links)
+    assert tuple(item.camera_id for item in route.segments) == ("cam-a", "cam-c", "cam-d", "cam-e")
+    assert build_route(seed, catalogue, tuple(reversed(links))) == route
+
+
+def test_blocked_candidate_falls_through_to_the_next() -> None:
+    """A blocked first choice is skipped. The next open candidate is used."""
+    seed = _tracklet("cam-a", 1, 0.0, 1.0)
+    excluded = _tracklet("cam-aa", 1, 2.0, 3.0)
+    allowed = _tracklet("cam-c", 1, 2.0, 3.0)
+    by_camera = build_route(
+        seed,
+        (seed, excluded, allowed),
+        (
+            FakeLink("cam-a", 1, "cam-aa", 1, 1.0, 0.99),
+            FakeLink("cam-a", 1, "cam-c", 1, 1.0, 0.1),
+        ),
+        camera_ids=("cam-a", "cam-c"),
+    )
+    assert tuple(item.camera_id for item in by_camera.segments) == ("cam-a", "cam-c")
+
+    outside = _tracklet("cam-b", 1, 50.0, 51.0)
+    inside = _tracklet("cam-c", 1, 2.0, 3.0)
+    by_window = build_route(
+        seed,
+        (seed, outside, inside),
+        (
+            FakeLink("cam-a", 1, "cam-b", 1, 1.0, 0.99),
+            FakeLink("cam-a", 1, "cam-c", 1, 1.0, 0.1),
+        ),
+        t_window=(0.0, 10.0),
+    )
+    assert tuple(item.camera_id for item in by_window.segments) == ("cam-a", "cam-c")
+
+    earlier = _tracklet("cam-a", 1, 0.0, 1.0)
+    middle = _tracklet("cam-b", 1, 2.0, 3.0)
+    later = _tracklet("cam-c", 1, 4.0, 5.0)
+    by_visit = build_route(
+        middle,
+        (earlier, middle, later),
+        (
+            FakeLink("cam-a", 1, "cam-b", 1, 1.0, 1.0),
+            FakeLink("cam-b", 1, "cam-a", 1, 1.0, 0.99),
+            FakeLink("cam-b", 1, "cam-c", 1, 1.0, 0.1),
+        ),
+    )
+    assert tuple(item.camera_id for item in by_visit.segments) == ("cam-a", "cam-b", "cam-c")
 
 
 def test_segments_follow_time_when_a_forward_link_goes_earlier() -> None:
@@ -741,9 +804,7 @@ def test_empty_camera_ids_are_refused(value: object) -> None:
     ids=["empty", "spaces", "digit-text", "true", "false", "float", "none"],
 )
 def test_bad_track_ids_are_refused(value: object) -> None:
-    match = "non-empty" if value == "" or value == "   " else "int track id"
-    if value == "   ":
-        match = "non-empty"
+    match = "non-empty" if value in ("", "   ") else "int track id"
     _refuse("seed_track", value, match)
     if value == "1":
         _refuse("from_track", value, "int track id")

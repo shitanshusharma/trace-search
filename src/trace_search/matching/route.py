@@ -5,15 +5,17 @@ A route is computed for one call. It is not stored, and it has no id.
 ``Link`` belongs to the linker (T-E-5) and is not defined here. ``LinkLike``
 is the read-only shape this walk follows: ``from_camera``, ``from_track``,
 ``to_camera``, ``to_track``, ``gap_seconds`` and ``score``. A later ``Link``
-with those fields satisfies ``LinkLike``. ``gap_seconds`` and ``score`` do
-not choose the path. When several links leave one track, the next track is
-the smallest ``(camera_id, track_id)``. The same order breaks ties backward.
+with those fields satisfies ``LinkLike``. ``gap_seconds`` does not choose
+the path.
 
 ``build_route`` walks incoming links backward from the seed, then outgoing
 links forward. The walk is a loop bounded by the number of tracklets. It
-does not call itself. It stops when the next track was already used, when
-the next camera is outside ``camera_ids``, or when the next tracklet sits
-outside ``t_window``. It does not jump over a track that stopped it.
+does not call itself. At each step it drops links whose other end was
+already used, is outside ``camera_ids``, or sits outside ``t_window``.
+Among the links that remain, the next track is the highest ``score``.
+Equal scores use the smallest ``(camera_id, track_id)``. The walk stops
+when no link remains. It does not stop while another candidate is open,
+and it does not jump through a blocked track to one beyond it.
 ``camera_ids=None`` allows every camera. ``t_window=None`` allows every
 time. ``t_window`` is an inclusive pair ``(start, end)``. A tracklet overlaps
 that pair when ``t_end >= start`` and ``t_start <= end``.
@@ -37,13 +39,12 @@ The returned route satisfies the read-only ``RouteLike`` and
 from __future__ import annotations
 
 import math
-import unicodedata
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
 from trace_search.matching.route_metrics import RouteLike, RouteSegmentLike
-from trace_search.matching.tracklets import Tracklet
+from trace_search.matching.tracklets import Tracklet, _require_id
 
 __all__ = (
     "LinkLike",
@@ -135,8 +136,8 @@ def build_route(
     """Follow links backward, then forward, and return the segments in time order.
 
     ``t_window`` is an inclusive ``(start, end)`` pair, or ``None``.
-    ``camera_ids=None`` allows every camera. A camera outside ``camera_ids``
-    stops the walk. The route is not stored.
+    ``camera_ids=None`` allows every camera. A blocked candidate is skipped.
+    The walk stops when every candidate is blocked. The route is not stored.
     """
     window = _require_window(t_window)
     allowed = _require_cameras(camera_ids)
@@ -202,7 +203,7 @@ def _time_key(segment: RouteSegment) -> tuple[float, float, str, int]:
 
 def _walk(
     start: TrackKey,
-    edges: Mapping[TrackKey, tuple[TrackKey, ...]],
+    edges: Mapping[TrackKey, tuple[tuple[TrackKey, float], ...]],
     seen: set[TrackKey],
     index: Mapping[TrackKey, Tracklet],
     window: Window | None,
@@ -210,17 +211,15 @@ def _walk(
 ) -> tuple[Tracklet, ...]:
     """Extend ``start`` along ``edges``. One step per tracklet, then stop.
 
-    ``seen`` is shared by the backward walk and the forward walk. A track
-    already in it ends this direction. The loop does not call itself.
+    ``seen`` is shared by the backward walk and the forward walk. A blocked
+    link is skipped. The loop does not call itself.
     """
     found: list[Tracklet] = []
     current = start
     # At most one added segment per catalogue row, plus one step that stops.
     for _step in range(len(index)):
-        nxt = _first_dest(edges, current)
+        nxt = _next_open(edges, current, seen, index, window, cameras)
         if nxt is None:
-            break
-        if _stop_reason(nxt, seen, index, window, cameras):
             break
         seen.add(nxt)
         found.append(index[nxt])
@@ -228,32 +227,49 @@ def _walk(
     return tuple(found)
 
 
-def _first_dest(
-    edges: Mapping[TrackKey, tuple[TrackKey, ...]],
+def _next_open(
+    edges: Mapping[TrackKey, tuple[tuple[TrackKey, float], ...]],
     key: TrackKey,
+    seen: set[TrackKey],
+    index: Mapping[TrackKey, Tracklet],
+    window: Window | None,
+    cameras: frozenset[str] | None,
 ) -> TrackKey | None:
-    dests = edges.get(key)
-    if dests is None:
-        return None
-    return dests[0]
+    """The best open hop, or ``None`` when every hop is blocked."""
+    for dest in _ranked(edges, key):
+        if _blocked(dest, seen, index, window, cameras):
+            continue
+        _tracklet_for(dest, index)
+        return dest
+    return None
 
 
-def _stop_reason(
+def _ranked(
+    edges: Mapping[TrackKey, tuple[tuple[TrackKey, float], ...]],
+    key: TrackKey,
+) -> tuple[TrackKey, ...]:
+    hops = edges.get(key)
+    if not hops:
+        return ()
+    return tuple(hop[0] for hop in _by_score(hops))
+
+
+def _blocked(
     key: TrackKey,
     seen: set[TrackKey],
     index: Mapping[TrackKey, Tracklet],
     window: Window | None,
     cameras: frozenset[str] | None,
 ) -> bool:
-    """True when ``key`` must not be entered. A missing tracklet raises."""
+    """True when this hop must be skipped. A missing tracklet is not a skip."""
     if _already_visited(key, seen):
         return True
     if _camera_blocked(key[0], cameras):
         return True
-    tracklet = _tracklet_for(key, index)
-    if _outside_window(tracklet, window):
-        return True
-    return False
+    tracklet = index.get(key)
+    if tracklet is None:
+        return False
+    return _outside_window(tracklet, window)
 
 
 def _already_visited(key: TrackKey, seen: set[TrackKey]) -> bool:
@@ -287,15 +303,15 @@ def _outside_window(tracklet: Tracklet, window: Window | None) -> bool:
 
 
 def _edges(
-    pairs: Sequence[tuple[TrackKey, TrackKey]],
+    pairs: Sequence[tuple[TrackKey, TrackKey, float]],
     *,
     backward: bool,
-) -> dict[TrackKey, tuple[TrackKey, ...]]:
-    grouped: dict[TrackKey, list[TrackKey]] = {}
-    for origin, dest in pairs:
+) -> dict[TrackKey, tuple[tuple[TrackKey, float], ...]]:
+    grouped: dict[TrackKey, list[tuple[TrackKey, float]]] = {}
+    for origin, dest, score in pairs:
         key, other = _edge_ends(origin, dest, backward=backward)
-        grouped.setdefault(key, []).append(other)
-    return {key: _by_track_key(group) for key, group in grouped.items()}
+        grouped.setdefault(key, []).append((other, score))
+    return {key: _best_hops(group) for key, group in grouped.items()}
 
 
 def _edge_ends(
@@ -310,12 +326,29 @@ def _edge_ends(
     return origin, dest
 
 
-def _by_track_key(group: list[TrackKey]) -> tuple[TrackKey, ...]:
-    """Smallest ``(camera_id, track_id)`` first. Input order does not matter."""
-    return tuple(sorted(set(group)))
+def _best_hops(
+    group: list[tuple[TrackKey, float]],
+) -> tuple[tuple[TrackKey, float], ...]:
+    """One hop per track. A repeated track keeps its higher score."""
+    best: dict[TrackKey, float] = {}
+    for dest, score in group:
+        best[dest] = max(score, best.get(dest, score))
+    return _by_score(tuple(best.items()))
 
 
-def _link_ends(link: object) -> tuple[TrackKey, TrackKey]:
+def _by_score(
+    hops: tuple[tuple[TrackKey, float], ...],
+) -> tuple[tuple[TrackKey, float], ...]:
+    """Highest score first. Equal scores use the smallest ``(camera_id, track_id)``."""
+    return tuple(sorted(hops, key=_hop_key))
+
+
+def _hop_key(hop: tuple[TrackKey, float]) -> tuple[float, str, int]:
+    dest, score = hop
+    return (-score, dest[0], dest[1])
+
+
+def _link_ends(link: object) -> tuple[TrackKey, TrackKey, float]:
     origin = (
         _require_camera("from_camera", _read(link, "from_camera")),
         _require_track_id("from_track", _read(link, "from_track")),
@@ -324,7 +357,8 @@ def _link_ends(link: object) -> tuple[TrackKey, TrackKey]:
         _require_camera("to_camera", _read(link, "to_camera")),
         _require_track_id("to_track", _read(link, "to_track")),
     )
-    return origin, dest
+    score = _require_finite("score", _read(link, "score"))
+    return origin, dest, score
 
 
 def _read(record: object, field_name: str) -> object:
@@ -438,38 +472,8 @@ def _require_cameras(value: object) -> frozenset[str] | None:
 
 
 def _require_camera(label: str, value: object) -> str:
-    """Return the id unchanged. Never strip, fold, or change case."""
-    text = _require_text(label, value)
-    _refuse_strip(label, text)
-    _refuse_nfkc(label, text)
-    _refuse_format(label, text)
-    return text
-
-
-def _require_text(label: str, value: object) -> str:
-    """Reject a missing id. A whitespace-only string counts as empty."""
-    if isinstance(value, str) and value.strip() != "":
-        return value
-    raise ValueError(f"{label} must be a non-empty id, got {value!r}")
-
-
-def _refuse_strip(label: str, value: str) -> None:
-    """Refuse surrounding whitespace. Do not strip the id."""
-    if value != value.strip():
-        raise ValueError(f"{label} must not have leading or trailing whitespace, got {value!r}")
-
-
-def _refuse_nfkc(label: str, value: str) -> None:
-    """Refuse an id that NFKC would change. Do not fold the id."""
-    if unicodedata.normalize("NFKC", value) != value:
-        raise ValueError(f"{label} must already be in NFKC, got {value!r}")
-
-
-def _refuse_format(label: str, value: str) -> None:
-    """Refuse Unicode format characters, including the zero-width marks."""
-    for character in value:
-        if unicodedata.category(character) == "Cf":
-            raise ValueError(f"{label} must not contain a format character, got {value!r}")
+    """Return the id unchanged. The checks are ``tracklets._require_id``."""
+    return _require_id(label, value)
 
 
 def _require_track_id(label: str, value: object) -> int:
