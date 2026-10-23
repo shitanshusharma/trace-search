@@ -47,12 +47,10 @@ class Purgeable(Protocol):
     @property
     def label(self) -> str:
         """Short name of this store."""
-        ...
 
     @property
     def covered_tables(self) -> tuple[str, ...]:
         """SQLite tables whose ``created_at`` rows this store purges."""
-        ...
 
     def purge_expired(
         self,
@@ -60,7 +58,6 @@ class Purgeable(Protocol):
         max_age_days: int = FOOTAGE_DERIVED_DAYS,
     ) -> int:
         """Delete expired rows and return how many were deleted."""
-        ...
 
     def count_older_than(
         self,
@@ -68,7 +65,6 @@ class Purgeable(Protocol):
         max_age_days: int = FOOTAGE_DERIVED_DAYS,
     ) -> int:
         """Return how many rows ``purge_expired`` would delete. Do not delete them."""
-        ...
 
 
 def _resolved_data_root(data_root: Path) -> Path:

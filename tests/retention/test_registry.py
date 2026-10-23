@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from trace_search.attributes.store import TrackAttributeRecord, TrackAttributeStore
+import trace_search.attributes.store as attribute_store
+import trace_search.tracking.store as track_store
 from trace_search.detection.types import DetClass
 from trace_search.retention import retention_seconds
 from trace_search.retention.registry import (
@@ -21,7 +22,6 @@ from trace_search.retention.registry import (
     Purgeable,
     purgeables,
 )
-from trace_search.tracking.store import _DB_FILENAME, TrackStore
 from trace_search.tracking.types import TrackObservation
 
 _NOW = 1_800_000_000.0
@@ -54,11 +54,15 @@ def _observation(camera_id: str, track_id: int) -> TrackObservation:
     )
 
 
-def _write_track(store: TrackStore, camera_id: str, track_id: int) -> None:
+def _write_track(store: track_store.TrackStore, camera_id: str, track_id: int) -> None:
     store.write(_RUN, _FIXTURE, "CODE_TEST", [_observation(camera_id, track_id)])
 
 
-def _write_attribute(store: TrackAttributeStore, camera_id: str, track_id: int) -> None:
+def _write_attribute(
+    store: attribute_store.TrackAttributeStore,
+    camera_id: str,
+    track_id: int,
+) -> None:
     store.write(
         camera_id,
         track_id,
@@ -75,18 +79,18 @@ def _write_attribute(store: TrackAttributeStore, camera_id: str, track_id: int) 
 
 def _write_all(stores: list[Purgeable], camera_id: str, track_id: int) -> None:
     for store in stores:
-        if isinstance(store, TrackStore):
+        if isinstance(store, track_store.TrackStore):
             _write_track(store, camera_id, track_id)
-        elif isinstance(store, TrackAttributeStore):
+        elif isinstance(store, attribute_store.TrackAttributeStore):
             _write_attribute(store, camera_id, track_id)
         else:
             raise AssertionError(type(store).__name__)
 
 
 def _db_path(store: Purgeable) -> Path:
-    if isinstance(store, TrackStore):
+    if isinstance(store, track_store.TrackStore):
         return store.db_path
-    if isinstance(store, TrackAttributeStore):
+    if isinstance(store, attribute_store.TrackAttributeStore):
         return store.db_path
     raise AssertionError(type(store).__name__)
 
@@ -152,8 +156,8 @@ def _safe_table_name(table: str) -> bool:
 
 def _module_db_paths(root: Path, clock: _Clock) -> list[Path]:
     """Open each footage-derived store module that exists on main."""
-    track = TrackStore(root / TRACK_DB_FILENAME, clock=clock)
-    attributes = TrackAttributeStore(root / ATTRIBUTE_DB_FILENAME, clock=clock)
+    track = track_store.TrackStore(root / TRACK_DB_FILENAME, clock=clock)
+    attributes = attribute_store.TrackAttributeStore(root / ATTRIBUTE_DB_FILENAME, clock=clock)
     return [track.db_path, attributes.db_path]
 
 
@@ -175,15 +179,19 @@ def _assert_created_at_tables_are_covered(root: Path, clock: _Clock) -> None:
 
 
 def _has_camera(store: Purgeable, camera_id: str) -> bool:
-    if isinstance(store, TrackStore):
+    if isinstance(store, track_store.TrackStore):
         return store.read(camera_id) != []
-    if isinstance(store, TrackAttributeStore):
+    if isinstance(store, attribute_store.TrackAttributeStore):
         return store.read(camera_id) != []
     raise AssertionError(type(store).__name__)
 
 
-def _attribute_row(created_at: float, camera_id: str, track_id: int) -> TrackAttributeRecord:
-    return TrackAttributeRecord(
+def _attribute_row(
+    created_at: float,
+    camera_id: str,
+    track_id: int,
+) -> attribute_store.TrackAttributeRecord:
+    return attribute_store.TrackAttributeRecord(
         camera_id=camera_id,
         track_id=track_id,
         run_id=_RUN,
@@ -213,9 +221,6 @@ def test_retention_seconds_rejects_bool_and_negative() -> None:
 
 
 def test_stores_do_not_keep_their_own_retention_seconds() -> None:
-    import trace_search.attributes.store as attribute_store
-    import trace_search.tracking.store as track_store
-
     assert not hasattr(track_store, "_retention_seconds")
     assert not hasattr(attribute_store, "_retention_seconds")
     assert not hasattr(track_store, "_SECONDS_PER_DAY")
@@ -225,7 +230,7 @@ def test_stores_do_not_keep_their_own_retention_seconds() -> None:
 def test_registry_filenames_match_the_stores_on_main() -> None:
     """``attributes.sqlite`` is the registry's name. The attribute store has none."""
     assert TRACK_DB_FILENAME == "tracks.sqlite"
-    assert TRACK_DB_FILENAME == _DB_FILENAME
+    assert TRACK_DB_FILENAME == track_store._DB_FILENAME
     assert ATTRIBUTE_DB_FILENAME == "attributes.sqlite"
 
 
@@ -245,8 +250,8 @@ def test_protocol_accepts_both_real_stores(tmp_path: Path) -> None:
     attributes: Purgeable = stores[1]
     assert isinstance(track, Purgeable)
     assert isinstance(attributes, Purgeable)
-    assert isinstance(track, TrackStore)
-    assert isinstance(attributes, TrackAttributeStore)
+    assert isinstance(track, track_store.TrackStore)
+    assert isinstance(attributes, attribute_store.TrackAttributeStore)
     assert track.label == "tracks"
     assert attributes.label == "attributes"
 
@@ -472,9 +477,9 @@ def test_registry_keeps_7d_minus_1s_and_purges_7d_plus_1s(tmp_path: Path) -> Non
         assert _has_camera(store, "cam-kept")
         assert _has_camera(store, "cam-exact")
         assert not _has_camera(store, "cam-purged")
-        if isinstance(store, TrackStore):
+        if isinstance(store, track_store.TrackStore):
             assert store.read("cam-kept") == [_observation("cam-kept", 3)]
-        elif isinstance(store, TrackAttributeStore):
+        elif isinstance(store, attribute_store.TrackAttributeStore):
             assert store.read("cam-kept") == [_attribute_row(_NOW - (_SEVEN - 1), "cam-kept", 3)]
 
 
@@ -482,7 +487,7 @@ def test_attribute_count_still_purges_before_it_counts(tmp_path: Path) -> None:
     """``count`` still deletes first. ``count_older_than`` is the count that remains."""
     clock = _SetClock(_NOW - (_SEVEN + 1))
     root = _make_root(tmp_path)
-    store = TrackAttributeStore(root / ATTRIBUTE_DB_FILENAME, clock=clock)
+    store = attribute_store.TrackAttributeStore(root / ATTRIBUTE_DB_FILENAME, clock=clock)
     _write_attribute(store, "cam-old", 1)
     clock.now = _NOW
     assert store.count_older_than() == 1
@@ -494,7 +499,7 @@ def test_attribute_count_still_purges_before_it_counts(tmp_path: Path) -> None:
 def test_track_read_and_count_still_run_after_an_explicit_purge(tmp_path: Path) -> None:
     clock = _SetClock(_NOW - (_SEVEN + 1))
     root = _make_root(tmp_path)
-    store = TrackStore(root / TRACK_DB_FILENAME, clock=clock)
+    store = track_store.TrackStore(root / TRACK_DB_FILENAME, clock=clock)
     _write_track(store, "cam-old", 1)
     clock.now = _NOW - (_SEVEN - 1)
     _write_track(store, "cam-kept", 2)
