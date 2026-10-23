@@ -106,14 +106,60 @@ def test_transit_edge_rejects_empty_camera_id(from_camera: object, to_camera: ob
         TransitEdge(from_camera, to_camera, 1.0, 2.0)  # type: ignore[arg-type]
 
 
-def test_non_blank_id_keeps_surrounding_spaces() -> None:
-    """Emptiness uses strip. The stored id is not rewritten."""
-    spaced = " cam-a "
-    edge = TransitEdge(spaced, "cam-b", 1.0, 2.0)
-    assert edge.from_camera == spaced
-    topology = CameraTopology(_registry(spaced, "cam-b"), (edge,))
-    assert topology.successors(spaced) == ("cam-b",)
-    assert topology.allows(spaced, 0.0, "cam-b", 1.5) is True
+@pytest.mark.parametrize(
+    "camera_id",
+    [" cam-a", "cam-a ", "cam-a\n", "\tcam-a"],
+    ids=["leading-space", "trailing-space", "trailing-newline", "leading-tab"],
+)
+def test_transit_edge_rejects_surrounding_whitespace(camera_id: str) -> None:
+    """Surrounding whitespace is refused. The id is not stripped."""
+    with pytest.raises(ValueError, match="whitespace"):
+        TransitEdge(camera_id, "cam-b", 1.0, 2.0)
+    with pytest.raises(ValueError, match="whitespace"):
+        TransitEdge("cam-b", camera_id, 1.0, 2.0)
+    with pytest.raises(ValueError, match="whitespace"):
+        CameraTopology.from_dict(_payload([_edge_dict(from_camera=camera_id)]))
+
+
+def test_ids_differing_only_by_whitespace_cannot_form_an_edge() -> None:
+    """A padded id and its plain form are not two cameras an edge may join."""
+    leading = _registry("cam-a", " cam-a")
+    assert leading.get("cam-a") is not None
+    assert leading.get(" cam-a") is not None
+    with pytest.raises(ValueError, match="whitespace"):
+        CameraTopology(leading, (TransitEdge("cam-a", " cam-a", 1.0, 2.0),))
+
+    trailing = _registry("cam-a", "cam-a ")
+    assert trailing.get("cam-a ") is not None
+    with pytest.raises(ValueError, match="whitespace"):
+        CameraTopology(trailing, (TransitEdge("cam-a ", "cam-a", 1.0, 2.0),))
+
+
+def test_transit_edge_rejects_nfkc_mismatch() -> None:
+    """Fullwidth ``ｃａｍ-a`` is refused. It is not folded to ``cam-a``."""
+    camera_id = "\uff43\uff41\uff4d-a"
+    with pytest.raises(ValueError, match="NFKC"):
+        TransitEdge(camera_id, "cam-b", 1.0, 2.0)
+    with pytest.raises(ValueError, match="NFKC"):
+        TransitEdge("cam-b", camera_id, 1.0, 2.0)
+    with pytest.raises(ValueError, match="NFKC"):
+        CameraTopology.from_dict(_payload([_edge_dict(to_camera=camera_id)]))
+
+
+@pytest.mark.parametrize(
+    "mark",
+    ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"],
+    ids=["zwsp", "zwnj", "zwj", "word-joiner", "bom"],
+)
+def test_transit_edge_rejects_format_characters(mark: str) -> None:
+    """Category Cf is refused, including each zero-width mark."""
+    camera_id = f"cam-a{mark}"
+    with pytest.raises(ValueError, match="format character"):
+        TransitEdge(camera_id, "cam-b", 1.0, 2.0)
+    with pytest.raises(ValueError, match="format character"):
+        TransitEdge("cam-a", f"cam-b{mark}", 1.0, 2.0)
+    with pytest.raises(ValueError, match="format character"):
+        CameraTopology.from_dict(_payload([_edge_dict(from_camera=camera_id)]))
 
 
 def test_transit_edge_rejects_self_loop() -> None:

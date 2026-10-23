@@ -5,8 +5,10 @@ walk time from an exit timestamp to the next entry timestamp. An edge is one
 direction. A two-way corridor is two edges. This module does not read a site
 file and does not use a graph package.
 
-Whitespace-only camera ids are empty. ``str.strip`` decides that, and only
-that. The stored id is kept as given, so a non-blank id keeps its spaces.
+Camera ids are refused, not rewritten. A whitespace-only id is empty. An id
+also raises when it differs from ``str.strip`` of itself, when NFKC changes
+it, or when it contains a format character (Unicode category ``Cf``, including
+U+200B, U+200C, U+200D, U+2060 and U+FEFF). The id is not stripped and not folded.
 
 A second edge with the same ``(from_camera, to_camera)`` is refused, whether
 or not the windows match. The opposite direction is a different edge.
@@ -18,6 +20,7 @@ registry are not part of the topology.
 from __future__ import annotations
 
 import math
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +35,25 @@ def _reject_empty_camera_id(label: str, camera_id: object) -> None:
     if isinstance(camera_id, str) and camera_id.strip() != "":
         return
     raise ValueError(f"{label} must be a non-empty camera id, got {camera_id!r}")
+
+
+def _reject_whitespace_mismatch(label: str, camera_id: str) -> None:
+    """Refuse surrounding whitespace. Do not strip the id."""
+    if camera_id != camera_id.strip():
+        raise ValueError(f"{label} must not have leading or trailing whitespace, got {camera_id!r}")
+
+
+def _reject_nfkc_mismatch(label: str, camera_id: str) -> None:
+    """Refuse an id that NFKC would change. Do not fold the id."""
+    if unicodedata.normalize("NFKC", camera_id) != camera_id:
+        raise ValueError(f"{label} must already be in NFKC, got {camera_id!r}")
+
+
+def _reject_format_characters(label: str, camera_id: str) -> None:
+    """Refuse Unicode format characters, including the zero-width marks."""
+    for character in camera_id:
+        if unicodedata.category(character) == "Cf":
+            raise ValueError(f"{label} must not contain a format character, got {camera_id!r}")
 
 
 def _reject_self_loop(from_camera: str, to_camera: str) -> None:
@@ -100,8 +122,9 @@ class TransitEdge:
     """One directed walk from one camera to another.
 
     ``min_seconds`` and ``max_seconds`` are inclusive bounds on
-    ``entry_s - exit_s``. A whitespace-only camera id is empty and is rejected.
-    The stored ids are not stripped.
+    ``entry_s - exit_s``. Ids are refused, not stripped. A whitespace-only id
+    is empty. An id with surrounding whitespace, an id NFKC would change, or
+    an id that contains a format character (category ``Cf``) is rejected.
     """
 
     from_camera: str
@@ -110,9 +133,15 @@ class TransitEdge:
     max_seconds: float
 
     def __post_init__(self) -> None:
-        """Reject an empty id, a self-loop, a bad duration, or min above max."""
+        """Reject a bad id, a self-loop, a bad duration, or min above max."""
         _reject_empty_camera_id("from_camera", self.from_camera)
         _reject_empty_camera_id("to_camera", self.to_camera)
+        _reject_whitespace_mismatch("from_camera", self.from_camera)
+        _reject_whitespace_mismatch("to_camera", self.to_camera)
+        _reject_nfkc_mismatch("from_camera", self.from_camera)
+        _reject_nfkc_mismatch("to_camera", self.to_camera)
+        _reject_format_characters("from_camera", self.from_camera)
+        _reject_format_characters("to_camera", self.to_camera)
         min_seconds = _require_seconds("min_seconds", self.min_seconds)
         max_seconds = _require_seconds("max_seconds", self.max_seconds)
         _reject_self_loop(self.from_camera, self.to_camera)
