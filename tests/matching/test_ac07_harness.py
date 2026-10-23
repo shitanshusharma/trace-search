@@ -291,16 +291,37 @@ def test_hold_acceptance_does_not_use_the_normalised_id(fixture_id: str) -> None
 
 @pytest.mark.parametrize(
     "fixture_id",
-    ["fx-code-101", " FX-CODE-101 ", "FX_CODE_101", "\uff26\uff38-CODE-101"],
-    ids=["lower", "padded", "underscores", "fullwidth"],
+    ["fx-code-101", "FX_CODE_101", "\uff26\uff38-CODE-101", "FX-CODE-\uff11\uff10\uff11"],
+    ids=["lower", "underscores", "fullwidth", "fullwidth-digits"],
 )
-def test_code_test_does_not_normalise_ids_into_acceptance(fixture_id: str) -> None:
-    with pytest.raises(FixtureSeparationError):
+def test_code_test_accepts_normalised_fx_code_ids(fixture_id: str) -> None:
+    result = run(fixture_id, mode="code_test")
+    _assert_deferred(result)
+    diagnostics = result["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    assert "Not an AC-07 result" in diagnostics["note"]
+
+
+@pytest.mark.parametrize(
+    "fixture_id",
+    [
+        "FX-CODEX",
+        "FX-CODE-SMOKE-001",
+        "FX-CODE-101\n",
+        "FX-CODE-\u0661\u0660\u0661",
+        " FX-CODE-101 ",
+    ],
+    ids=["prefix-only", "embedded-smoke", "trailing-newline", "arabic-indic", "padded"],
+)
+def test_code_test_fullmatch_refuses_mutants(fixture_id: str) -> None:
+    """Strip is not applied, so a trailing newline fails the anchor."""
+    with pytest.raises(FixtureSeparationError, match="fullmatch") as caught:
         run(fixture_id, mode="code_test")
+    assert fixture_id in str(caught.value)
 
 
 def test_code_test_refuses_a_hold_id() -> None:
-    with pytest.raises(FixtureSeparationError, match="starts with FX-CODE"):
+    with pytest.raises(FixtureSeparationError, match="fullmatch"):
         run("FX-HOLD-001", mode="code_test")
 
 
@@ -468,6 +489,7 @@ def test_sources_are_hand_built_and_do_not_name_forbidden_loaders() -> None:
         "LoaderContext",
         "motmetrics",
         "trackeval",
+        "scipy",
         "smoke-clips",
         ".mp4",
         "urllib",

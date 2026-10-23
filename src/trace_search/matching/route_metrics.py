@@ -16,10 +16,17 @@ touching endpoints have a gap of 0. A gap of 10.0 matches. A gap of 10.1 does
 not. The tolerance is closed on both sides (predicted entirely before the
 truth segment, or entirely after it).
 
-Matching is one-to-one. Candidate pairs are sorted by gap, then predicted
-index, then truth index. A pair is kept only when that predicted segment and
-that truth segment are both still free. One truth segment cannot match many
-predictions, and one prediction cannot match many truth segments.
+Matching is a maximum-cardinality one-to-one assignment. The search is
+Kuhn's algorithm: depth-first augmenting paths over the allowed edges, in
+the standard library only. One truth segment cannot match many predictions,
+and one prediction cannot match many truth segments.
+
+The iteration order is fixed, so the same edges always yield the same
+matching. Each prediction's truths are tried in increasing gap, then truth
+index. Predictions are tried in increasing smallest gap, then predicted
+index. A taken truth is released only along an augmenting path, and the
+displaced prediction searches again in that same truth order. Returned
+pairs are sorted by predicted index, then truth index.
 
 ``segment_recall`` is matched truth segments / truth segments.
 ``segment_precision`` is matched predicted segments / predicted segments.
@@ -142,10 +149,10 @@ def matched_pairs(
     truth: Sequence[TruthSegment],
     ownership: Ownership,
 ) -> tuple[tuple[int, int], ...]:
-    """Return ``(predicted_index, truth_index)`` pairs in assignment order.
+    """Return ``(predicted_index, truth_index)`` pairs from a maximum matching.
 
-    Order is increasing gap, then predicted index, then truth index. Each
-    index appears at most once. See the module docstring for the match rule.
+    Pairs are sorted by predicted index, then truth index. Each index
+    appears at most once. See the module docstring for the search order.
     """
     checked = _checked_ownership(ownership)
     predicted_tracks = _load_predicted(predicted, checked)
@@ -210,28 +217,138 @@ def _unique_second(pairs: Sequence[tuple[int, int]]) -> int:
 
 
 def _assign(candidates: Sequence[tuple[float, int, int]]) -> tuple[tuple[int, int], ...]:
-    """Greedy one-to-one assignment. ``candidates`` are sorted by the caller."""
+    """Maximum-cardinality matching. See the module docstring for the order."""
+    chosen: list[tuple[int, int]] = []
     used_pred: set[int] = set()
     used_truth: set[int] = set()
-    chosen: list[tuple[int, int]] = []
-    for _gap, pred_index, truth_index in sorted(candidates):
-        if not _pair_is_free(pred_index, truth_index, used_pred, used_truth):
-            continue
-        used_pred.add(pred_index)
-        used_truth.add(truth_index)
-        chosen.append((pred_index, truth_index))
-    return tuple(chosen)
+    adjacency = _adjacency(candidates)
+    for pred_index in _prediction_order(candidates):
+        _augment(pred_index, adjacency, chosen, used_pred, used_truth, set())
+    return tuple(sorted(chosen))
 
 
-def _pair_is_free(
+def _adjacency(
+    candidates: Sequence[tuple[float, int, int]],
+) -> dict[int, tuple[int, ...]]:
+    """Truth indexes per prediction, in increasing gap then truth index."""
+    grouped: dict[int, list[tuple[float, int]]] = {}
+    for gap, pred_index, truth_index in candidates:
+        grouped.setdefault(pred_index, []).append((gap, truth_index))
+    return {
+        pred_index: tuple(truth_index for _gap, truth_index in sorted(edges))
+        for pred_index, edges in grouped.items()
+    }
+
+
+def _prediction_order(candidates: Sequence[tuple[float, int, int]]) -> tuple[int, ...]:
+    """Predictions in increasing smallest gap, then predicted index."""
+    best: dict[int, float] = {}
+    for gap, pred_index, _truth_index in candidates:
+        best[pred_index] = _tighter_gap(best.get(pred_index), gap)
+    ranked = sorted(best, key=lambda pred_index: (best[pred_index], pred_index))
+    return tuple(ranked)
+
+
+def _tighter_gap(current: float | None, gap: float) -> float:
+    if current is None or gap < current:
+        return gap
+    return current
+
+
+def _augment(
+    pred_index: int,
+    adjacency: dict[int, tuple[int, ...]],
+    chosen: list[tuple[int, int]],
+    used_pred: set[int],
+    used_truth: set[int],
+    seen: set[int],
+) -> bool:
+    """Assign ``pred_index`` by a free edge or an augmenting path."""
+    for truth_index in adjacency[pred_index]:
+        if _visit(pred_index, truth_index, adjacency, chosen, used_pred, used_truth, seen):
+            return True
+    return False
+
+
+def _visit(
+    pred_index: int,
+    truth_index: int,
+    adjacency: dict[int, tuple[int, ...]],
+    chosen: list[tuple[int, int]],
+    used_pred: set[int],
+    used_truth: set[int],
+    seen: set[int],
+) -> bool:
+    if truth_index in seen:
+        return False
+    seen.add(truth_index)
+    if _take_if_free(pred_index, truth_index, chosen, used_pred, used_truth):
+        return True
+    return _reassign(pred_index, truth_index, adjacency, chosen, used_pred, used_truth, seen)
+
+
+def _take_if_free(
+    pred_index: int,
+    truth_index: int,
+    chosen: list[tuple[int, int]],
+    used_pred: set[int],
+    used_truth: set[int],
+) -> bool:
+    if not _pair_is_free(truth_index, used_truth):
+        return False
+    _claim(pred_index, truth_index, chosen, used_pred, used_truth)
+    return True
+
+
+def _reassign(
+    pred_index: int,
+    truth_index: int,
+    adjacency: dict[int, tuple[int, ...]],
+    chosen: list[tuple[int, int]],
+    used_pred: set[int],
+    used_truth: set[int],
+    seen: set[int],
+) -> bool:
+    """Free ``truth_index`` along an augmenting path, then claim it."""
+    owner = _owner(chosen, truth_index)
+    _drop(chosen, owner, truth_index, used_pred, used_truth)
+    if _augment(owner, adjacency, chosen, used_pred, used_truth, seen):
+        _claim(pred_index, truth_index, chosen, used_pred, used_truth)
+        return True
+    _claim(owner, truth_index, chosen, used_pred, used_truth)
+    return False
+
+
+def _claim(
+    pred_index: int,
+    truth_index: int,
+    chosen: list[tuple[int, int]],
+    used_pred: set[int],
+    used_truth: set[int],
+) -> None:
+    used_pred.add(pred_index)
+    used_truth.add(truth_index)
+    chosen.append((pred_index, truth_index))
+
+
+def _drop(
+    chosen: list[tuple[int, int]],
     pred_index: int,
     truth_index: int,
     used_pred: set[int],
     used_truth: set[int],
-) -> bool:
-    """False when this prediction or this truth segment is already matched."""
-    if pred_index in used_pred:
-        return False
+) -> None:
+    chosen.remove((pred_index, truth_index))
+    used_pred.remove(pred_index)
+    used_truth.remove(truth_index)
+
+
+def _owner(chosen: Sequence[tuple[int, int]], truth_index: int) -> int:
+    return next(pred_index for pred_index, other in chosen if other == truth_index)
+
+
+def _pair_is_free(truth_index: int, used_truth: set[int]) -> bool:
+    """False when this truth segment is already matched to a prediction."""
     if truth_index in used_truth:
         return False
     return True
@@ -333,6 +450,7 @@ def _load_routes(
 
 
 def _load_route(route: object, ownership: Ownership) -> tuple[_TimedTrack, ...]:
+    """Load one route. The seed must be owned. It need not appear in the segments."""
     seed_camera = _checked_label("seed_camera", _attr(route, "seed_camera"))
     seed_track = _require_track_id("seed_track", _attr(route, "seed_track"))
     _figure_for(seed_camera, seed_track, ownership)

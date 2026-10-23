@@ -282,6 +282,38 @@ def test_tighter_gap_is_assigned_before_a_looser_one() -> None:
     assert matched_pairs(predicted, truth, ownership) == ((1, 0),)
 
 
+def test_maximum_matching_covers_the_crossed_pair() -> None:
+    """Greedy by smallest gap scores recall 0.5. The maximum matching scores 1.0.
+
+    Predicted [0, 10] touches truth [10, 12] (gap 0) and is 2 s from truth
+    [-8, -2]. Predicted [19, 20] is 7 s from truth [10, 12]. Keeping the
+    gap-0 pair blocks the second prediction. The crossed pairs match both.
+    """
+    predicted = (
+        _HandSegment("cam-a", 1, 0.0, 10.0),
+        _HandSegment("cam-a", 2, 19.0, 20.0),
+    )
+    truth = (
+        TruthSegment("fig-a", "cam-a", 10.0, 12.0),
+        TruthSegment("fig-a", "cam-a", -8.0, -2.0),
+    )
+    ownership = {("cam-a", 1): "fig-a", ("cam-a", 2): "fig-a"}
+    assert matched_pairs(predicted, truth, ownership) == ((0, 1), (1, 0))
+    _exact(segment_recall(predicted, truth, ownership), 1, 1)
+    _exact(segment_precision(predicted, truth, ownership), 1, 1)
+
+
+def test_later_tighter_gap_updates_the_prediction_order() -> None:
+    """The second truth is the tighter edge, so the minimum gap is updated."""
+    predicted = (_HandSegment("cam-a", 1, 0.0, 10.0),)
+    truth = (
+        TruthSegment("fig-a", "cam-a", 20.0, 30.0),
+        TruthSegment("fig-a", "cam-a", 0.0, 10.0),
+    )
+    ownership = {("cam-a", 1): "fig-a"}
+    assert matched_pairs(predicted, truth, ownership) == ((0, 1),)
+
+
 def test_zero_matches_are_a_real_zero() -> None:
     truth = (TruthSegment("fig-a", "cam-a", 0.0, 1.0),)
     predicted = (_HandSegment("cam-b", 1, 0.0, 1.0),)
@@ -530,7 +562,14 @@ def test_metrics_do_not_open_files_or_connect(monkeypatch: pytest.MonkeyPatch) -
 def test_metric_sources_do_not_name_loader_contexts_or_external_metrics() -> None:
     root = Path(__file__).resolve().parents[2]
     text = (root / "src/trace_search/matching/route_metrics.py").read_text(encoding="utf-8")
-    for banned in ("load_reid_samples", "LoaderContext", "motmetrics", "trackeval", "smoke-clips"):
+    for banned in (
+        "load_reid_samples",
+        "LoaderContext",
+        "motmetrics",
+        "trackeval",
+        "scipy",
+        "smoke-clips",
+    ):
         assert banned not in text
 
 

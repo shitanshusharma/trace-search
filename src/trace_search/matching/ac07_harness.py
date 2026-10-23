@@ -5,10 +5,10 @@ records. ``run`` does not produce an AC-07 result in Cut 01. ``status`` is
 ``DEFERRED``, ``evidence`` is false, and ``ac07_score`` is null. Thresholds
 are copied from AC-07 and are not compared to a measured number.
 
-A fixture id is normalised in one place, and only to refuse smoke variants:
-NFKC, then strip, upper-case, and ``_`` read as ``-``. ``FX-SMOKE`` then
-raises in every mode, including an unknown mode. The normalised text is
-never an accepted id. The error keeps the original id.
+``FX-SMOKE`` is refused first, in every mode, including an unknown mode.
+That check normalises the id (NFKC, strip, upper-case, ``_`` read as ``-``)
+and raises when the result starts with ``FX-SMOKE``. The error keeps the
+original id. Eval does not accept a normalised id.
 
 ``eval`` and ``unit_test`` are fail-closed. A raw id that starts with
 ``FX-CODE`` raises in both. Any other id must full-match
@@ -16,10 +16,13 @@ never an accepted id. The error keeps the original id.
 ``search``, and it does not use the normalised form. ``unit_test`` does not
 skip that gate and does not compute numbers.
 
-``code_test`` accepts only a raw id that starts with ``FX-CODE``. When
-routes, truth, and ownership are all supplied, the three metrics sit under
-``diagnostics`` with a note that they are not an AC-07 result. Omitted
-inputs are not measured. ``ac07_score`` stays null on that path too.
+``code_test`` fullmatches ``^FX-CODE-[0-9]+$`` after NFKC, upper-case, and
+``_`` read as ``-``. The digit class is ASCII ``[0-9]``. Strip is not
+applied on this anchor: ``str.strip`` would delete a trailing newline and
+the id would match. ``FX-SMOKE`` is still refused first, in every mode.
+When routes, truth, and ownership are all supplied, the three metrics sit
+under ``diagnostics`` with a note that they are not an AC-07 result.
+Omitted inputs are not measured. ``ac07_score`` stays null on that path too.
 
 This module does not read a fixture file, a label file, or a media file.
 """
@@ -41,8 +44,10 @@ from trace_search.matching.route_metrics import (
     segment_recall,
 )
 
-# ASCII digits. ``\d`` matches Nd digits that NFKC leaves unchanged.
+# ASCII digits. A unicode digit class would accept Arabic-Indic digits,
+# which NFKC leaves unchanged.
 _HOLD_ID = re.compile(r"^FX-HOLD-[0-9]{3}$")
+_CODE_ID = re.compile(r"^FX-CODE-[0-9]+$")
 _SMOKE_PREFIX = "FX-SMOKE"
 _CODE_PREFIX = "FX-CODE"
 _EVAL_MODE = "eval"
@@ -212,12 +217,17 @@ def _run_code_test(
 
 
 def _require_code(original: str) -> None:
-    """Accept only a raw id that starts with ``FX-CODE``."""
-    if original.startswith(_CODE_PREFIX):
+    """Accept a folded id that full-matches ``^FX-CODE-[0-9]+$``. No strip."""
+    if _CODE_ID.fullmatch(_code_match_text(original)) is not None:
         return
     raise FixtureSeparationError(
-        f"{original} is refused: code_test accepts only an id that starts with FX-CODE"
+        f"{original} is refused: normalised id does not fullmatch ^FX-CODE-[0-9]+$"
     )
+
+
+def _code_match_text(original: str) -> str:
+    """NFKC, upper-case, and ``_`` to ``-``. No strip, so a newline stays."""
+    return _apply_underscores(_apply_upper(_apply_nfkc(original)))
 
 
 def _code_diagnostics(
