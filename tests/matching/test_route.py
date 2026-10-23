@@ -517,7 +517,7 @@ def test_real_route_satisfies_route_metrics_protocols() -> None:
 
 
 def test_route_is_not_stored_and_the_caller_lists_are_not_kept() -> None:
-    import trace_search.matching.route as route_mod
+    route_mod = sys.modules["trace_search.matching.route"]
 
     seed = _tracklet("cam-a", 1, 0.0, 1.0)
     other = _tracklet("cam-b", 2, 2.0, 3.0)
