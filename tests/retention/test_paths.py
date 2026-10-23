@@ -20,7 +20,6 @@ from trace_search.audit.log import AUDIT_LOG_DIR, is_audit_path
 from trace_search.detection.types import DetClass
 from trace_search.retention import retention_seconds
 from trace_search.retention.config import FOOTAGE_DERIVED_DAYS
-from trace_search.retention.paths import default_audit_root, purge_expired, validate_roots
 from trace_search.retention.registry import Purgeable, purgeables
 from trace_search.tracking.types import TrackObservation
 
@@ -171,7 +170,7 @@ def test_retention_paths_does_not_repeat_the_audit_directory_literal() -> None:
     """The directory string lives in the audit module. This module imports it."""
     source = Path(retention_paths.__file__).read_text(encoding="utf-8")
     assert AUDIT_LOG_DIR not in source
-    assert default_audit_root() == Path(AUDIT_LOG_DIR)
+    assert retention_paths.default_audit_root() == Path(AUDIT_LOG_DIR)
 
 
 def test_purge_from_another_cwd_leaves_the_audit_root_byte_identical(
@@ -200,7 +199,7 @@ def test_purge_from_another_cwd_leaves_the_audit_root_byte_identical(
     other = tmp_path / "other-cwd"
     other.mkdir()
     monkeypatch.chdir(other)
-    deleted = purge_expired(data, audit_root=audit, clock=clock)
+    deleted = retention_paths.purge_expired(data, audit_root=audit, clock=clock)
 
     assert deleted == expected
     assert _snapshot(audit) == audit_before
@@ -229,7 +228,7 @@ def test_explicit_now_is_counted_without_moving_the_clock(
     expected = 0
     for store in purgeables(data, clock=clock):
         expected += store.count_older_than(now=_NOW)
-    deleted = purge_expired(data, audit_root=audit, clock=clock, now=_NOW)
+    deleted = retention_paths.purge_expired(data, audit_root=audit, clock=clock, now=_NOW)
     assert expected > 0
     assert deleted == expected
     remaining = 0
@@ -245,9 +244,9 @@ def test_data_root_equal_to_the_audit_root_is_refused(tmp_path: Path) -> None:
     before = _snapshot(root)
     alias = root / ".." / root.name
     with pytest.raises(ValueError, match="equal"):
-        validate_roots(alias, root)
+        retention_paths.validate_roots(alias, root)
     with pytest.raises(ValueError, match="equal"):
-        purge_expired(root, audit_root=root)
+        retention_paths.purge_expired(root, audit_root=root)
     assert _snapshot(root) == before
     assert not (root / "tracks.sqlite").exists()
     assert not (root / "attributes.sqlite").exists()
@@ -259,9 +258,9 @@ def test_data_root_containing_the_audit_root_is_refused(tmp_path: Path) -> None:
     _audit_tree(audit)
     before = _snapshot(audit)
     with pytest.raises(ValueError, match="contain"):
-        validate_roots(data, audit)
+        retention_paths.validate_roots(data, audit)
     with pytest.raises(ValueError, match="contain"):
-        purge_expired(data, audit_root=audit)
+        retention_paths.purge_expired(data, audit_root=audit)
     assert _snapshot(audit) == before
     assert not (data / "tracks.sqlite").exists()
     assert not (data / "attributes.sqlite").exists()
@@ -276,9 +275,9 @@ def test_data_root_symlink_into_the_audit_root_is_refused(tmp_path: Path) -> Non
     link.symlink_to(nested, target_is_directory=True)
     before = _snapshot(audit)
     with pytest.raises(ValueError, match="contain"):
-        validate_roots(link, audit)
+        retention_paths.validate_roots(link, audit)
     with pytest.raises(ValueError, match="contain"):
-        purge_expired(link, audit_root=audit)
+        retention_paths.purge_expired(link, audit_root=audit)
     assert _snapshot(audit) == before
     assert not (nested / "tracks.sqlite").exists()
     assert not (nested / "attributes.sqlite").exists()
@@ -291,9 +290,9 @@ def test_data_root_symlink_onto_the_audit_root_is_refused(tmp_path: Path) -> Non
     link.symlink_to(audit, target_is_directory=True)
     before = _snapshot(audit)
     with pytest.raises(ValueError, match="equal"):
-        validate_roots(link, audit)
+        retention_paths.validate_roots(link, audit)
     with pytest.raises(ValueError, match="equal"):
-        purge_expired(link, audit_root=audit)
+        retention_paths.purge_expired(link, audit_root=audit)
     assert _snapshot(audit) == before
     assert not (audit / "tracks.sqlite").exists()
 
@@ -321,7 +320,7 @@ def test_folder_named_like_the_audit_dir_elsewhere_is_not_exempt(
     other.mkdir()
     monkeypatch.chdir(other)
 
-    deleted = purge_expired(data, audit_root=audit, clock=clock)
+    deleted = retention_paths.purge_expired(data, audit_root=audit, clock=clock)
 
     assert expected > 0
     assert deleted == expected
@@ -342,12 +341,12 @@ def test_omitted_audit_root_defaults_to_the_audit_directory(
     _audit_tree(audit)
     before = _snapshot(audit)
     with pytest.raises(ValueError, match="equal"):
-        purge_expired(audit)
+        retention_paths.purge_expired(audit)
     assert _snapshot(audit) == before
     assert not (audit / "tracks.sqlite").exists()
     data = tmp_path / "data"
     data.mkdir()
-    assert purge_expired(data, clock=lambda: _NOW) == 0
+    assert retention_paths.purge_expired(data, clock=lambda: _NOW) == 0
     assert _snapshot(audit) == before
 
 
@@ -357,9 +356,9 @@ def test_roots_must_be_paths(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
     with pytest.raises(TypeError):
-        validate_roots("data", audit)  # type: ignore[arg-type]
+        retention_paths.validate_roots("data", audit)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
-        validate_roots(data, "audit")  # type: ignore[arg-type]
+        retention_paths.validate_roots(data, "audit")  # type: ignore[arg-type]
 
 
 def test_file_root_is_refused(tmp_path: Path) -> None:
@@ -368,9 +367,9 @@ def test_file_root_is_refused(tmp_path: Path) -> None:
     audit = tmp_path / "audit"
     audit.mkdir()
     with pytest.raises(ValueError, match="directory"):
-        validate_roots(data, audit)
+        retention_paths.validate_roots(data, audit)
     with pytest.raises(ValueError, match="directory"):
-        validate_roots(audit, data)
+        retention_paths.validate_roots(audit, data)
 
 
 def test_symlink_loop_is_refused(tmp_path: Path) -> None:
@@ -381,7 +380,7 @@ def test_symlink_loop_is_refused(tmp_path: Path) -> None:
     audit = tmp_path / "audit"
     audit.mkdir()
     with pytest.raises(ValueError, match="resolved"):
-        validate_roots(left, audit)
+        retention_paths.validate_roots(left, audit)
 
 
 def test_home_relative_data_root_is_expanded(
@@ -394,6 +393,6 @@ def test_home_relative_data_root_is_expanded(
     audit = tmp_path / "audit"
     audit.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    validate_roots(Path("~/data"), audit)
+    retention_paths.validate_roots(Path("~/data"), audit)
     with pytest.raises(ValueError, match="equal"):
-        validate_roots(Path("~/data"), data)
+        retention_paths.validate_roots(Path("~/data"), data)
