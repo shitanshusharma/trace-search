@@ -50,11 +50,11 @@ class RetentionConfig:
         """Audit-log retention in whole days."""
         return self._audit_days
 
-    def __setattr__(self, name: str, value: object) -> None:
-        raise AttributeError(f"RetentionConfig is frozen; cannot set {name}")
+    def __setattr__(self, attribute: str, value: object) -> None:
+        raise AttributeError(f"RetentionConfig is frozen; cannot set {attribute}")
 
-    def __delattr__(self, name: str) -> None:
-        raise AttributeError(f"RetentionConfig is frozen; cannot delete {name}")
+    def __delattr__(self, attribute: str) -> None:
+        raise AttributeError(f"RetentionConfig is frozen; cannot delete {attribute}")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, RetentionConfig):
