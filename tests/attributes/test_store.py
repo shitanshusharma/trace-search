@@ -62,13 +62,8 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _store(
-    tmp_path: Path,
-    clock: _Clock | None = None,
-    *,
-    name: str = "attributes.sqlite",
-) -> TrackAttributeStore:
-    return TrackAttributeStore(tmp_path / name, clock=clock)
+def _store(tmp_path: Path, clock: _Clock | None = None) -> TrackAttributeStore:
+    return TrackAttributeStore(tmp_path / "attributes.sqlite", clock=clock)
 
 
 def _write(
