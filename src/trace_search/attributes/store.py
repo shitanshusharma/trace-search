@@ -503,21 +503,32 @@ def _delete_matching(
 class TrackAttributeStore:
     """SQLite store of per-track colour and bag rows.
 
-    Construction opens the file, creates ``track_attributes`` when missing,
-    and purges rows older than the shipped footage window (7 days).
-    ``read``, ``query``, ``count``, and ``write`` purge again before they
-    touch the table. ``count_older_than`` uses the same cutoff and does not
-    delete, so it can report rows that those methods would remove first.
-    The clock is injectable so retention tests do not sleep.
+    Construction opens the file and creates ``track_attributes`` when
+    missing. It purges rows older than the shipped footage window (7 days)
+    unless ``purge_on_open`` is False. The default stays True so every
+    other caller still purges on open. The registry passes False: that
+    open-time purge throws the count away, and a fresh registry must still
+    be able to count the expired rows. ``read``, ``query``, ``count``, and
+    ``write`` purge again before they touch the table.
+    ``count_older_than`` uses the same cutoff and does not delete, so it
+    can report rows that those methods would remove first. The clock is
+    injectable so retention tests do not sleep.
     """
 
-    def __init__(self, db_path: Path, *, clock: _Clock | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        clock: _Clock | None = None,
+        purge_on_open: bool = True,
+    ) -> None:
         resolved = _db_path_outside_repo(db_path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.db_path: Path = resolved
         self._clock: _Clock = time.time if clock is None else clock
         self._ensure_schema()
-        self.purge_expired()
+        if purge_on_open:
+            self.purge_expired()
 
     @property
     def label(self) -> str:

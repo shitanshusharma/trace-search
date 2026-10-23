@@ -6,6 +6,7 @@ main, so this file does not open them. The attribute database filename is
 default filename of its own.
 """
 
+import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -154,27 +155,186 @@ def _safe_table_name(table: str) -> bool:
     return True
 
 
-def _module_db_paths(root: Path, clock: _Clock) -> list[Path]:
-    """Open each footage-derived store module that exists on main."""
-    track = track_store.TrackStore(root / TRACK_DB_FILENAME, clock=clock)
-    attributes = attribute_store.TrackAttributeStore(root / ATTRIBUTE_DB_FILENAME, clock=clock)
-    return [track.db_path, attributes.db_path]
+def _package_source() -> Path:
+    """The ``trace_search`` package tree. The scan reads this source only."""
+    return _repo_root() / "src" / "trace_search"
 
 
-def _uncovered_created_at_tables(root: Path, clock: _Clock) -> set[str]:
+def _is_ident_char(character: str) -> bool:
+    return character.isascii() and (character.isalnum() or character == "_")
+
+
+def _skip_ws(source: str, index: int) -> int:
+    while index < len(source) and source[index].isspace():
+        index += 1
+    return index
+
+
+def _skip_quoted(source: str, index: int) -> int:
+    quote = source[index]
+    index += 1
+    while index < len(source):
+        if source[index] == quote:
+            return index + 1
+        index += 1
+    return index
+
+
+def _read_identifier(source: str, index: int) -> tuple[str, int] | None:
+    if index >= len(source) or not _is_ident_char(source[index]):
+        return None
+    if not (source[index].isalpha() or source[index] == "_"):
+        return None
+    end = index + 1
+    while end < len(source) and _is_ident_char(source[end]):
+        end += 1
+    return source[index:end], end
+
+
+def _skip_if_not_exists(source: str, index: int) -> int:
+    ident = _read_identifier(source, index)
+    if ident is None or ident[0].upper() != "IF":
+        return index
+    cursor = _skip_ws(source, ident[1])
+    ident = _read_identifier(source, cursor)
+    if ident is None or ident[0].upper() != "NOT":
+        return index
+    cursor = _skip_ws(source, ident[1])
+    ident = _read_identifier(source, cursor)
+    if ident is None or ident[0].upper() != "EXISTS":
+        return index
+    return ident[1]
+
+
+def _read_paren_body(source: str, open_index: int) -> tuple[str, int]:
+    depth = 0
+    index = open_index
+    start = open_index + 1
+    while index < len(source):
+        char = source[index]
+        if char in ("'", '"'):
+            index = _skip_quoted(source, index)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return source[start:index], index + 1
+        index += 1
+    return source[start:], len(source)
+
+
+def _body_has_created_at(body: str) -> bool:
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char in ("'", '"'):
+            index = _skip_quoted(body, index)
+            continue
+        ident = _read_identifier(body, index)
+        if ident is None:
+            index += 1
+            continue
+        if ident[0].lower() == "created_at":
+            return True
+        index = ident[1]
+    return False
+
+
+def _keyword_at(source: str, keyword: str, index: int) -> bool:
+    end = index + len(keyword)
+    if end > len(source):
+        return False
+    return source[index:end].upper() == keyword.upper()
+
+
+def _keyword_ends_ident(source: str, end: int) -> bool:
+    if end >= len(source):
+        return True
+    return not _is_ident_char(source[end])
+
+
+def _create_table_names_with_created_at(source: str) -> set[str]:
+    """Table names from ``CREATE TABLE`` DDL whose body names ``created_at``."""
+    found: set[str] = set()
+    cursor = 0
+    while cursor < len(source):
+        if not _keyword_at(source, "CREATE", cursor):
+            cursor += 1
+            continue
+        if cursor > 0 and _is_ident_char(source[cursor - 1]):
+            cursor += len("CREATE")
+            continue
+        after_create = _skip_ws(source, cursor + len("CREATE"))
+        table_end = after_create + len("TABLE")
+        table_here = _keyword_at(source, "TABLE", after_create)
+        if not table_here or not _keyword_ends_ident(source, table_end):
+            cursor += len("CREATE")
+            continue
+        after_table = _skip_ws(source, table_end)
+        name_at = _skip_ws(source, _skip_if_not_exists(source, after_table))
+        ident = _read_identifier(source, name_at)
+        if ident is None:
+            cursor += len("CREATE")
+            continue
+        paren_at = _skip_ws(source, ident[1])
+        if paren_at >= len(source) or source[paren_at] != "(":
+            cursor += len("CREATE")
+            continue
+        body, cursor = _read_paren_body(source, paren_at)
+        if _body_has_created_at(body):
+            found.add(ident[0])
+    return found
+
+
+def _created_at_tables_in_source(package_root: Path) -> set[str]:
+    """Static read of ``*.py`` under ``package_root``. No database is opened."""
+    found: set[str] = set()
+    pending = [package_root]
+    while pending:
+        current = pending.pop()
+        if current.is_symlink() or not current.is_dir():
+            continue
+        for child in current.iterdir():
+            if child.is_symlink():
+                continue
+            if child.is_dir():
+                if child.name == "__pycache__":
+                    continue
+                pending.append(child)
+                continue
+            if child.suffix == ".py" and child.is_file():
+                text = child.read_text(encoding="utf-8")
+                found.update(_create_table_names_with_created_at(text))
+    return found
+
+
+def _uncovered_created_at_tables(
+    root: Path,
+    clock: _Clock,
+    package_root: Path,
+) -> set[str]:
     registered = purgeables(root, clock=clock)
     covered: set[str] = set()
     found: set[str] = set()
     for store in registered:
         covered.update(store.covered_tables)
         found.update(_created_at_tables(_db_path(store)))
-    for path in _module_db_paths(root, clock):
-        found.update(_created_at_tables(path))
+    scanned = _created_at_tables_in_source(package_root)
+    assert scanned, "source scan found no created_at tables"
+    found.update(scanned)
     return found - covered
 
 
-def _assert_created_at_tables_are_covered(root: Path, clock: _Clock) -> None:
-    missing = _uncovered_created_at_tables(root, clock)
+def _assert_created_at_tables_are_covered(
+    root: Path,
+    clock: _Clock,
+    package_root: Path | None = None,
+) -> None:
+    if package_root is None:
+        package_root = _package_source()
+    missing = _uncovered_created_at_tables(root, clock, package_root)
     assert missing == set(), missing
 
 
@@ -259,6 +419,40 @@ def test_protocol_accepts_both_real_stores(tmp_path: Path) -> None:
 def test_created_at_tables_are_covered_by_a_registered_purgeable(tmp_path: Path) -> None:
     root = _make_root(tmp_path)
     _assert_created_at_tables_are_covered(root, lambda: 1.0)
+
+
+def test_source_scan_reads_the_create_table_statements_on_main() -> None:
+    """The scan sees both footage tables, including DDL that nests parentheses."""
+    found = _created_at_tables_in_source(_package_source())
+    assert found == {"track_observations", "track_attributes"}
+
+
+def test_source_scan_ignores_a_table_without_created_at(tmp_path: Path) -> None:
+    package = tmp_path / "trace_search"
+    package.mkdir()
+    (package / "notes.py").write_text(
+        "CREATE TABLE notes (id INTEGER, body TEXT)\n",
+        encoding="utf-8",
+    )
+    assert _created_at_tables_in_source(package) == set()
+
+
+def test_source_scan_fails_on_an_unregistered_module(tmp_path: Path) -> None:
+    """A copied package plus one unregistered CREATE TABLE fails the check.
+
+    The scan reads that copy. It does not register the new table, and the
+    registry does not glob the data root or the package.
+    """
+    package = tmp_path / "trace_search"
+    shutil.copytree(_package_source(), package)
+    extra = package / "planted_extra.py"
+    extra.write_text(
+        "CREATE TABLE planted_store (id INTEGER, created_at REAL)\n",
+        encoding="utf-8",
+    )
+    root = _make_root(tmp_path)
+    with pytest.raises(AssertionError, match="planted_store"):
+        _assert_created_at_tables_are_covered(root, lambda: 1.0, package_root=package)
 
 
 def test_a_table_without_created_at_does_not_need_a_purgeable(tmp_path: Path) -> None:
@@ -457,8 +651,23 @@ def test_explicit_now_counts_without_moving_the_injected_clock(tmp_path: Path) -
         assert store.purge_expired(now=_NOW, max_age_days=7) == 1
 
 
+def test_fresh_purgeables_counts_and_purges_an_old_row(tmp_path: Path) -> None:
+    """A new registry must still see a row that an open-time purge would drop."""
+    clock = _SetClock(_NOW - (_SEVEN + 1))
+    root = _make_root(tmp_path)
+    stores = purgeables(root, clock=clock)
+    _write_all(stores, "cam-old", 1)
+    clock.now = _NOW
+    fresh = purgeables(root, clock=clock)
+    assert fresh
+    for store in fresh:
+        assert store.count_older_than() == 1
+        assert store.purge_expired() == 1
+        assert store.count_older_than() == 0
+
+
 def test_registry_keeps_7d_minus_1s_and_purges_7d_plus_1s(tmp_path: Path) -> None:
-    """Open through the registry. Exactly 7 days stays, so a short window fails."""
+    """A fresh registry still counts the old row. Exactly 7 days stays."""
     clock = _SetClock(_NOW - (_SEVEN + 1))
     root = _make_root(tmp_path)
     stores = purgeables(root, clock=clock)
@@ -468,12 +677,10 @@ def test_registry_keeps_7d_minus_1s_and_purges_7d_plus_1s(tmp_path: Path) -> Non
     clock.now = _NOW - (_SEVEN - 1)
     _write_all(stores, "cam-kept", 3)
     clock.now = _NOW
-    for store in stores:
+    fresh = purgeables(root, clock=clock)
+    for store in fresh:
         assert store.count_older_than() == 1
-
-    reopened = purgeables(root, clock=clock)
-
-    for store in reopened:
+        assert store.purge_expired() == 1
         assert _has_camera(store, "cam-kept")
         assert _has_camera(store, "cam-exact")
         assert not _has_camera(store, "cam-purged")

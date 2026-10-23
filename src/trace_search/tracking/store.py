@@ -290,21 +290,32 @@ def _delete_matching(
 class TrackStore:
     """SQLite store of ``TrackObservation`` rows for one local data directory.
 
-    Construction opens the file, creates ``track_observations`` when missing,
-    and purges rows older than the shipped footage window (7 days). ``write`` purges again before it
+    Construction opens the file and creates ``track_observations`` when
+    missing. It purges rows older than the shipped footage window (7 days)
+    unless ``purge_on_open`` is False. The default stays True so every
+    other caller still purges on open. The registry passes False: that
+    open-time purge throws the count away, and a fresh registry must still
+    be able to count the expired rows. ``write`` purges again before it
     inserts. ``camera_ids`` purges before it reads. ``read`` and ``count`` do
     not. ``count_older_than`` uses the same cutoff and does not delete, so
     the count stays meaningful when the clock has moved and nothing has
     purged yet. The clock is injectable so retention tests do not sleep.
     """
 
-    def __init__(self, db_path: Path, *, clock: _Clock | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        clock: _Clock | None = None,
+        purge_on_open: bool = True,
+    ) -> None:
         resolved = _db_path_outside_repo(db_path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.db_path: Path = resolved
         self._clock: _Clock = time.time if clock is None else clock
         self._ensure_schema()
-        self.purge_expired()
+        if purge_on_open:
+            self.purge_expired()
 
     @property
     def label(self) -> str:

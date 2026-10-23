@@ -22,6 +22,10 @@ refused and no file is created there.
 does not delete. On the attribute store, ``read``, ``query``, ``count``,
 and ``write`` still purge first, so a count taken through those methods
 would drop the expired rows and then return zero.
+
+Each store still purges on open by default, and that call throws the count
+away. ``purgeables`` passes ``purge_on_open=False`` so a fresh registry
+still sees the expired rows and a later purge can report them.
 """
 
 from __future__ import annotations
@@ -91,8 +95,12 @@ def purgeables(data_root: Path, *, clock: _Clock | None = None) -> list[Purgeabl
 
     ``data_root`` is expanded and resolved. Each database path is that
     directory plus a fixed filename. Nothing outside that directory is
-    opened or created. ``clock`` is passed through to each store. When it
+    opened or created.     ``clock`` is passed through to each store. When it
     is omitted, the store uses ``time.time``.
+
+    ``purge_on_open`` is False. The store constructors otherwise delete
+    expired rows while they open and discard that count, so
+    ``count_older_than`` on a fresh registry would return zero.
 
     The annotated assignments are the mypy check that both real stores
     satisfy ``Purgeable``.
@@ -100,6 +108,10 @@ def purgeables(data_root: Path, *, clock: _Clock | None = None) -> list[Purgeabl
     root = _resolved_data_root(data_root)
     track_path = _path_under_data_root(root, TRACK_DB_FILENAME)
     attribute_path = _path_under_data_root(root, ATTRIBUTE_DB_FILENAME)
-    track: Purgeable = TrackStore(track_path, clock=clock)
-    attributes: Purgeable = TrackAttributeStore(attribute_path, clock=clock)
+    track: Purgeable = TrackStore(track_path, clock=clock, purge_on_open=False)
+    attributes: Purgeable = TrackAttributeStore(
+        attribute_path,
+        clock=clock,
+        purge_on_open=False,
+    )
     return [track, attributes]

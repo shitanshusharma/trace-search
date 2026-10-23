@@ -8,6 +8,7 @@ is ``max_age_days * 86400`` and not one second less.
 
 from __future__ import annotations
 
+# Private _require_day_count is imported here on purpose so both stores share it.
 from trace_search.retention.config import _require_day_count
 
 _SECONDS_PER_DAY = 86400
