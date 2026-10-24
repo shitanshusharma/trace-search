@@ -58,7 +58,8 @@ class VectorStore(Protocol):
         ascending. ``camera_ids`` is applied before that ranking. ``None``
         keeps every camera. A collection that matches no row returns ``[]``.
         ``k`` must be a positive int. A non-finite query, a zero query, or a
-        query of the wrong length raises ``ValueError``.
+        query of the wrong length raises ``ValueError``. The length check
+        runs before an empty store or an empty camera match returns.
         """
 
     def delete_where(
@@ -70,7 +71,8 @@ class VectorStore(Protocol):
 
         At least one of ``derived_from`` and ``run_id`` is required. When
         both are set, a row must match both. Calling this with neither
-        raises ``ValueError`` and deletes nothing.
+        raises ``ValueError`` and deletes nothing. A ``derived_from``
+        outside ``ALLOWED_DERIVED_FROM`` raises ``ValueError``.
         """
 
     def count(
@@ -78,19 +80,26 @@ class VectorStore(Protocol):
         derived_from: str | None = None,
         run_id: str | None = None,
     ) -> int:
-        """Count rows. An omitted filter matches every value in that column."""
+        """Count rows. An omitted filter matches every value in that column.
+
+        A ``derived_from`` outside ``ALLOWED_DERIVED_FROM`` raises
+        ``ValueError``.
+        """
 
 
 class InMemoryVectorStore:
-    """Float32 matrix with one parallel key per row.
+    """Float32 buffer with one parallel key per filled row.
 
-    ``search`` keeps rows whose camera is allowed, ranks those rows by
+    ``add`` validates the whole batch, then appends only the new rows.
+    The buffer doubles when it is too small. ``search`` reads the filled
+    prefix, keeps rows whose camera is allowed, ranks those rows by
     cosine, and then returns the top ``k``.
     """
 
     def __init__(self, dim: int) -> None:
         self._dim = _require_dim(dim)
         self._rows: list[_StoredRow] = []
+        self._count = 0
         self._matrix = _empty_matrix(self._dim)
 
     @property
@@ -112,10 +121,11 @@ class InMemoryVectorStore:
             return 0
         added = tuple(_StoredRow(run, origin, item) for item in items)
         updated = [*self._rows, *added]
-        matrix = _matrix_for(updated, self._dim)
+        matrix, new_count = _append_block(self._matrix, self._count, added)
         self._matrix = matrix
         self._rows = updated
-        return len(items)
+        self._count = new_count
+        return len(added)
 
     def search(
         self,
@@ -130,7 +140,8 @@ class InMemoryVectorStore:
         indexes = _candidate_indexes(self._rows, cameras)
         if not indexes:
             return []
-        scores = _cosine_scores(self._matrix, indexes, query)
+        filled = _filled_rows(self._matrix, self._count)
+        scores = _cosine_scores(filled, indexes, query)
         return _rank(self._rows, indexes, scores)[:limit]
 
     def delete_where(
@@ -139,15 +150,18 @@ class InMemoryVectorStore:
         run_id: str | None = None,
     ) -> int:
         """Delete matching rows. Both arguments omitted raises ``ValueError``."""
-        origin = _optional_text("derived_from", derived_from)
+        origin = _optional_derived_from(derived_from)
         run = _optional_text("run_id", run_id)
         _require_delete_target(origin, run)
-        kept = [row for row in self._rows if not _row_matches(row, origin, run)]
-        removed = len(self._rows) - len(kept)
+        kept = tuple(
+            index for index, row in enumerate(self._rows) if not _row_matches(row, origin, run)
+        )
+        removed = self._count - len(kept)
         if removed == 0:
             return 0
-        self._matrix = _matrix_for(kept, self._dim)
-        self._rows = kept
+        self._matrix = _compact_prefix(self._matrix, kept)
+        self._rows = [self._rows[index] for index in kept]
+        self._count = len(kept)
         return removed
 
     def count(
@@ -156,17 +170,18 @@ class InMemoryVectorStore:
         run_id: str | None = None,
     ) -> int:
         """Count rows. Both arguments omitted counts every row."""
-        origin = _optional_text("derived_from", derived_from)
+        origin = _optional_derived_from(derived_from)
         run = _optional_text("run_id", run_id)
         if origin is None and run is None:
-            return len(self._rows)
+            return self._count
         return sum(1 for row in self._rows if _row_matches(row, origin, run))
 
 
-def _as_vector_store(store: InMemoryVectorStore) -> VectorStore:
-    """Return ``store`` as a ``VectorStore``.
+def _conformance_checked_store(store: InMemoryVectorStore) -> VectorStore:
+    """Return ``store`` typed as ``VectorStore``.
 
-    ``mypy src/ --strict`` checks this assignment.
+    The assignment is what ``mypy src/ --strict`` checks. Tests are not
+    type-checked, so the helper stays in this module.
     """
     checked: VectorStore = store
     return checked
@@ -188,6 +203,12 @@ def _optional_text(label: str, value: object) -> str | None:
     if value is None:
         return None
     return _require_text(label, value)
+
+
+def _optional_derived_from(value: object) -> str | None:
+    if value is None:
+        return None
+    return _require_derived_from(value)
 
 
 def _require_derived_from(value: object) -> str:
@@ -237,9 +258,60 @@ def _empty_matrix(dim: int) -> npt.NDArray[np.float32]:
     return cast(npt.NDArray[np.float32], empty)
 
 
-def _matrix_for(rows: Sequence[_StoredRow], dim: int) -> npt.NDArray[np.float32]:
-    if not rows:
-        return _empty_matrix(dim)
+def _next_capacity(capacity: int, needed: int) -> int:
+    if capacity >= needed:
+        return capacity
+    grown = max(capacity, 1)
+    while grown < needed:
+        grown *= 2
+    return grown
+
+
+def _buffer_with_room(
+    matrix: npt.NDArray[np.float32],
+    count: int,
+    needed: int,
+) -> npt.NDArray[np.float32]:
+    width = int(matrix.shape[1])
+    target = _next_capacity(int(matrix.shape[0]), needed)
+    if target == int(matrix.shape[0]):
+        return matrix
+    buffer = np.zeros((target, width), dtype=np.float32)
+    if count:
+        buffer[:count] = matrix[:count]
+    return cast(npt.NDArray[np.float32], buffer)
+
+
+def _append_block(
+    matrix: npt.NDArray[np.float32],
+    count: int,
+    added: Sequence[_StoredRow],
+) -> tuple[npt.NDArray[np.float32], int]:
+    block = _matrix_for(added)
+    new_count = count + len(added)
+    buffer = _buffer_with_room(matrix, count, new_count)
+    buffer[count:new_count] = block
+    return buffer, new_count
+
+
+def _filled_rows(matrix: npt.NDArray[np.float32], count: int) -> npt.NDArray[np.float32]:
+    return cast(npt.NDArray[np.float32], matrix[:count])
+
+
+def _compact_prefix(
+    matrix: npt.NDArray[np.float32],
+    indexes: Sequence[int],
+) -> npt.NDArray[np.float32]:
+    capacity = int(matrix.shape[0])
+    width = int(matrix.shape[1])
+    buffer = np.zeros((capacity, width), dtype=np.float32)
+    if indexes:
+        chosen = np.asarray(matrix[list(indexes)], dtype=np.float32)
+        buffer[: int(chosen.shape[0])] = chosen
+    return cast(npt.NDArray[np.float32], buffer)
+
+
+def _matrix_for(rows: Sequence[_StoredRow]) -> npt.NDArray[np.float32]:
     stacked = np.asarray([row.embedding.vector for row in rows], dtype=np.float32)
     return cast(npt.NDArray[np.float32], np.ascontiguousarray(stacked))
 

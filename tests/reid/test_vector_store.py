@@ -11,11 +11,12 @@ from trace_search.reid.types import AppearanceEmbedding
 from trace_search.reid.vector_store import (
     ALLOWED_DERIVED_FROM,
     InMemoryVectorStore,
-    _as_vector_store,
+    _conformance_checked_store,
 )
 from trace_search.tracking import store as track_store
 
 _DIM = 3
+_QUERY_DIM = r"query dim must be \d+, got"
 
 
 def _unit(*values: float) -> tuple[float, ...]:
@@ -182,12 +183,24 @@ def test_wrong_dimension_embedding_raises() -> None:
 
 def test_wrong_dimension_query_raises() -> None:
     store, _row, _query = _axis_store()
-    with pytest.raises(ValueError, match="dim"):
+    with pytest.raises(ValueError, match=_QUERY_DIM):
         store.search(_unit(1.0, 0.0), k=1)
-    with pytest.raises(ValueError, match="dim"):
+    with pytest.raises(ValueError, match=_QUERY_DIM):
         store.search(_unit(1.0, 0.0, 0.0, 0.0), k=1)
     with pytest.raises(ValueError, match="query"):
         store.search(np.zeros((1, _DIM), dtype=np.float64), k=1)
+
+
+def test_wrong_dimension_query_on_an_empty_store_raises() -> None:
+    store = InMemoryVectorStore(_DIM)
+    with pytest.raises(ValueError, match=_QUERY_DIM):
+        store.search(_unit(1.0, 0.0), k=1)
+
+
+def test_wrong_dimension_query_with_an_empty_camera_filter_raises() -> None:
+    store, _row, _query = _axis_store()
+    with pytest.raises(ValueError, match=_QUERY_DIM):
+        store.search(_unit(1.0, 0.0), k=1, camera_ids=["cam-missing"])
 
 
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
@@ -242,7 +255,6 @@ def test_count_filters_by_derived_from_and_run_id() -> None:
     assert store.count(run_id="run-a") == 3
     assert store.count(derived_from="CODE_TEST", run_id="run-b") == 1
     assert store.count(derived_from="SITE", run_id="run-a") == 0
-    assert store.count(derived_from="TRAIN") == 0
 
 
 def test_allowed_derived_from_matches_track_store_check() -> None:
@@ -263,7 +275,8 @@ def test_delete_where_matches_run_id_and_both_filters() -> None:
     store.add("run-1", "CODE_TEST", [two])
     store.add("run-2", "SMOKE", [three])
 
-    assert store.delete_where(derived_from="TRAIN") == 0
+    assert store.count() == 3
+    assert store.delete_where(derived_from="SITE") == 0
     assert store.count() == 3
     removed = store.delete_where(derived_from="SMOKE", run_id="run-1")
     assert removed == 1
@@ -289,6 +302,23 @@ def test_search_score_is_cosine_for_a_non_unit_query() -> None:
     found = store.search((2.0, 0.0, 0.0), k=1)
     assert found[0][0] is row
     assert abs(found[0][1] - 1.0) <= 1e-6
+
+
+@pytest.mark.parametrize("label", ["TRAIN", "smoke"])
+def test_delete_where_rejects_derived_from_outside_the_set(label: str) -> None:
+    store, _row, _query = _axis_store()
+    before = store.count()
+    with pytest.raises(ValueError, match="derived_from"):
+        store.delete_where(derived_from=label)
+    assert store.count() == before
+
+
+@pytest.mark.parametrize("label", ["TRAIN", "smoke"])
+def test_count_rejects_derived_from_outside_the_set(label: str) -> None:
+    store, _row, _query = _axis_store()
+    with pytest.raises(ValueError, match="derived_from"):
+        store.count(derived_from=label)
+    assert store.count() == 1
 
 
 def test_search_sees_rows_from_every_add() -> None:
@@ -381,6 +411,39 @@ def test_query_must_be_a_vector_of_floats() -> None:
         store.search(["a", "b", "c"], k=1)  # type: ignore[arg-type]
 
 
+def test_small_batches_match_one_batch_search() -> None:
+    """Several small adds match one add, including the exact scores."""
+    vectors = [
+        _unit(1.0, 0.0, 0.0),
+        _unit(0.0, 1.0, 0.0),
+        _unit(0.0, 0.0, 1.0),
+        _unit(1.0, 1.0, 0.0),
+        _unit(1.0, 0.0, 1.0),
+        _unit(0.0, 1.0, 1.0),
+        _unit(1.0, 1.0, 1.0),
+        _unit(-1.0, 0.5, 0.0),
+    ]
+    rows = [
+        _embedding(f"cam-{index}", index, index + 1, vector) for index, vector in enumerate(vectors)
+    ]
+    one = InMemoryVectorStore(_DIM)
+    one.add("run-1", "CODE_TEST", rows)
+    many = InMemoryVectorStore(_DIM)
+    many.add("run-1", "CODE_TEST", rows[:1])
+    many.add("run-1", "CODE_TEST", rows[1:3])
+    assert many.count() == 3
+    assert many._matrix.dtype == np.float32
+    assert many._matrix.shape[0] > many.count()
+    assert many._matrix.shape[1] == _DIM
+    many.add("run-1", "CODE_TEST", rows[3:6])
+    many.add("run-1", "CODE_TEST", rows[6:])
+    query = _unit(1.0, 0.2, -0.3)
+    left = one.search(query, k=len(rows))
+    right = many.search(query, k=len(rows))
+    assert len(left) == len(rows)
+    assert left == right
+
+
 def test_store_is_a_float32_matrix_with_parallel_keys() -> None:
     first = _embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))
     second = _embedding("cam-b", 2, 2, _unit(0.0, 1.0, 0.0))
@@ -389,21 +452,27 @@ def test_store_is_a_float32_matrix_with_parallel_keys() -> None:
     store.add("run-2", "SMOKE", [second])
     assert store.dim == _DIM
     assert store._matrix.dtype == np.float32
-    assert store._matrix.shape == (2, _DIM)
-    assert len(store._rows) == 2
+    assert store._count == len(store._rows) == store.count() == 2
+    assert store._matrix.shape[0] >= store._count
+    assert store._matrix.shape[1] == _DIM
     assert store._rows[0].embedding is first
     assert store._rows[0].run_id == "run-1"
     assert store._rows[0].derived_from == "CODE_TEST"
     assert store._rows[1].embedding is second
     assert store.delete_where(run_id="run-1") == 1
-    assert store._matrix.shape == (1, _DIM)
     assert store._matrix.dtype == np.float32
+    assert store._count == len(store._rows) == store.count() == 1
+    assert store._matrix.shape[0] >= store._count
+    assert store._matrix.shape[1] == _DIM
     assert store._rows[0].embedding is second
+    found = store.search(second.vector, k=1)
+    assert found[0][0] is second
+    assert abs(found[0][1] - 1.0) <= 1e-6
 
 
 def test_store_satisfies_vector_store() -> None:
     row = _embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))
-    store = _as_vector_store(InMemoryVectorStore(_DIM))
+    store = _conformance_checked_store(InMemoryVectorStore(_DIM))
     assert store.count() == 0
     assert store.add("run-1", "CODE_TEST", [row]) == 1
     found = store.search(row.vector, 1)
