@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import tempfile
+import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -74,18 +75,33 @@ class AuditAction(Enum):
     PURGE = "purge"
 
 
-def is_audit_path(path: Path | str) -> bool:
+def is_audit_path(path: Path | str, audit_root: Path | str | None = None) -> bool:
     """
-    Return True when `path` resolves inside the configured audit directory.
+    Return True when `path` resolves inside the audit directory.
 
-    The configured directory is `Path(AUDIT_LOG_DIR).resolve()` (relative to
-    the process working directory). A folder that is merely named
-    `audit_logs` somewhere else is not exempt. T9 purge must use this helper
-    instead of matching the directory name.
+    When `audit_root` is given, compare `Path(path).resolve()` with
+    `Path(audit_root).resolve()`. A folder that is merely named
+    `audit_logs` somewhere else is not exempt.
+
+    The one-argument form is deprecated. It still resolves
+    `Path(AUDIT_LOG_DIR)` against the process working directory, which is
+    the historical behaviour. Pass `audit_root` explicitly. Omitting
+    `audit_root` emits a DeprecationWarning.
     """
+    if audit_root is None:
+        warnings.warn(
+            "is_audit_path(path) without audit_root is deprecated; "
+            "pass audit_root explicitly. The one-argument form still resolves "
+            "AUDIT_LOG_DIR against the process working directory.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        root: Path | str = AUDIT_LOG_DIR
+    else:
+        root = audit_root
     try:
         resolved = Path(path).resolve()
-        resolved.relative_to(Path(AUDIT_LOG_DIR).resolve())
+        resolved.relative_to(Path(root).resolve())
     except (OSError, ValueError):
         return False
     return True
@@ -143,7 +159,7 @@ def init_hmac_key(key_path: Path | str) -> Path:
     existing file. verify() and append() never call this.
     """
     path = Path(key_path)
-    if is_audit_path(path):
+    if is_audit_path(path, audit_root=AUDIT_LOG_DIR):
         raise RuntimeError(f"Refusing to create an HMAC key inside {AUDIT_LOG_DIR}: {path}")
     if path.exists():
         raise FileExistsError(f"HMAC key file already exists: {path}")
@@ -508,7 +524,7 @@ class AuditLog:
         must not sit inside AUDIT_LOG_DIR.
         """
         if self.key_path is not None:
-            if is_audit_path(self.key_path):
+            if is_audit_path(self.key_path, audit_root=AUDIT_LOG_DIR):
                 raise RuntimeError(
                     f"HMAC key file must be outside {AUDIT_LOG_DIR}. Got: {self.key_path}"
                 )
