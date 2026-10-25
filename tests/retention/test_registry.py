@@ -18,7 +18,6 @@ import trace_search.attributes.store as attribute_store
 import trace_search.reid.sqlite_vector_store as embedding_store
 import trace_search.tracking.store as track_store
 from trace_search.detection.types import DetClass
-from trace_search.reid.sqlite_vector_store import SqliteVectorStore
 from trace_search.reid.types import AppearanceEmbedding
 from trace_search.retention import retention_seconds
 from trace_search.retention.registry import (
@@ -87,7 +86,9 @@ def _axis_vector(dim: int) -> tuple[float, ...]:
     return (1.0,) + (0.0,) * (dim - 1)
 
 
-def _write_embedding(store: SqliteVectorStore, camera_id: str, track_id: int) -> None:
+def _write_embedding(
+    store: embedding_store.SqliteVectorStore, camera_id: str, track_id: int
+) -> None:
     embedding = AppearanceEmbedding(
         camera_id=camera_id,
         track_id=track_id,
@@ -105,7 +106,7 @@ def _write_all(stores: list[Purgeable], camera_id: str, track_id: int) -> None:
             _write_track(store, camera_id, track_id)
         elif isinstance(store, attribute_store.TrackAttributeStore):
             _write_attribute(store, camera_id, track_id)
-        elif isinstance(store, SqliteVectorStore):
+        elif isinstance(store, embedding_store.SqliteVectorStore):
             _write_embedding(store, camera_id, track_id)
         else:
             raise AssertionError(type(store).__name__)
@@ -116,7 +117,7 @@ def _db_path(store: Purgeable) -> Path:
         return store.db_path
     if isinstance(store, attribute_store.TrackAttributeStore):
         return store.db_path
-    if isinstance(store, SqliteVectorStore):
+    if isinstance(store, embedding_store.SqliteVectorStore):
         return store.db_path
     raise AssertionError(type(store).__name__)
 
@@ -370,7 +371,7 @@ def _has_camera(store: Purgeable, camera_id: str) -> bool:
         return store.read(camera_id) != []
     if isinstance(store, attribute_store.TrackAttributeStore):
         return store.read(camera_id) != []
-    if isinstance(store, SqliteVectorStore):
+    if isinstance(store, embedding_store.SqliteVectorStore):
         found = store.search(_axis_vector(store.dim), k=1, camera_ids=[camera_id])
         return found != []
     raise AssertionError(type(store).__name__)
@@ -447,7 +448,7 @@ def test_protocol_accepts_both_real_stores(tmp_path: Path) -> None:
     embeddings: Purgeable = stores[2]
     assert isinstance(track, track_store.TrackStore)
     assert isinstance(attributes, attribute_store.TrackAttributeStore)
-    assert isinstance(embeddings, SqliteVectorStore)
+    assert isinstance(embeddings, embedding_store.SqliteVectorStore)
     assert track.label == "tracks"
     assert attributes.label == "attributes"
     assert embeddings.label == "embeddings"
@@ -457,7 +458,7 @@ def test_registry_registers_the_embedding_store(tmp_path: Path) -> None:
     """The embedding file is ``embeddings.sqlite`` under the data root, not the track file."""
     root = _make_root(tmp_path)
     stores = purgeables(root, clock=lambda: 1.0)
-    embeddings = [store for store in stores if isinstance(store, SqliteVectorStore)]
+    embeddings = [store for store in stores if isinstance(store, embedding_store.SqliteVectorStore)]
     assert len(embeddings) == 1
     store = embeddings[0]
     assert isinstance(store, Purgeable)
