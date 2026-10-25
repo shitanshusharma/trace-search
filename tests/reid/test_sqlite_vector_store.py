@@ -514,7 +514,92 @@ def test_rejected_add_leaves_expired_rows(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="derived_from"):
         store.add("run-bad", "TRAIN", [row])
     assert _raw_count(store.db_path) == 1
+    assert store.count() == 0
+
+
+def test_search_drops_an_8_day_row_on_an_open_store(tmp_path: Path) -> None:
+    """A store that stays open drops an 8-day row on search, with no add in between."""
+    clock = _Clock(_NOW - 8 * _DAY)
+    store = _store(tmp_path, clock)
+    row = _embedding("cam-old", 1, 1, _unit(1.0, 0.0, 0.0))
+    store.add("run-old", "CODE_TEST", [row])
+    clock.now = _NOW
+    assert store.search(row.vector, k=5) == []
+    assert _raw_count(store.db_path) == 0
+
+
+def test_count_drops_an_8_day_row_on_an_open_store(tmp_path: Path) -> None:
+    """A store that stays open drops an 8-day row on count, with no add in between."""
+    clock = _Clock(_NOW - 8 * _DAY)
+    store = _store(tmp_path, clock)
+    store.add("run-old", "CODE_TEST", [_embedding("cam-old", 1, 1, _unit(1.0, 0.0, 0.0))])
+    clock.now = _NOW
+    assert store.count() == 0
+    assert _raw_count(store.db_path) == 0
+
+
+def test_search_keeps_a_6_day_row_on_an_open_store(tmp_path: Path) -> None:
+    clock = _Clock(_NOW - 6 * _DAY)
+    store = _store(tmp_path, clock)
+    row = _embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))
+    store.add("run-a", "CODE_TEST", [row])
+    clock.now = _NOW
+    found = store.search(row.vector, k=5)
+    assert [item.camera_id for item, _score in found] == ["cam-a"]
+    assert _raw_count(store.db_path) == 1
+
+
+def test_count_keeps_a_6_day_row_on_an_open_store(tmp_path: Path) -> None:
+    clock = _Clock(_NOW - 6 * _DAY)
+    store = _store(tmp_path, clock)
+    store.add("run-a", "CODE_TEST", [_embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))])
+    clock.now = _NOW
     assert store.count() == 1
+    assert _raw_count(store.db_path) == 1
+
+
+def test_add_refuses_a_dim_that_differs_from_stored_rows(tmp_path: Path) -> None:
+    """Open may use another dim. add refuses it and leaves the stored row."""
+    path = tmp_path / "embeddings.sqlite"
+    clock = _Clock(_NOW)
+    narrow = SqliteVectorStore(path, _DIM, clock=clock)
+    narrow.add("run-1", "CODE_TEST", [_embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))])
+    del narrow
+    wide = SqliteVectorStore(path, 8, clock=clock, purge_on_open=False)
+    row = AppearanceEmbedding(
+        camera_id="cam-b",
+        track_id=2,
+        frame_number=1,
+        vector=_unit(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        embedder_name="hand-built",
+        placeholder=True,
+    )
+    with pytest.raises(ValueError, match="stored vector length"):
+        wide.add("run-2", "CODE_TEST", [row])
+    with pytest.raises(ValueError, match="stored vector length"):
+        wide.add("run-2", "CODE_TEST", [])
+    assert _raw_count(path) == 1
+    again = SqliteVectorStore(path, _DIM, clock=clock, purge_on_open=False)
+    found = again.search(_unit(1.0, 0.0, 0.0), k=1)
+    assert [item.camera_id for item, _score in found] == ["cam-a"]
+
+
+def test_empty_camera_filter_returns_empty(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    row = _embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))
+    store.add("run-1", "CODE_TEST", [row])
+    assert store.search(row.vector, k=5, camera_ids=[]) == []
+    assert store.count() == 1
+
+
+def test_camera_id_is_a_bound_parameter(tmp_path: Path) -> None:
+    camera = "cam' OR '1'='1"
+    row = _embedding(camera, 1, 1, _unit(1.0, 0.0, 0.0))
+    other = _embedding("cam-b", 2, 1, _unit(0.0, 1.0, 0.0))
+    store = _store(tmp_path)
+    store.add("run-1", "CODE_TEST", [row, other])
+    found = store.search(row.vector, k=5, camera_ids=[camera])
+    assert [item.camera_id for item, _score in found] == [camera]
 
 
 def test_purge_on_open_false_keeps_the_count(tmp_path: Path) -> None:

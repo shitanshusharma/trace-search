@@ -8,18 +8,25 @@ helper and does not copy it.
 
 ``created_at`` is a UTC epoch from the injected clock, or from
 ``time.time`` when no clock is injected. Rows older than the shipped
-footage window (7 days) are deleted on open and before every ``add``. A
-row whose age is exactly that window is kept. ``purge_on_open=False``
-skips the open purge so a registry can still count expired rows.
-``count_older_than`` uses the same cutoff and does not delete.
+footage window (7 days) are deleted on open, before every ``add``, and
+at the start of ``search`` and ``count``. A row whose age is exactly
+that window is kept. ``purge_on_open=False`` skips the open purge so a
+registry can still count expired rows. ``count_older_than`` uses the
+same cutoff and does not delete.
 
-Search loads the rows that pass the camera filter into a float32 matrix
-and ranks them with ``vector_store._cosine_scores`` and
-``vector_store._rank``. ``derived_from`` must be a member of
+Search applies the camera filter in SQL, decodes the matching blobs with
+one ``numpy`` read, and ranks them with ``vector_store._cosine_scores``
+and ``vector_store._rank``. ``derived_from`` must be a member of
 ``ALLOWED_DERIVED_FROM`` on ``add``, ``delete_where``, and ``count``.
+``add`` refuses a batch when a stored blob has a different width. Open
+does not check that width: purge and ``count_older_than`` do not read
+the vectors.
+
+A value that is not already float32-exact is stored as float32, so the
+value read back can differ in the last bits from the float that was added.
 
 The table does not store crops or pixels. ``add`` inserts only the new
-batch. It does not read the rows already stored.
+batch. It does not copy the rows already stored.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Collection, Sequence
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import NamedTuple, TypeVar, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -91,19 +98,23 @@ INSERT INTO appearance_embeddings (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
-_LOAD_SQL = """
+_LOAD_COLUMNS_SQL = """
 SELECT
     camera_id,
     track_id,
     frame_number,
     embedder_name,
     placeholder,
-    vector,
-    run_id,
-    derived_from
+    vector
 FROM appearance_embeddings
-ORDER BY rowid ASC
 """
+
+_ORDER_BY_ROWID_SQL = " ORDER BY rowid ASC"
+
+# Blob length is compared to 4 * dim. The value is a bound parameter.
+_STORED_WIDTH_SQL = (
+    "SELECT length(vector) FROM appearance_embeddings WHERE length(vector) != ? LIMIT 1"
+)
 
 _COUNT_SQL = """
 SELECT COUNT(*)
@@ -203,40 +214,115 @@ def _insert_row(
     )
 
 
-def _stored_from_row(row: sqlite3.Row, dim: int) -> _StoredRow:
-    vector = _vector_from_blob(row["vector"], dim)
-    embedding = AppearanceEmbedding(
-        camera_id=str(row["camera_id"]),
-        track_id=int(row["track_id"]),
-        frame_number=int(row["frame_number"]),
+def _select_matching_sql(camera_count: int | None) -> str:
+    """Search SQL. The ``IN`` list is ``?`` placeholders, never camera ids."""
+    if camera_count is None:
+        return _LOAD_COLUMNS_SQL + _ORDER_BY_ROWID_SQL
+    if camera_count == 0:
+        return _LOAD_COLUMNS_SQL + " WHERE 0" + _ORDER_BY_ROWID_SQL
+    marks = ",".join("?" for _ in range(camera_count))
+    return _LOAD_COLUMNS_SQL + " WHERE camera_id IN (" + marks + ")" + _ORDER_BY_ROWID_SQL
+
+
+def _matrix_from_blobs(blobs: Sequence[bytes], dim: int) -> npt.NDArray[np.float32]:
+    """One little-endian float32 matrix. A short or long blob is refused."""
+    count = len(blobs)
+    if count == 0:
+        empty = np.empty((0, dim), dtype=np.float32)
+        return cast(npt.NDArray[np.float32], empty)
+    expected = 4 * dim
+    for blob in blobs:
+        if len(blob) != expected:
+            raise ValueError(f"vector blob length must be {expected}, got {len(blob)}")
+    raw = b"".join(blobs)
+    # Copy so the matrix owns its bytes after ``raw`` goes away.
+    owned = np.array(np.frombuffer(raw, dtype="<f4"), dtype=np.float32, copy=True)
+    return cast(npt.NDArray[np.float32], owned.reshape(count, dim))
+
+
+def _order_embedding(camera_id: str, track_id: int, frame_number: int) -> AppearanceEmbedding:
+    """Fields ``_rank`` orders by. The real vector is attached after the cut."""
+    embedding = object.__new__(AppearanceEmbedding)
+    object.__setattr__(embedding, "camera_id", camera_id)
+    object.__setattr__(embedding, "track_id", track_id)
+    object.__setattr__(embedding, "frame_number", frame_number)
+    object.__setattr__(embedding, "vector", ())
+    object.__setattr__(embedding, "embedder_name", "")
+    object.__setattr__(embedding, "placeholder", False)
+    return embedding
+
+
+class _SearchKey(NamedTuple):
+    """One candidate, without a Python float per vector element."""
+
+    camera_id: str
+    track_id: int
+    frame_number: int
+    embedder_name: str
+    placeholder: bool
+
+
+def _hit_embedding(key: _SearchKey, row: npt.NDArray[np.float32]) -> AppearanceEmbedding:
+    vector = tuple(float(item) for item in row)
+    return AppearanceEmbedding(
+        camera_id=key.camera_id,
+        track_id=key.track_id,
+        frame_number=key.frame_number,
         vector=vector,
-        embedder_name=str(row["embedder_name"]),
-        placeholder=_placeholder_bool(row["placeholder"]),
+        embedder_name=key.embedder_name,
+        placeholder=key.placeholder,
     )
-    return _StoredRow(str(row["run_id"]), str(row["derived_from"]), embedding)
 
 
-def _matching_rows(
-    records: Sequence[sqlite3.Row],
-    camera_ids: frozenset[str] | None,
+def _hits_after_rank(
+    keys: Sequence[_SearchKey],
+    matrix: npt.NDArray[np.float32],
+    scores: Sequence[float],
+    limit: int,
+) -> list[tuple[AppearanceEmbedding, float]]:
+    """Order with ``_rank``, then build an embedding only for each returned hit."""
+    rank_rows: list[_StoredRow] = []
+    index_of: dict[int, int] = {}
+    for index, key in enumerate(keys):
+        embedding = _order_embedding(key.camera_id, key.track_id, key.frame_number)
+        index_of[id(embedding)] = index
+        rank_rows.append(_StoredRow("", "", embedding))
+    indexes = tuple(range(len(rank_rows)))
+    ranked = _rank(rank_rows, indexes, scores)
+    hits: list[tuple[AppearanceEmbedding, float]] = []
+    for embedding, score in ranked[:limit]:
+        index = index_of[id(embedding)]
+        hits.append((_hit_embedding(keys[index], matrix[index]), score))
+    return hits
+
+
+def _load_search_rows(
+    connection: sqlite3.Connection,
+    cameras: frozenset[str] | None,
     dim: int,
-) -> tuple[_StoredRow, ...]:
-    """Keep rows whose camera is allowed, then decode those vectors.
-
-    ``None`` keeps every camera. The filter runs before the matrix is
-    built, so a row from another camera is not ranked.
-    """
-    chosen: list[_StoredRow] = []
-    for record in records:
-        if camera_ids is not None and str(record["camera_id"]) not in camera_ids:
-            continue
-        chosen.append(_stored_from_row(record, dim))
-    return tuple(chosen)
-
-
-def _matrix_for_rows(rows: Sequence[_StoredRow]) -> npt.NDArray[np.float32]:
-    stacked = np.asarray([row.embedding.vector for row in rows], dtype=np.float32)
-    return cast(npt.NDArray[np.float32], np.ascontiguousarray(stacked))
+) -> tuple[tuple[_SearchKey, ...], npt.NDArray[np.float32]]:
+    """Load keys and one float32 matrix. The camera filter is the SQL ``WHERE``."""
+    if cameras is None:
+        sql = _select_matching_sql(None)
+        params: tuple[str, ...] = ()
+    else:
+        ordered = tuple(sorted(cameras))
+        sql = _select_matching_sql(len(ordered))
+        params = ordered
+    keys: list[_SearchKey] = []
+    blobs: list[bytes] = []
+    for record in connection.execute(sql, params):
+        keys.append(
+            _SearchKey(
+                camera_id=str(record["camera_id"]),
+                track_id=int(record["track_id"]),
+                frame_number=int(record["frame_number"]),
+                embedder_name=str(record["embedder_name"]),
+                placeholder=_placeholder_bool(record["placeholder"]),
+            )
+        )
+        blobs.append(_blob_bytes(record["vector"]))
+    return tuple(keys), _matrix_from_blobs(blobs, dim)
 
 
 def _one_count(cursor: sqlite3.Cursor) -> int:
@@ -253,9 +339,10 @@ class SqliteVectorStore:
     unless ``purge_on_open`` is False. The default stays True so every
     other caller still purges on open. The registry passes False: that
     open-time purge throws the count away, and a fresh registry must still
-    be able to count the expired rows. ``add`` purges again before it
-    inserts. ``count_older_than`` uses the same cutoff and does not delete.
-    The clock is injectable so retention tests do not sleep.
+    be able to count the expired rows. ``add``, ``search``, and ``count``
+    purge again before they read or insert. ``count_older_than`` uses the
+    same cutoff and does not delete. The clock is injectable so retention
+    tests do not sleep. Open does not compare ``dim`` with stored blobs.
     """
 
     def __init__(
@@ -299,12 +386,14 @@ class SqliteVectorStore:
         """Store one batch and return how many rows were stored.
 
         The batch is checked before any row is stored and before the purge.
-        A failure leaves the table unchanged. A valid call, including an
-        empty batch, purges expired rows and then inserts only the new rows.
+        A stored blob whose length is not ``4 * dim`` also fails first, so
+        the table is unchanged. A valid call, including an empty batch,
+        purges expired rows and then inserts only the new rows.
         """
         run = _require_text("run_id", run_id)
         origin = _require_derived_from(derived_from)
         items = _require_embeddings(embeddings, self._dim)
+        self._refuse_other_width()
         self.purge_expired()
         if not items:
             return 0
@@ -323,17 +412,24 @@ class SqliteVectorStore:
         k: int,
         camera_ids: Collection[str] | None = None,
     ) -> list[tuple[AppearanceEmbedding, float]]:
-        """Return up to ``k`` cosine hits after the camera filter."""
+        """Return up to ``k`` cosine hits after the camera filter.
+
+        Expired rows are purged after the arguments are checked and before
+        any row is loaded. The camera filter is a parameterised SQL
+        predicate, applied before scoring.
+        """
         query = _require_query(vector, self._dim)
         limit = _require_k(k)
         cameras = _require_camera_ids(camera_ids)
-        rows = self._load_matching(cameras)
-        if not rows:
+        self.purge_expired()
+        keys, matrix = self._using(
+            lambda connection: _load_search_rows(connection, cameras, self._dim)
+        )
+        if not keys:
             return []
-        matrix = _matrix_for_rows(rows)
-        indexes = tuple(range(len(rows)))
+        indexes = tuple(range(len(keys)))
         scores = _cosine_scores(matrix, indexes, query)
-        return _rank(rows, indexes, scores)[:limit]
+        return _hits_after_rank(keys, matrix, scores, limit)
 
     def delete_where(
         self,
@@ -356,9 +452,14 @@ class SqliteVectorStore:
         derived_from: str | None = None,
         run_id: str | None = None,
     ) -> int:
-        """Count rows. Both arguments omitted counts every row."""
+        """Count rows that are still inside the retention window.
+
+        Expired rows are purged after the filters are checked. Both
+        arguments omitted counts every remaining row.
+        """
         origin = _optional_derived_from(derived_from)
         run = _optional_text("run_id", run_id)
+        self.purge_expired()
 
         def _query(connection: sqlite3.Connection) -> int:
             cursor = connection.execute(_COUNT_SQL, (origin, origin, run, run))
@@ -406,15 +507,17 @@ class SqliteVectorStore:
 
         return self._using(_query)
 
-    def _load_matching(self, camera_ids: frozenset[str] | None) -> tuple[_StoredRow, ...]:
-        dim = self._dim
+    def _refuse_other_width(self) -> None:
+        """Raise when a stored blob is not ``4 * dim`` bytes. Do not delete."""
+        expected = 4 * self._dim
 
-        def _query(connection: sqlite3.Connection) -> tuple[_StoredRow, ...]:
-            cursor = connection.execute(_LOAD_SQL)
-            records = cast(Sequence[sqlite3.Row], cursor.fetchall())
-            return _matching_rows(records, camera_ids, dim)
+        def _query(connection: sqlite3.Connection) -> None:
+            found = connection.execute(_STORED_WIDTH_SQL, (expected,)).fetchone()
+            if found is None:
+                return
+            raise ValueError(f"stored vector length must be {expected}, got {int(found[0])}")
 
-        return self._using(_query)
+        self._using(_query)
 
     def _ensure_schema(self) -> None:
         def _create(connection: sqlite3.Connection) -> None:

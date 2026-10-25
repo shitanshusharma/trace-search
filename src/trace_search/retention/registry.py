@@ -12,7 +12,9 @@ are:
 - ``embeddings.sqlite`` — ``SqliteVectorStore``, table
   ``appearance_embeddings``. The embedding store has no default filename of
   its own. The registry places the file at ``embeddings.sqlite`` and opens
-  it at a fixed vector width.
+  it at a fixed vector width. That width is only the constructor argument.
+  ``purge_expired`` and ``count_older_than`` do not read the vectors, so
+  they still run when the file holds a different width.
 
 The export store (T-W-8) is not on main, so it is not registered.
 
@@ -25,7 +27,10 @@ refused and no file is created there.
 does not delete. On the attribute store, ``read``, ``query``, ``count``,
 and ``write`` still purge first, so a count taken through those methods
 would drop the expired rows and then return zero. On the embedding store,
-``add`` purges first. ``count`` does not.
+``add``, ``search``, and ``count`` purge first. ``count_older_than`` does
+not. That is why ``purgeables`` passes ``purge_on_open=False``: a fresh
+registry can still count expired rows, and a later ``purge_expired``
+deletes them.
 
 Each store still purges on open by default, and that call throws the count
 away. ``purgeables`` passes ``purge_on_open=False`` so a fresh registry
@@ -46,7 +51,9 @@ from trace_search.tracking.store import TrackStore, _db_path_outside_repo
 TRACK_DB_FILENAME = "tracks.sqlite"
 ATTRIBUTE_DB_FILENAME = "attributes.sqlite"
 EMBEDDING_DB_FILENAME = "embeddings.sqlite"
-# Width of every vector in the registry embedding file.
+# Constructor width for the registry embedding file. Purge and
+# count_older_than do not read vectors, so this is not required to match
+# the blobs already stored. ``add`` on this instance refuses a mismatch.
 _EMBEDDING_DIM = 4
 
 _Clock = Callable[[], float]

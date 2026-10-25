@@ -428,7 +428,8 @@ def test_registry_filenames_match_the_stores_on_main() -> None:
     assert EMBEDDING_DB_FILENAME == "embeddings.sqlite"
 
 
-def test_registry_registers_the_track_and_attribute_stores(tmp_path: Path) -> None:
+def test_registry_registers_the_track_attribute_and_embedding_stores(tmp_path: Path) -> None:
+    """The registry returns the track, attribute, and embedding stores, in that order."""
     root = _make_root(tmp_path)
     stores = purgeables(root, clock=lambda: 1.0)
     assert [store.label for store in stores] == ["tracks", "attributes", "embeddings"]
@@ -437,21 +438,74 @@ def test_registry_registers_the_track_and_attribute_stores(tmp_path: Path) -> No
     assert stores[2].covered_tables == ("appearance_embeddings",)
 
 
-def test_protocol_accepts_both_real_stores(tmp_path: Path) -> None:
+def test_protocol_accepts_the_track_attribute_and_embedding_stores(tmp_path: Path) -> None:
     """``isinstance`` is the runtime check. The annotations are the mypy assignment."""
     root = _make_root(tmp_path)
     stores = purgeables(root, clock=lambda: 1.0)
     track: Purgeable = stores[0]
     attributes: Purgeable = stores[1]
+    embeddings: Purgeable = stores[2]
     assert isinstance(track, Purgeable)
     assert isinstance(attributes, Purgeable)
-    embeddings: Purgeable = stores[2]
+    assert isinstance(embeddings, Purgeable)
     assert isinstance(track, track_store.TrackStore)
     assert isinstance(attributes, attribute_store.TrackAttributeStore)
     assert isinstance(embeddings, embedding_store.SqliteVectorStore)
     assert track.label == "tracks"
     assert attributes.label == "attributes"
     assert embeddings.label == "embeddings"
+
+
+def test_registry_counts_and_purges_embeddings_of_another_width(tmp_path: Path) -> None:
+    """Opening at dim 4 still counts, then purges, rows stored at another width.
+
+    ``purgeables`` passes ``purge_on_open=False``, so ``count_older_than``
+    sees the expired row before ``purge_expired`` deletes it.
+    """
+    root = _make_root(tmp_path)
+    path = root / EMBEDDING_DB_FILENAME
+    clock = _SetClock(_NOW - 8 * _DAY)
+    writer = embedding_store.SqliteVectorStore(path, 8, clock=clock, purge_on_open=False)
+    writer.add(
+        _RUN,
+        "CODE_TEST",
+        [
+            AppearanceEmbedding(
+                camera_id="cam-old",
+                track_id=1,
+                frame_number=0,
+                vector=_axis_vector(8),
+                embedder_name="registry",
+                placeholder=True,
+            )
+        ],
+    )
+    clock.now = _NOW - 6 * _DAY
+    writer.add(
+        _RUN,
+        "CODE_TEST",
+        [
+            AppearanceEmbedding(
+                camera_id="cam-young",
+                track_id=2,
+                frame_number=0,
+                vector=_axis_vector(8),
+                embedder_name="registry",
+                placeholder=True,
+            )
+        ],
+    )
+    del writer
+    clock.now = _NOW
+    stores = purgeables(root, clock=clock)
+    store = stores[2]
+    assert isinstance(store, embedding_store.SqliteVectorStore)
+    assert store.dim == 4
+    assert store.count_older_than() == 1
+    assert _raw_count(path, "appearance_embeddings") == 2
+    assert store.purge_expired() == 1
+    assert store.count_older_than() == 0
+    assert _raw_count(path, "appearance_embeddings") == 1
 
 
 def test_registry_registers_the_embedding_store(tmp_path: Path) -> None:
@@ -652,10 +706,16 @@ def test_purgeables_ignores_the_track_db_environment(
     assert not (outside / "tracks.sqlite").exists()
 
 
-def test_default_clock_still_registers_both_stores(tmp_path: Path) -> None:
+def test_default_clock_still_registers_the_track_attribute_and_embedding_stores(
+    tmp_path: Path,
+) -> None:
+    """Omitting the clock still registers the track, attribute, and embedding stores."""
     root = _make_root(tmp_path)
     stores = purgeables(root)
     assert [store.label for store in stores] == ["tracks", "attributes", "embeddings"]
+    assert stores[0].covered_tables == ("track_observations",)
+    assert stores[1].covered_tables == ("track_attributes",)
+    assert stores[2].covered_tables == ("appearance_embeddings",)
 
 
 def test_count_older_than_matches_the_deleted_count(tmp_path: Path) -> None:
