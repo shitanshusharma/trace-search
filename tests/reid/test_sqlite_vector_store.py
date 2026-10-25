@@ -4,11 +4,13 @@ Rows are seeded in the test. Nothing is read from ``smoke/`` and nothing is
 written into the repository tree. ``tmp_path`` is the database directory.
 """
 
+import importlib.util
 import math
 import socket
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -118,9 +120,72 @@ def _seeded_batch(
     return rows, values[count]
 
 
-def _store_source() -> str:
+def _store_path() -> Path:
     path = Path(__file__).resolve().parents[2] / "src" / "trace_search" / "reid"
-    return (path / "sqlite_vector_store.py").read_text(encoding="utf-8")
+    return path / "sqlite_vector_store.py"
+
+
+def _store_source() -> str:
+    return _store_path().read_text(encoding="utf-8")
+
+
+def _appearance_columns(db_path: Path) -> list[tuple[str, str]]:
+    connection = sqlite3.connect(db_path)
+    try:
+        info = connection.execute("PRAGMA table_info(appearance_embeddings)").fetchall()
+    finally:
+        connection.close()
+    return [(str(row[1]), str(row[2])) for row in info]
+
+
+def _assert_exact_appearance_columns(db_path: Path) -> None:
+    """The appearance table has this column set and no further column."""
+    assert _appearance_columns(db_path) == [
+        ("camera_id", "TEXT"),
+        ("track_id", "INTEGER"),
+        ("frame_number", "INTEGER"),
+        ("embedder_name", "TEXT"),
+        ("placeholder", "INTEGER"),
+        ("vector", "BLOB"),
+        ("run_id", "TEXT"),
+        ("derived_from", "TEXT"),
+        ("created_at", "REAL"),
+    ]
+
+
+def _rules_checker() -> ModuleType:
+    """Load the project-rules scanner. Its ``main`` walks the repo, not one file."""
+    path = Path(__file__).resolve().parents[2] / "scripts" / "check_project_rules.py"
+    spec = importlib.util.spec_from_file_location("embedding_rules_checker", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _banned_identifier_hits(path: Path) -> list[dict[str, object]]:
+    violations: list[dict[str, object]] = []
+    _rules_checker().check_python_file(path, violations, set())
+    return [item for item in violations if item["type"] == "banned_identifier"]
+
+
+# Parts stay separate in source. The scanner matches the joined column name.
+_PLANTED_COLUMN_PARTS = (("face", "_embedding"), ("identity", "_id"))
+
+
+def _planted_column(prefix: str, suffix: str) -> str:
+    return prefix + suffix
+
+
+def _create_table_with_extra_column(source: str, column: str) -> str:
+    """Insert ``column`` into the CREATE TABLE literal, before ``created_at``."""
+    needle = "    created_at REAL NOT NULL"
+    assert source.count(needle) == 1
+    planted = source.replace(needle, f"    {column} BLOB,\n{needle}", 1)
+    start = planted.index("CREATE TABLE IF NOT EXISTS appearance_embeddings (")
+    end = planted.index(needle, start)
+    assert column in planted[start:end]
+    return planted
 
 
 def test_create_table_ddl_is_a_source_literal() -> None:
@@ -161,7 +226,6 @@ def test_pragma_table_info_exact_columns(tmp_path: Path) -> None:
     store = _store(tmp_path)
     connection = sqlite3.connect(store.db_path)
     try:
-        info = connection.execute("PRAGMA table_info(appearance_embeddings)").fetchall()
         tables = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
@@ -171,20 +235,56 @@ def test_pragma_table_info_exact_columns(tmp_path: Path) -> None:
     finally:
         connection.close()
     assert ddl_row is not None
-    names_and_types = [(str(row[1]), str(row[2])) for row in info]
-    assert names_and_types == [
-        ("camera_id", "TEXT"),
-        ("track_id", "INTEGER"),
-        ("frame_number", "INTEGER"),
-        ("embedder_name", "TEXT"),
-        ("placeholder", "INTEGER"),
-        ("vector", "BLOB"),
-        ("run_id", "TEXT"),
-        ("derived_from", "TEXT"),
-        ("created_at", "REAL"),
-    ]
+    _assert_exact_appearance_columns(store.db_path)
     assert [str(row[0]) for row in tables] == ["appearance_embeddings"]
     assert "CHECK (derived_from IN ('SMOKE','CODE_TEST','SITE'))" in str(ddl_row[0])
+
+
+@pytest.mark.parametrize(("prefix", "suffix"), _PLANTED_COLUMN_PARTS)
+def test_extra_column_fails_the_exact_column_check(
+    tmp_path: Path, prefix: str, suffix: str
+) -> None:
+    """A table with one extra column fails the exact-column helper.
+
+    ``SqliteVectorStore`` opens an existing file with ``CREATE TABLE IF NOT
+    EXISTS``, so it does not drop the extra column. The helper still fails.
+    """
+    column = _planted_column(prefix, suffix)
+    db_path = tmp_path / "planted.sqlite"
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(_create_table_with_extra_column(_STORE_SQL, column))
+    finally:
+        connection.close()
+    names = [name for name, _kind in _appearance_columns(db_path)]
+    assert column in names
+    with pytest.raises(AssertionError):
+        _assert_exact_appearance_columns(db_path)
+    store = SqliteVectorStore(db_path, _DIM, clock=lambda: 0.0, purge_on_open=False)
+    assert store.count() == 0
+    reopened = [name for name, _kind in _appearance_columns(store.db_path)]
+    assert column in reopened
+    with pytest.raises(AssertionError):
+        _assert_exact_appearance_columns(store.db_path)
+
+
+def test_store_source_passes_the_identifier_scanner() -> None:
+    """The shipped module has no banned identifier in a string or name."""
+    assert _banned_identifier_hits(_store_path()) == []
+
+
+@pytest.mark.parametrize(("prefix", "suffix"), _PLANTED_COLUMN_PARTS)
+def test_planted_create_table_column_fails_the_rules_scanner(
+    tmp_path: Path, prefix: str, suffix: str
+) -> None:
+    """A copy outside the repo, with the column in CREATE TABLE, is a violation."""
+    column = _planted_column(prefix, suffix)
+    repo_root = Path(__file__).resolve().parents[2]
+    copy = tmp_path / "sqlite_vector_store.py"
+    copy.write_text(_create_table_with_extra_column(_store_source(), column), encoding="utf-8")
+    assert repo_root not in copy.resolve().parents
+    hits = _banned_identifier_hits(copy)
+    assert any(item["match"] == column for item in hits)
 
 
 def test_vector_blob_is_float32_little_endian(tmp_path: Path) -> None:
