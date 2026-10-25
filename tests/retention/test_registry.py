@@ -1,9 +1,10 @@
 """Every footage-derived store with ``created_at`` is a registered ``Purgeable``.
 
-The embedding store (T-R-7) and the export store (T-W-8) are not modules on
-main, so this file does not open them. The attribute database filename is
-``attributes.sqlite`` under the data root. ``TrackAttributeStore`` has no
-default filename of its own.
+The export store (T-W-8) is not a module on main, so this file does not open
+it. The attribute database filename is ``attributes.sqlite`` under the data
+root. ``TrackAttributeStore`` has no default filename of its own. The
+embedding database filename is ``embeddings.sqlite``. ``SqliteVectorStore``
+has no default filename of its own.
 """
 
 import shutil
@@ -14,11 +15,15 @@ from pathlib import Path
 import pytest
 
 import trace_search.attributes.store as attribute_store
+import trace_search.reid.sqlite_vector_store as embedding_store
 import trace_search.tracking.store as track_store
 from trace_search.detection.types import DetClass
+from trace_search.reid.sqlite_vector_store import SqliteVectorStore
+from trace_search.reid.types import AppearanceEmbedding
 from trace_search.retention import retention_seconds
 from trace_search.retention.registry import (
     ATTRIBUTE_DB_FILENAME,
+    EMBEDDING_DB_FILENAME,
     TRACK_DB_FILENAME,
     Purgeable,
     purgeables,
@@ -78,12 +83,30 @@ def _write_attribute(
     )
 
 
+def _axis_vector(dim: int) -> tuple[float, ...]:
+    return (1.0,) + (0.0,) * (dim - 1)
+
+
+def _write_embedding(store: SqliteVectorStore, camera_id: str, track_id: int) -> None:
+    embedding = AppearanceEmbedding(
+        camera_id=camera_id,
+        track_id=track_id,
+        frame_number=0,
+        vector=_axis_vector(store.dim),
+        embedder_name="registry",
+        placeholder=True,
+    )
+    store.add(_RUN, "CODE_TEST", [embedding])
+
+
 def _write_all(stores: list[Purgeable], camera_id: str, track_id: int) -> None:
     for store in stores:
         if isinstance(store, track_store.TrackStore):
             _write_track(store, camera_id, track_id)
         elif isinstance(store, attribute_store.TrackAttributeStore):
             _write_attribute(store, camera_id, track_id)
+        elif isinstance(store, SqliteVectorStore):
+            _write_embedding(store, camera_id, track_id)
         else:
             raise AssertionError(type(store).__name__)
 
@@ -92,6 +115,8 @@ def _db_path(store: Purgeable) -> Path:
     if isinstance(store, track_store.TrackStore):
         return store.db_path
     if isinstance(store, attribute_store.TrackAttributeStore):
+        return store.db_path
+    if isinstance(store, SqliteVectorStore):
         return store.db_path
     raise AssertionError(type(store).__name__)
 
@@ -111,6 +136,8 @@ def _raw_count(db_path: Path, table: str) -> int:
         sql = "SELECT COUNT(*) FROM track_observations"
     elif table == "track_attributes":
         sql = "SELECT COUNT(*) FROM track_attributes"
+    elif table == "appearance_embeddings":
+        sql = "SELECT COUNT(*) FROM appearance_embeddings"
     else:
         raise AssertionError(table)
     connection = sqlite3.connect(db_path)
@@ -343,6 +370,9 @@ def _has_camera(store: Purgeable, camera_id: str) -> bool:
         return store.read(camera_id) != []
     if isinstance(store, attribute_store.TrackAttributeStore):
         return store.read(camera_id) != []
+    if isinstance(store, SqliteVectorStore):
+        found = store.search(_axis_vector(store.dim), k=1, camera_ids=[camera_id])
+        return found != []
     raise AssertionError(type(store).__name__)
 
 
@@ -383,8 +413,10 @@ def test_retention_seconds_rejects_bool_and_negative() -> None:
 def test_stores_do_not_keep_their_own_retention_seconds() -> None:
     assert not hasattr(track_store, "_retention_seconds")
     assert not hasattr(attribute_store, "_retention_seconds")
+    assert not hasattr(embedding_store, "_retention_seconds")
     assert not hasattr(track_store, "_SECONDS_PER_DAY")
     assert not hasattr(attribute_store, "_SECONDS_PER_DAY")
+    assert not hasattr(embedding_store, "_SECONDS_PER_DAY")
 
 
 def test_registry_filenames_match_the_stores_on_main() -> None:
@@ -392,14 +424,16 @@ def test_registry_filenames_match_the_stores_on_main() -> None:
     assert TRACK_DB_FILENAME == "tracks.sqlite"
     assert TRACK_DB_FILENAME == track_store._DB_FILENAME
     assert ATTRIBUTE_DB_FILENAME == "attributes.sqlite"
+    assert EMBEDDING_DB_FILENAME == "embeddings.sqlite"
 
 
 def test_registry_registers_the_track_and_attribute_stores(tmp_path: Path) -> None:
     root = _make_root(tmp_path)
     stores = purgeables(root, clock=lambda: 1.0)
-    assert [store.label for store in stores] == ["tracks", "attributes"]
+    assert [store.label for store in stores] == ["tracks", "attributes", "embeddings"]
     assert stores[0].covered_tables == ("track_observations",)
     assert stores[1].covered_tables == ("track_attributes",)
+    assert stores[2].covered_tables == ("appearance_embeddings",)
 
 
 def test_protocol_accepts_both_real_stores(tmp_path: Path) -> None:
@@ -410,10 +444,28 @@ def test_protocol_accepts_both_real_stores(tmp_path: Path) -> None:
     attributes: Purgeable = stores[1]
     assert isinstance(track, Purgeable)
     assert isinstance(attributes, Purgeable)
+    embeddings: Purgeable = stores[2]
     assert isinstance(track, track_store.TrackStore)
     assert isinstance(attributes, attribute_store.TrackAttributeStore)
+    assert isinstance(embeddings, SqliteVectorStore)
     assert track.label == "tracks"
     assert attributes.label == "attributes"
+    assert embeddings.label == "embeddings"
+
+
+def test_registry_registers_the_embedding_store(tmp_path: Path) -> None:
+    """The embedding file is ``embeddings.sqlite`` under the data root, not the track file."""
+    root = _make_root(tmp_path)
+    stores = purgeables(root, clock=lambda: 1.0)
+    embeddings = [store for store in stores if isinstance(store, SqliteVectorStore)]
+    assert len(embeddings) == 1
+    store = embeddings[0]
+    assert isinstance(store, Purgeable)
+    assert store.label == "embeddings"
+    assert store.covered_tables == ("appearance_embeddings",)
+    assert store.db_path.name == EMBEDDING_DB_FILENAME
+    assert store.db_path.name != TRACK_DB_FILENAME
+    assert root.resolve() in store.db_path.resolve().parents
 
 
 def test_created_at_tables_are_covered_by_a_registered_purgeable(tmp_path: Path) -> None:
@@ -422,9 +474,9 @@ def test_created_at_tables_are_covered_by_a_registered_purgeable(tmp_path: Path)
 
 
 def test_source_scan_reads_the_create_table_statements_on_main() -> None:
-    """The scan sees both footage tables, including DDL that nests parentheses."""
+    """The scan sees the footage tables, including DDL that nests parentheses."""
     found = _created_at_tables_in_source(_package_source())
-    assert found == {"track_observations", "track_attributes"}
+    assert found == {"track_observations", "track_attributes", "appearance_embeddings"}
 
 
 def test_source_scan_ignores_a_table_without_created_at(tmp_path: Path) -> None:
@@ -602,7 +654,7 @@ def test_purgeables_ignores_the_track_db_environment(
 def test_default_clock_still_registers_both_stores(tmp_path: Path) -> None:
     root = _make_root(tmp_path)
     stores = purgeables(root)
-    assert [store.label for store in stores] == ["tracks", "attributes"]
+    assert [store.label for store in stores] == ["tracks", "attributes", "embeddings"]
 
 
 def test_count_older_than_matches_the_deleted_count(tmp_path: Path) -> None:
