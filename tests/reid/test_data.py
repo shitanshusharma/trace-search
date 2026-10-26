@@ -378,6 +378,7 @@ def _benign_crop(fill: int = 17) -> np.ndarray:
 def test_training_allowlist_stays_empty() -> None:
     assert data_module._TRAINING_ID_PATTERNS == ()
     assert data_module._EVALUATION_ID_PATTERNS == (data_module._SYNREID_ID,)
+    assert data_module._patterns_for(LoaderContext.TRAINING) == ()
 
 
 def test_recognised_use_tags_match_fixture_use_tag() -> None:
