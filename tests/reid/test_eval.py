@@ -433,7 +433,7 @@ def test_crop_without_path_is_accepted(
         load_reid_samples([sample], context, _write_manifest(tmp_path))
 
 
-def test_path_without_crop_is_accepted_when_the_manifest_row_matches(
+def test_path_without_crop_is_refused_when_the_manifest_row_matches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
