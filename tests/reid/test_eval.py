@@ -528,6 +528,7 @@ def test_fx_smoke_is_refused_before_any_embedding(
     try:
         code = eval_module.main(["--embedder", embedder_name, "--synthetic-seed", "0", "--json"])
     except SystemExit as exc:
+        code = 0
         pytest.fail(f"{embedder_name} was refused before the loader: {exc.code}")
     captured = capsys.readouterr()
     assert code != 0
@@ -703,6 +704,7 @@ def test_osnet_lite_cli_exits_zero_with_the_chained_streams_label(
     try:
         code = eval_module.main(["--embedder", "osnet-lite", "--synthetic-seed", "0", "--json"])
     except SystemExit as exc:
+        code = 1
         pytest.fail(f"osnet-lite was refused before evaluation: {exc.code}")
     captured = capsys.readouterr()
     assert code == 0
@@ -730,6 +732,7 @@ def test_placeholder_default_matches_the_explicit_placeholder(
     try:
         code_default = eval_module.main(["--synthetic-seed", "0", "--json"])
     except SystemExit as exc:
+        code_default = 1
         pytest.fail(f"--embedder still required, default did not apply: {exc.code}")
     default_out = capsys.readouterr()
     code_explicit = eval_module.main(
