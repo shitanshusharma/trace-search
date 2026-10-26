@@ -4,8 +4,10 @@
 not write a file. Each group is solid colour bands. An odd group copies
 the previous group's bands and nudges one band, so that pair is a hard
 distractor. Seeded noise, a per-camera band shift, and a per-camera
-darkening of one band follow. The shift is not a 4-camera cycle. There
-are no human shapes and no text.
+darkening of one band follow. The shift is not a 4-camera cycle.
+Once the roll wraps, a cycle mark keeps later cameras apart until
+that mark repeats. ``n_cameras`` past the distinct layouts for the
+crop height is rejected. There are no human shapes and no text.
 
 Fixture ids are ``FX-SYNREID-nnn``. The use tag on each sample is
 ``DEV``. That tag lives only on the samples. It is not a manifest
@@ -42,7 +44,8 @@ def make_synthetic_reid_set(
     byte-identical crops. ``camera_id`` is ``cam-0``, ``cam-1``, and so
     on. ``label`` is the group index. It is not a person id. An odd
     group copies the previous group's bands and nudges one band, so
-    that pair is a hard distractor.
+    that pair is a hard distractor. ``n_cameras`` above the number of
+    distinct layouts for this height is rejected.
     """
     height, width = _require_shape(n_groups, per_group, n_cameras, size)
     rng = np.random.default_rng(seed)
@@ -80,7 +83,18 @@ def _require_shape(
         raise ValueError(
             f"n_groups * per_group is {total}; a synthetic id is 3 digits and stops at 999"
         )
+    _require_camera_limit(n_cameras, height)
     return height, width
+
+
+def _require_camera_limit(n_cameras: int, height: int) -> None:
+    """Reject a camera count the crop height cannot keep distinct."""
+    limit = _distinct_camera_limit(height)
+    if n_cameras > limit:
+        raise ValueError(
+            f"n_cameras is {n_cameras}; a crop of height {height} supports "
+            f"{limit} distinct camera layouts"
+        )
 
 
 def _require_at_least_one(argument: str, value: int) -> None:
@@ -190,9 +204,10 @@ def _darken_one_band(image: npt.NDArray[np.uint8], camera: int) -> npt.NDArray[n
 def _mark_wrapped_cycle(image: npt.NDArray[np.uint8], camera: int) -> npt.NDArray[np.uint8]:
     """Colour-mark a camera once the roll period has wrapped.
 
-    Inside one period the roll already makes every camera distinct.
-    The next camera that lands on the same rows gets a brighter channel
-    and a corner code, so it does not match the earlier camera.
+    The mark brightens one channel and writes a corner code. The
+    channel repeats every 3 cycles, and the corner code steps by less
+    than the noise, so a later camera can match an earlier one.
+    ``n_cameras`` is rejected once this height runs out of distinct layouts.
     """
     cycle = camera // _roll_period(int(image.shape[0]))
     if cycle == 0:
@@ -211,6 +226,55 @@ def _roll_period(height: int) -> int:
     band_height = max(height // _BANDS, 1)
     step = band_height + 1
     return height // math.gcd(step, height)
+
+
+def _distinct_camera_limit(height: int) -> int:
+    """How many leading cameras stay distinct at this height.
+
+    The first repeated camera shares an earlier camera's roll, darkened
+    rows, and wrap-mark channel. The corner code has moved by at most
+    15, which the noise can hide. Cameras ``0 .. limit-1`` do not repeat.
+    A mark step of 12 always shares the darkened rows, so the repeat is
+    ``13 * period`` unless a shorter step hits first.
+    """
+    period = _roll_period(height)
+    rows = _darkened_rows(height)
+    earliest = 13 * period
+    for multiple in (3, 6, 9, 15):
+        repeat = _earliest_repeat(period, rows, multiple)
+        if repeat is not None and repeat < earliest:
+            earliest = repeat
+    return earliest
+
+
+def _earliest_repeat(
+    period: int,
+    rows: tuple[frozenset[int], ...],
+    multiple: int,
+) -> int | None:
+    """Smallest camera that repeats one ``period`` or more behind it.
+
+    ``multiple`` is a multiple of 3, so both cameras brighten the same
+    channel. It stays at most 15, so the corner codes sit inside the noise.
+    """
+    shift = (multiple * period) % _BANDS
+    for offset in range(_BANDS):
+        camera = period + offset
+        same_rows = rows[camera % _BANDS] == rows[(camera + shift) % _BANDS]
+        if same_rows:
+            return camera + multiple * period
+    return None
+
+
+def _darkened_rows(height: int) -> tuple[frozenset[int], ...]:
+    """Rows each camera band darkens. An empty band darkens nothing."""
+    edges = np.linspace(0, height, _BANDS + 1, dtype=int)
+    found: list[frozenset[int]] = []
+    for band in range(_BANDS):
+        start = int(edges[band])
+        stop = int(edges[band + 1])
+        found.append(frozenset(range(start, stop)))
+    return tuple(found)
 
 
 def _make_sample(

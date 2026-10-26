@@ -186,19 +186,15 @@ def test_generator_does_not_write_files(tmp_path: Path, capsys: pytest.CaptureFi
 
 
 def test_camera_shift_moves_the_colour_pattern() -> None:
-    """Cameras in one group differ by more than the per-pixel noise.
+    """The band shift moves the pattern, apart from the darkened band.
 
-    Noise is at most 15. The per-camera band move and the darkened band
-    push the max channel gap above that bound.
+    Camera 0 and camera 4 darken the same band, and neither is a wrapped
+    cycle on a 64-row crop. Noise is at most 15. Removing the roll leaves
+    every channel inside that bound, so this test fails.
     """
-    samples = make_synthetic_reid_set(seed=0)
-    by_label: dict[int, dict[str, np.ndarray]] = {}
-    for sample in samples:
-        assert sample.crop is not None
-        by_label.setdefault(sample.label, {})[sample.camera_id] = sample.crop
-    for cameras in by_label.values():
-        diff = np.abs(cameras["cam-0"].astype(np.int16) - cameras["cam-1"].astype(np.int16))
-        assert int(diff.max()) > 15
+    samples = make_synthetic_reid_set(n_groups=1, per_group=5, n_cameras=5, seed=0)
+    crops = _one_crop_per_camera(samples, 5)
+    assert _max_gap(crops[0], crops[4]) > 15
 
 
 def test_odd_groups_stay_close_to_their_partner_on_the_same_camera() -> None:
@@ -232,11 +228,13 @@ def test_camera_layouts_do_not_repeat_every_four_cameras() -> None:
 
 
 def test_wrapped_roll_stays_distinct() -> None:
-    """A later cycle does not copy an earlier camera.
+    """Both halves of the wrap mark show on a repeated roll.
 
     At height 4 the band roll repeats every 2 cameras. Camera 4 lands on
-    camera 0's rows and darkens the same band. Without the cycle mark
-    those crops would differ only by noise of at most 15.
+    camera 0's rows and darkens the same band. Cycle 2 brightens channel
+    2 across the crop and writes the corner code on the other two
+    channels. Noise is at most 15. Dropping the brightened channel or
+    the corner code leaves that half inside the bound.
     """
     samples = make_synthetic_reid_set(
         n_groups=1,
@@ -248,6 +246,44 @@ def test_wrapped_roll_stays_distinct() -> None:
     crops = _one_crop_per_camera(samples, 5)
     for left, right in _camera_pairs(5):
         assert _max_gap(crops[left], crops[right]) > 15
+    diff = np.abs(crops[0].astype(np.int16) - crops[4].astype(np.int16))
+    height, width = diff.shape[:2]
+    # One full band of the brightened channel, not a single pixel.
+    assert int((diff[:, :, 2] > 15).sum()) >= (height // 4) * width
+    # Corner code on the channels the brightened band does not own.
+    assert int(diff[0, 0, 0]) > 15
+    assert int(diff[0, 0, 1]) > 15
+
+
+def test_n_cameras_stops_at_the_distinct_layouts_for_the_height() -> None:
+    """A small crop rejects the camera that repeats after three mark cycles.
+
+    At height 4 the roll period is 2, so three cycles is 6 cameras. The
+    mark's channel repeats every 3 cycles and its corner step sits inside
+    the noise, so camera 14 matches camera 2. Cameras 0..13 stay distinct.
+    One more camera is rejected.
+    """
+    height = 4
+    limit = 14
+    samples = make_synthetic_reid_set(
+        n_groups=1,
+        per_group=limit,
+        n_cameras=limit,
+        size=(height, height),
+        seed=0,
+    )
+    crops = _one_crop_per_camera(samples, limit)
+    assert len(crops) == limit
+    for left, right in _camera_pairs(limit):
+        assert _max_gap(crops[left], crops[right]) > 15
+    with pytest.raises(ValueError, match="height 4 supports 14 distinct camera layouts"):
+        make_synthetic_reid_set(
+            n_groups=1,
+            per_group=limit + 1,
+            n_cameras=limit + 1,
+            size=(height, height),
+            seed=0,
+        )
 
 
 _NOTE = "Placeholder or synthetic embeddings. Not an AC-06 result."
@@ -275,9 +311,9 @@ def test_seed_0_separates_placeholder_from_random_init_osnet(
     assert placeholder["num_gallery"] == 16
     assert osnet["num_gallery"] == 16
     assert placeholder["rank1"] == 0.125
-    assert placeholder["mAP"] == 0.2686762889887889
+    assert placeholder["mAP"] == pytest.approx(0.2686762889887889, abs=1e-12)
     assert osnet["rank1"] == 0.5
-    assert osnet["mAP"] == 0.7083333333333331
+    assert osnet["mAP"] == pytest.approx(0.7083333333333331, abs=1e-12)
     assert osnet["rank1"] > placeholder["rank1"]
     assert osnet["mAP"] > placeholder["mAP"]
     assert not (osnet["rank1"] == 1.0 and osnet["mAP"] == 1.0)
