@@ -1116,7 +1116,7 @@
       "type": "generator",
       "license": "MIT",
       "source_url": "https://github.com/shitanshusharma/trace-search",
-      "sha256": "4122fd972084e5b4c45b8b035af420677127d2bef24203d1b0ac494ad2b5ae6a",
+      "sha256": "987ffde65627a16d3c21345533da6decbd9df59a8bf4b29864aa3e8c4ff9ba64",
       "generator_license": "MIT",
       "seed": "0",
       "notes": "In-memory flat-colour block patterns for the evaluation command only. Nothing is written to disk. The DEV tag lives only on the in-memory samples. Shitanshu confirmed DEV on 24 Oct 2026 at 1:06 PM IST. This row has no use and no fixture_id."

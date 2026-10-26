@@ -70,9 +70,9 @@ def _require_shape(
     return height, width
 
 
-def _require_at_least_one(name: str, value: int) -> None:
+def _require_at_least_one(argument: str, value: int) -> None:
     if value < 1:
-        raise ValueError(f"{name} must be >= 1, got {value!r}")
+        raise ValueError(f"{argument} must be >= 1, got {value!r}")
 
 
 def _require_size(size: tuple[int, int]) -> tuple[int, int]:
