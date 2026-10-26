@@ -385,6 +385,11 @@ def test_sample_with_neither_crop_nor_path_is_refused(
     monkeypatch.setattr(data_module, "_TRAINING_ID_PATTERNS", (_BATCH_PATTERN,))
     sample = _reid("FX-BATCH-001", crop=None, path=None)
     manifest = _write_manifest(tmp_path)
+    if context is LoaderContext.TRAINING:
+        with pytest.raises(FixtureSeparationError, match="refused in TRAINING") as caught:
+            load_reid_samples([sample], context, manifest)
+        assert "TRAIN" in str(caught.value)
+        return
     with pytest.raises(FixtureSeparationError, match="neither a crop nor a path") as caught:
         load_reid_samples([sample], context, manifest)
     assert "FX-BATCH-001" in str(caught.value)
@@ -402,7 +407,7 @@ def test_crop_without_path_is_accepted(
     matches = sorted(directory.glob(f"{fixture_id}_*.mp4"))
     assert len(matches) == 1
     sample = _reid("FX-SYNREID-001", use="DEV", crop=rgb_frame(matches[0]))
-    with pytest.raises(FixtureSeparationError, match="identified by SHA-256 or pHash"):
+    with pytest.raises(FixtureSeparationError, match="identified by pHash"):
         load_reid_samples([sample], context, _write_manifest(tmp_path))
 
 
@@ -778,6 +783,43 @@ def test_all_invalid_queries_fail_closed(
     assert "invalid" in captured.err
     assert "No metric was computed." in captured.err
     assert calls == []
+
+
+def test_synthetic_seed_flag_changes_the_split(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--synthetic-seed`` is forwarded, and the split uses that seed.
+
+    Hard-coding ``make_synthetic_reid_set(seed=0)`` inside
+    ``synthetic_evaluation_split`` fails this test.
+    """
+    seen: list[int] = []
+    real = eval_module.synthetic_evaluation_split
+
+    def spy(seed: int) -> tuple[tuple[ReidSample, ...], tuple[ReidSample, ...]]:
+        seen.append(seed)
+        return real(seed)
+
+    monkeypatch.setattr(eval_module, "synthetic_evaluation_split", spy)
+    assert eval_module.main(["--embedder", "placeholder", "--synthetic-seed", "0", "--json"]) == 0
+    assert eval_module.main(["--embedder", "placeholder", "--synthetic-seed", "1", "--json"]) == 0
+    assert seen == [0, 1]
+    capsys.readouterr()
+    same_query, same_gallery = real(0)
+    other_query, other_gallery = real(1)
+    assert _crop_bytes(same_query) == _crop_bytes(real(0)[0])
+    assert _crop_bytes(same_gallery) == _crop_bytes(real(0)[1])
+    assert _crop_bytes(same_query) != _crop_bytes(other_query)
+    assert _crop_bytes(same_gallery) != _crop_bytes(other_gallery)
+
+
+def _crop_bytes(samples: tuple[ReidSample, ...]) -> bytes:
+    parts: list[bytes] = []
+    for sample in samples:
+        assert sample.crop is not None
+        parts.append(sample.crop.tobytes())
+    return b"".join(parts)
 
 
 def test_cli_on_the_synthetic_split_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:

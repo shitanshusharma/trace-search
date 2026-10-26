@@ -3,14 +3,22 @@
 This is the door into ReID training and evaluation. It refuses ids that
 normalise to an ``FX-SMOKE`` or ``FX-CODE`` prefix, ``SMOKE_ONLY`` and
 ``CODE_TEST`` tags, and any unknown tag. A sample path is checked against
-the caller manifest and the repo smoke manifest. A crop with no path is
-hashed the same way. The training id allowlist is empty. Evaluation
-accepts only ``FX-SYNREID-nnn``. One refusal refuses the batch.
+the caller manifest and the repo smoke manifest by SHA-256 and pHash.
+
+A crop with no path is checked by pHash only. Manifest sha256 values are
+hashes of media files, so crop bytes are not compared to them. That pHash
+can match a whole smoke frame, including one that was only resized. It
+does not match a box cut out of a frame. That limit is pinned by
+``test_known_gap_centre_crop_of_a_smoke_frame_is_accepted``.
+
+TRAINING refuses every sample before the id allowlist and before any tag
+deny-list. The training id allowlist stays empty. Evaluation accepts only
+``FX-SYNREID-nnn`` with the ``DEV`` tag. One refusal refuses the batch,
+and the caller's samples and arrays are left unchanged.
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -46,9 +54,6 @@ _EVALUATION_ID_PATTERNS: tuple[re.Pattern[str], ...] = (_SYNREID_ID,)
 _REID_CONTEXTS = frozenset({LoaderContext.TRAINING, LoaderContext.EVALUATION})
 _DENIED_USE_TAGS = frozenset({FixtureUseTag.SMOKE_ONLY.value, FixtureUseTag.CODE_TEST.value})
 _RECOGNISED_USE_TAGS = frozenset(tag.value for tag in FixtureUseTag)
-_TRAINING_BLOCKED_TAGS = frozenset(
-    {FixtureUseTag.TRAIN.value, FixtureUseTag.HOLD.value, FixtureUseTag.DEV.value}
-)
 _DEV_TAG = FixtureUseTag.DEV.value
 
 _Rows = dict[str, tuple[FixtureUseTag, str, list[str]]]
@@ -115,12 +120,23 @@ def _accept_batch(
     _refuse_forbidden_ids(samples)
     caller_rows = load_manifest_fixtures(manifest_path)
     repo_rows = load_manifest_fixtures(_repo_manifest_path())
-    accepted: list[ReidSample] = []
-    for sample in samples:
-        _require_sample(sample, context, caller_rows, repo_rows)
-        _seal_crop(sample)
-        accepted.append(sample)
-    return accepted
+    sealed = [_require_sample(sample, context, caller_rows, repo_rows) for sample in samples]
+    _install_sealed_crops(samples, sealed)
+    return list(samples)
+
+
+def _install_sealed_crops(
+    samples: Sequence[ReidSample],
+    sealed: Sequence[npt.NDArray[np.uint8] | None],
+) -> None:
+    """Attach copies only after the whole batch has been accepted.
+
+    A refusal leaves every caller sample and array as it was passed in.
+    """
+    for sample, crop in zip(samples, sealed, strict=True):
+        if crop is None:
+            continue
+        object.__setattr__(sample, "crop", crop)
 
 
 def _refuse_forbidden_ids(samples: Sequence[ReidSample]) -> None:
@@ -135,7 +151,7 @@ def _require_sample(
     context: LoaderContext,
     caller_rows: _Rows,
     repo_rows: _Rows,
-) -> None:
+) -> npt.NDArray[np.uint8] | None:
     normalised_id = _normalise_fixture_id(sample.fixture_id)
     _refuse_smoke_prefix(sample.fixture_id, normalised_id)
     _refuse_code_prefix(sample.fixture_id, normalised_id)
@@ -144,11 +160,13 @@ def _require_sample(
     _refuse_unknown_use_tag(sample.use, normalised_use)
     if sample.path is not None:
         _refuse_path(sample, context, caller_rows, repo_rows)
-    if sample.crop is not None:
-        _refuse_crop(sample, repo_rows)
+    sealed = _sealed_crop(sample, repo_rows)
+    _refuse_training_context(sample.use, context)
     _refuse_unless_allowlisted(sample.fixture_id, normalised_id, context)
     _refuse_without_crop_or_path(sample)
-    _refuse_context_tag(sample.use, normalised_use, normalised_id, context)
+    if context is LoaderContext.EVALUATION:
+        _refuse_evaluation_tag(sample.use, normalised_use, normalised_id)
+    return sealed
 
 
 def _normalise_fixture_id(fixture_id: str) -> str:
@@ -260,26 +278,77 @@ def _refuse_row_mismatch(sample: ReidSample, match: _Match) -> None:
     )
 
 
-def _refuse_crop(sample: ReidSample, repo_rows: _Rows) -> None:
-    """Hash an in-memory crop against the repo smoke manifest."""
-    crop = cast(npt.NDArray[np.uint8], sample.crop)
-    digest, phash = _crop_fingerprint(crop)
-    match = _match_rows(digest, [phash], repo_rows)
+def _sealed_crop(
+    sample: ReidSample,
+    repo_rows: _Rows,
+) -> npt.NDArray[np.uint8] | None:
+    """Copy a crop, pHash that copy, and return it still read-only.
+
+    The copy is installed on the sample only after the whole batch
+    passes. pHash can match a whole smoke frame. A box cut from a frame,
+    such as a centre crop, is a known gap and is not refused. Manifest
+    sha256 values are file hashes, so this check does not use them.
+    """
+    if sample.crop is None:
+        return None
+    sealed = _readonly_copy(_require_rgb_uint8(sample.crop))
+    _refuse_smoke_phash(sample, sealed, repo_rows)
+    return sealed
+
+
+def _require_rgb_uint8(crop: object) -> npt.NDArray[np.uint8]:
+    if _is_rgb_uint8(crop):
+        return cast(npt.NDArray[np.uint8], crop)
+    shape = getattr(crop, "shape", None)
+    dtype = getattr(crop, "dtype", None)
+    raise FixtureSeparationError(
+        f"crop must be a non-empty HxWx3 uint8 array, got shape {shape} dtype {dtype}"
+    )
+
+
+def _is_rgb_uint8(crop: object) -> bool:
+    if not isinstance(crop, np.ndarray) or crop.dtype != np.uint8 or crop.ndim != 3:
+        return False
+    if crop.shape[2] != 3:
+        return False
+    return crop.shape[0] > 0 and crop.shape[1] > 0
+
+
+def _readonly_copy(crop: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
+    """A copy whose writeable flag cannot be turned back on."""
+    owned = np.array(crop, dtype=np.uint8, copy=True)
+    owned.setflags(write=False)
+    view = owned.view()
+    view.setflags(write=False)
+    return view
+
+
+def _refuse_smoke_phash(
+    sample: ReidSample,
+    sealed: npt.NDArray[np.uint8],
+    repo_rows: _Rows,
+) -> None:
+    match = _match_phash(_crop_phash(sealed), repo_rows)
     if match is None:
         return
     use_tag, fixture_id = match
     raise FixtureSeparationError(
         f"crop on {sample.fixture_id} identified as {fixture_id} "
-        f"with use tag {use_tag.value} is FORBIDDEN "
-        "(identified by SHA-256 or pHash)."
+        f"with use tag {use_tag.value} is FORBIDDEN (identified by pHash)."
     )
 
 
-def _crop_fingerprint(crop: npt.NDArray[np.uint8]) -> tuple[str, str]:
-    array = np.ascontiguousarray(crop)
-    digest = hashlib.sha256(array.tobytes()).hexdigest()
-    image = Image.fromarray(array, mode="RGB")
-    return digest, str(imagehash.phash(image))
+def _crop_phash(crop: npt.NDArray[np.uint8]) -> str:
+    image = Image.fromarray(crop, mode="RGB")
+    return str(imagehash.phash(image))
+
+
+def _match_phash(phash: str, rows: _Rows) -> _Match | None:
+    for _sha, (use_tag, fixture_id, manifest_hashes) in rows.items():
+        distance = nearest_hamming([phash], manifest_hashes)
+        if distance is not None and distance <= HAMMING_THRESHOLD:
+            return use_tag, fixture_id
+    return None
 
 
 def _patterns_for(context: LoaderContext) -> tuple[re.Pattern[str], ...]:
@@ -310,28 +379,16 @@ def _refuse_without_crop_or_path(sample: ReidSample) -> None:
     )
 
 
-def _refuse_context_tag(
-    original: str,
-    normalised: str,
-    normalised_id: str,
-    context: LoaderContext,
-) -> None:
-    if context is LoaderContext.TRAINING and normalised in _TRAINING_BLOCKED_TAGS:
-        raise FixtureSeparationError(f"{original} is refused in TRAINING")
-    if context is not LoaderContext.EVALUATION:
+def _refuse_training_context(original: str, context: LoaderContext) -> None:
+    """TRAINING accepts no sample. The tag and the id are not consulted."""
+    if context is not LoaderContext.TRAINING:
         return
+    raise FixtureSeparationError(f"{original} is refused in TRAINING")
+
+
+def _refuse_evaluation_tag(original: str, normalised: str, normalised_id: str) -> None:
     if _SYNREID_ID.fullmatch(normalised_id) is None:
         return
     if normalised == _DEV_TAG:
         return
     raise FixtureSeparationError(f"{original} is refused in EVALUATION")
-
-
-def _seal_crop(sample: ReidSample) -> None:
-    """Replace the crop with a read-only copy so the caller cannot edit it."""
-    crop = sample.crop
-    if crop is None:
-        return
-    copied = np.array(crop, copy=True)
-    copied.setflags(write=False)
-    object.__setattr__(sample, "crop", copied)

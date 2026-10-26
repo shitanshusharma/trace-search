@@ -286,13 +286,17 @@ def test_empty_allowlist_refuses_other_ids(
     context: LoaderContext,
     tmp_path: Path,
 ) -> None:
+    phrase = "not on the ReID allowlist"
+    if context is LoaderContext.TRAINING:
+        phrase = "refused in TRAINING"
     message = _refused(
         [_sample(fixture_id)],
         context,
         _write_manifest(tmp_path),
-        "not on the ReID allowlist",
+        phrase,
     )
-    assert fixture_id in message
+    if context is LoaderContext.EVALUATION:
+        assert fixture_id in message
 
 
 @pytest.mark.parametrize("context", _REID_CONTEXTS)
@@ -472,6 +476,8 @@ def test_loaded_crop_is_a_read_only_copy(tmp_path: Path) -> None:
     assert sealed is not None
     assert sealed is not crop
     assert sealed.flags.writeable is False
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        sealed.setflags(write=True)
     crop[0, 0] = (9, 9, 9)
     assert np.array_equal(sealed, original)
     with pytest.raises(ValueError):
@@ -489,8 +495,94 @@ def test_smoke_frame_crop_is_refused(
         [sample],
         LoaderContext.EVALUATION,
         _write_manifest(tmp_path),
-        "identified by SHA-256 or pHash",
+        "identified by pHash",
     )
+
+
+def test_known_gap_centre_crop_of_a_smoke_frame_is_accepted(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    """Known gap: a box cut from a smoke frame is not refused.
+
+    The crop check matches a whole smoke frame by pHash. It does not
+    match the centre of that frame. This pins the current behaviour.
+    """
+    directory, entries = smoke_clips
+    clip = _entry_clip(directory, entries[0])
+    frame = rgb_frame(clip)
+    height, width = frame.shape[:2]
+    top = height // 4
+    left = width // 4
+    centre = np.ascontiguousarray(frame[top : top + height // 2, left : left + width // 2])
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=centre)
+    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
+    assert len(loaded) == 1 and loaded[0] is sample
+
+
+def test_zero_by_zero_crop_is_refused(tmp_path: Path) -> None:
+    crop = np.zeros((0, 0, 3), dtype=np.uint8)
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "non-empty HxWx3")
+
+
+def test_grayscale_crop_is_refused(tmp_path: Path) -> None:
+    crop = np.zeros((8, 8), dtype=np.uint8)
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "non-empty HxWx3")
+
+
+def test_rgba_crop_is_refused(tmp_path: Path) -> None:
+    crop = np.zeros((8, 8, 4), dtype=np.uint8)
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "non-empty HxWx3")
+
+
+def test_float_crop_is_refused(tmp_path: Path) -> None:
+    crop = np.zeros((8, 8, 3), dtype=np.float32)
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "non-empty HxWx3")
+
+
+def test_refused_batch_does_not_change_the_callers_crops(tmp_path: Path) -> None:
+    """A later refusal must not swap crops on samples that already passed."""
+    first_crop = _benign_crop(4)
+    second_crop = _benign_crop(6)
+    first_bytes = first_crop.tobytes()
+    second_bytes = second_crop.tobytes()
+    first = _sample("FX-SYNREID-001", use="DEV", crop=first_crop)
+    second = _sample("FX-SYNREID-002", use="HOLD", crop=second_crop)
+    _refused(
+        [first, second],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "refused in EVALUATION",
+    )
+    assert first.crop is first_crop
+    assert second.crop is second_crop
+    assert first_crop.tobytes() == first_bytes
+    assert second_crop.tobytes() == second_bytes
+
+
+def test_training_refuses_every_sample_before_the_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tag outside TRAIN/HOLD/DEV is still refused, before the id check."""
+    monkeypatch.setattr(data_module, "_TRAINING_ID_PATTERNS", (data_module._SYNREID_ID,))
+    monkeypatch.setattr(
+        data_module,
+        "_RECOGNISED_USE_TAGS",
+        data_module._RECOGNISED_USE_TAGS | {"FUTURE"},
+    )
+    sample = _sample("FX-SYNREID-001", use="FUTURE", crop=_benign_crop(11))
+    message = _refused(
+        [sample],
+        LoaderContext.TRAINING,
+        _write_manifest(tmp_path),
+        "refused in TRAINING",
+    )
+    assert "FUTURE" in message
 
 
 def test_smoke_bytes_retagged_as_dev_are_refused(

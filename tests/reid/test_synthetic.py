@@ -6,14 +6,19 @@ and nothing is written into the repo tree.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 import scripts.check_licenses as check_licenses
+import trace_search.reid.eval as eval_module
 from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
 from trace_search.reid.data import ReidSample, load_reid_samples
 from trace_search.reid.synthetic import make_synthetic_reid_set
@@ -106,7 +111,7 @@ def test_samples_load_in_evaluation_and_are_refused_in_training() -> None:
     samples = make_synthetic_reid_set()
     loaded = load_reid_samples(samples, LoaderContext.EVALUATION, _MANIFEST)
     assert len(loaded) == len(samples)
-    with pytest.raises(FixtureSeparationError, match="not on the ReID allowlist"):
+    with pytest.raises(FixtureSeparationError, match="refused in TRAINING"):
         load_reid_samples(samples, LoaderContext.TRAINING, _MANIFEST)
 
 
@@ -125,14 +130,92 @@ def test_relabelled_smoke_id_is_still_refused() -> None:
         load_reid_samples([relabelled], LoaderContext.EVALUATION, _MANIFEST)
 
 
-def test_generator_does_not_write_files(tmp_path: Path) -> None:
+class _WriteGuard:
+    """Fail the no-write test on a write, including one under the system temp dir."""
+
+    def __init__(self) -> None:
+        self.armed = False
+
+    def __call__(self, event: str, args: tuple[object, ...]) -> None:
+        if not self.armed or not _is_write_event(event, args):
+            return
+        raise AssertionError(f"unexpected write event {event} {args!r}")
+
+
+def _is_write_event(event: str, args: tuple[object, ...]) -> bool:
+    if event in {"os.mkdir", "os.rename", "os.remove", "os.rmdir", "sqlite3.connect"}:
+        return True
+    if event != "open":
+        return False
+    mode = args[1] if len(args) > 1 else ""
+    flags = args[2] if len(args) > 2 else 0
+    if isinstance(mode, str) and any(flag in mode for flag in ("w", "a", "x", "+")):
+        return True
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_APPEND
+    return isinstance(flags, int) and bool(flags & write_flags)
+
+
+_WRITE_GUARD = _WriteGuard()
+sys.addaudithook(_WRITE_GUARD)
+
+
+def test_generator_does_not_write_files(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The generator, the loader, and the eval command do not write.
+
+    A write under ``tempfile.gettempdir()`` fails this test, as does a
+    write in ``tmp_path`` or the work tree. ``np.save`` to the system
+    temp directory is the case that used to slip through.
+    """
+    system_temp = Path(tempfile.gettempdir())
+    assert system_temp.is_dir()
     before_files = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
     before_status = subprocess.check_output(["git", "status", "--porcelain"], cwd=_REPO)
-    make_synthetic_reid_set()
+    _WRITE_GUARD.armed = True
+    try:
+        samples = make_synthetic_reid_set()
+        load_reid_samples(samples, LoaderContext.EVALUATION, _MANIFEST)
+        code = eval_module.main(["--embedder", "placeholder", "--synthetic-seed", "0", "--json"])
+    finally:
+        _WRITE_GUARD.armed = False
+    capsys.readouterr()
     after_files = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
     after_status = subprocess.check_output(["git", "status", "--porcelain"], cwd=_REPO)
+    assert code == 0
     assert before_files == after_files
     assert before_status == after_status
+
+
+def test_camera_shift_moves_the_colour_pattern() -> None:
+    """Cameras in one group differ by more than the per-pixel noise.
+
+    Noise is at most 15. Removing the band shift leaves every channel
+    inside that bound, so this fails.
+    """
+    samples = make_synthetic_reid_set(seed=0)
+    by_label: dict[int, dict[str, np.ndarray]] = {}
+    for sample in samples:
+        assert sample.crop is not None
+        by_label.setdefault(sample.label, {})[sample.camera_id] = sample.crop
+    for cameras in by_label.values():
+        diff = np.abs(cameras["cam-0"].astype(np.int16) - cameras["cam-1"].astype(np.int16))
+        assert int(diff.max()) > 15
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "phrase"),
+    [
+        ({"n_groups": 0}, "n_groups"),
+        ({"per_group": 0}, "per_group"),
+        ({"n_cameras": 0}, "n_cameras"),
+        ({"size": (0, 32)}, "size"),
+        ({"size": (64, 0)}, "size"),
+        ({"n_groups": 1000}, "999"),
+        ({"n_groups": 10, "per_group": 100}, "999"),
+    ],
+)
+def test_generator_rejects_counts_and_size(kwargs: dict[str, object], phrase: str) -> None:
+    with pytest.raises(ValueError, match=phrase):
+        make_synthetic_reid_set(**kwargs)  # type: ignore[arg-type]
 
 
 def test_manifest_has_one_generator_row_for_synthetic_py() -> None:
@@ -153,13 +236,7 @@ def test_manifest_has_one_generator_row_for_synthetic_py() -> None:
 
 
 def test_manifest_sha256_matches_synthetic_py() -> None:
-    completed = subprocess.run(
-        ["sha256sum", str(_SOURCE)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    digest = completed.stdout.split()[0]
+    digest = hashlib.sha256(_SOURCE.read_bytes()).hexdigest()
     assert _generator_row()["sha256"] == digest
     assert len(digest) == 64
 

@@ -2,7 +2,8 @@
 
 ``make_synthetic_reid_set`` builds the arrays and returns them. It does
 not write a file. Each group is solid colour bands, plus seeded noise
-and a small shift per camera. There are no human shapes and no text.
+and a shift that moves those bands per camera. There are no human
+shapes and no text.
 
 Fixture ids are ``FX-SYNREID-nnn``. The use tag on each sample is
 ``DEV``. That tag lives only on the samples. It is not a manifest
@@ -34,7 +35,7 @@ def make_synthetic_reid_set(
     byte-identical crops. ``camera_id`` is ``cam-0``, ``cam-1``, and so
     on. ``label`` is the group index. It is not a person id.
     """
-    height, width = size
+    height, width = _require_shape(n_groups, per_group, n_cameras, size)
     rng = np.random.default_rng(seed)
     next_track = {camera: 0 for camera in range(n_cameras)}
     samples: list[ReidSample] = []
@@ -44,10 +45,41 @@ def make_synthetic_reid_set(
         for slot in range(per_group):
             camera = slot % n_cameras
             next_track[camera] += 1
-            image = _shift_for_camera(_with_noise(base, rng), camera)
+            image = _with_noise(_shift_for_camera(base, camera), rng)
             samples.append(_make_sample(number, group, camera, next_track[camera], image))
             number += 1
     return samples
+
+
+def _require_shape(
+    n_groups: int,
+    per_group: int,
+    n_cameras: int,
+    size: tuple[int, int],
+) -> tuple[int, int]:
+    """Reject a set that cannot be named with 3-digit ids or drawn."""
+    _require_at_least_one("n_groups", n_groups)
+    _require_at_least_one("per_group", per_group)
+    _require_at_least_one("n_cameras", n_cameras)
+    height, width = _require_size(size)
+    total = n_groups * per_group
+    if total > 999:
+        raise ValueError(
+            f"n_groups * per_group is {total}; a synthetic id is 3 digits and stops at 999"
+        )
+    return height, width
+
+
+def _require_at_least_one(name: str, value: int) -> None:
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1, got {value!r}")
+
+
+def _require_size(size: tuple[int, int]) -> tuple[int, int]:
+    height, width = size
+    if height < 1 or width < 1:
+        raise ValueError(f"size must be > 0 in both dimensions, got {size!r}")
+    return height, width
 
 
 def _group_colours(rng: np.random.Generator) -> npt.NDArray[np.uint8]:
@@ -80,8 +112,10 @@ def _with_noise(
 
 
 def _shift_for_camera(image: npt.NDArray[np.uint8], camera: int) -> npt.NDArray[np.uint8]:
-    shifted = np.roll(image, shift=camera + 1, axis=1)
-    return np.ascontiguousarray(shifted)
+    """Roll the colour bands down. A sideways roll would move only noise."""
+    band_height = max(image.shape[0] // _BANDS, 1)
+    shift = (camera + 1) * band_height
+    return np.ascontiguousarray(np.roll(image, shift=shift, axis=0))
 
 
 def _make_sample(
