@@ -1,9 +1,11 @@
 """In-memory flat-colour blocks for the ReID evaluation command.
 
 ``make_synthetic_reid_set`` builds the arrays and returns them. It does
-not write a file. Each group is solid colour bands, plus seeded noise
-and a shift that moves those bands per camera. There are no human
-shapes and no text.
+not write a file. Each group is solid colour bands. An odd group copies
+the previous group's bands and nudges one band, so that pair is a hard
+distractor. Seeded noise, a per-camera band shift, and a per-camera
+darkening of one band follow. The shift is not a 4-camera cycle. There
+are no human shapes and no text.
 
 Fixture ids are ``FX-SYNREID-nnn``. The use tag on each sample is
 ``DEV``. That tag lives only on the samples. It is not a manifest
@@ -11,6 +13,8 @@ Fixture ids are ``FX-SYNREID-nnn``. The use tag on each sample is
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import numpy.typing as npt
@@ -20,10 +24,13 @@ from trace_search.reid.data import ReidSample
 _BANDS = 4
 _NOISE_LIMIT = 16
 _ID_WIDTH = 3
+_DISTRACTOR_LIMIT = 12
+_CAMERA_BAND_PERCENT = 70
+_CYCLE_BUMP = 80
 
 
 def make_synthetic_reid_set(
-    n_groups: int = 4,
+    n_groups: int = 8,
     per_group: int = 4,
     n_cameras: int = 2,
     size: tuple[int, int] = (64, 32),
@@ -33,19 +40,25 @@ def make_synthetic_reid_set(
 
     ``size`` is ``(height, width)``. The same ``seed`` returns
     byte-identical crops. ``camera_id`` is ``cam-0``, ``cam-1``, and so
-    on. ``label`` is the group index. It is not a person id.
+    on. ``label`` is the group index. It is not a person id. An odd
+    group copies the previous group's bands and nudges one band, so
+    that pair is a hard distractor.
     """
     height, width = _require_shape(n_groups, per_group, n_cameras, size)
     rng = np.random.default_rng(seed)
     next_track = {camera: 0 for camera in range(n_cameras)}
     samples: list[ReidSample] = []
     number = 1
+    previous: npt.NDArray[np.uint8] | None = None
     for group in range(n_groups):
-        base = _paint(_group_colours(rng), height, width)
+        colours = _colours_for_group(rng, group, previous)
+        if group % 2 == 0:
+            previous = colours
+        base = _paint(colours, height, width)
         for slot in range(per_group):
             camera = slot % n_cameras
             next_track[camera] += 1
-            image = _with_noise(_shift_for_camera(base, camera), rng)
+            image = _with_noise(_camera_view(base, camera), rng)
             samples.append(_make_sample(number, group, camera, next_track[camera], image))
             number += 1
     return samples
@@ -82,9 +95,34 @@ def _require_size(size: tuple[int, int]) -> tuple[int, int]:
     return height, width
 
 
-def _group_colours(rng: np.random.Generator) -> npt.NDArray[np.uint8]:
+def _colours_for_group(
+    rng: np.random.Generator,
+    group: int,
+    previous: npt.NDArray[np.uint8] | None,
+) -> npt.NDArray[np.uint8]:
+    """Fresh bands, or a one-band nudge of the previous group."""
+    if previous is None or group % 2 == 0:
+        return _fresh_colours(rng)
+    return _shared_colours(previous, rng, group)
+
+
+def _fresh_colours(rng: np.random.Generator) -> npt.NDArray[np.uint8]:
     drawn = rng.integers(0, 256, size=(_BANDS, 3), dtype=np.uint8)
     return np.ascontiguousarray(drawn)
+
+
+def _shared_colours(
+    previous: npt.NDArray[np.uint8],
+    rng: np.random.Generator,
+    group: int,
+) -> npt.NDArray[np.uint8]:
+    """Copy ``previous`` and nudge one band by at most ``_DISTRACTOR_LIMIT``."""
+    shared = np.array(previous, copy=True)
+    band = group % _BANDS
+    nudge = rng.integers(-_DISTRACTOR_LIMIT, _DISTRACTOR_LIMIT + 1, size=3)
+    mixed = shared[band].astype(np.int16) + nudge
+    shared[band] = np.clip(mixed, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(shared)
 
 
 def _paint(
@@ -111,11 +149,68 @@ def _with_noise(
     return np.ascontiguousarray(clipped)
 
 
+def _camera_view(image: npt.NDArray[np.uint8], camera: int) -> npt.NDArray[np.uint8]:
+    """Shift, darken one band, then mark a wrapped camera cycle."""
+    shifted = _shift_for_camera(image, camera)
+    darkened = _darken_one_band(shifted, camera)
+    return _mark_wrapped_cycle(darkened, camera)
+
+
 def _shift_for_camera(image: npt.NDArray[np.uint8], camera: int) -> npt.NDArray[np.uint8]:
-    """Roll the colour bands down. A sideways roll would move only noise."""
-    band_height = max(image.shape[0] // _BANDS, 1)
-    shift = (camera + 1) * band_height
+    """Roll the bands by an amount that does not repeat every 4 cameras.
+
+    A roll of ``(camera + 1)`` whole bands has period 4 when the crop is
+    4 bands tall, so camera ``k`` matched camera ``k + 4``. Adding
+    ``camera`` rows breaks that cycle.
+    """
+    height = int(image.shape[0])
+    band_height = max(height // _BANDS, 1)
+    shift = (camera + 1) * band_height + camera
     return np.ascontiguousarray(np.roll(image, shift=shift, axis=0))
+
+
+def _darken_one_band(image: npt.NDArray[np.uint8], camera: int) -> npt.NDArray[np.uint8]:
+    """Keep ``_CAMERA_BAND_PERCENT`` of one band. The band depends on the camera.
+
+    A pure roll keeps each colour's pixel count. Darkening one band
+    changes the mix, so two cameras are not translates of each other.
+    """
+    height = int(image.shape[0])
+    edges = np.linspace(0, height, _BANDS + 1, dtype=int)
+    band = camera % _BANDS
+    start = int(edges[band])
+    stop = int(edges[band + 1])
+    viewed = np.array(image, copy=True)
+    block = viewed[start:stop].astype(np.uint16)
+    scaled = block * np.uint16(_CAMERA_BAND_PERCENT) // np.uint16(100)
+    viewed[start:stop] = scaled.astype(np.uint8)
+    return np.ascontiguousarray(viewed)
+
+
+def _mark_wrapped_cycle(image: npt.NDArray[np.uint8], camera: int) -> npt.NDArray[np.uint8]:
+    """Colour-mark a camera once the roll period has wrapped.
+
+    Inside one period the roll already makes every camera distinct.
+    The next camera that lands on the same rows gets a brighter channel
+    and a corner code, so it does not match the earlier camera.
+    """
+    cycle = camera // _roll_period(int(image.shape[0]))
+    if cycle == 0:
+        return image
+    marked = np.array(image, copy=True)
+    channel = cycle % 3
+    plane = marked[:, :, channel].astype(np.int16) + _CYCLE_BUMP
+    marked[:, :, channel] = np.clip(plane, 0, 255).astype(np.uint8)
+    marked[0, 0, 0] = np.uint8(cycle % 256)
+    marked[0, 0, 1] = np.uint8((cycle // 256) % 256)
+    return np.ascontiguousarray(marked)
+
+
+def _roll_period(height: int) -> int:
+    """How many cameras have a unique band roll at this height."""
+    band_height = max(height // _BANDS, 1)
+    step = band_height + 1
+    return height // math.gcd(step, height)
 
 
 def _make_sample(

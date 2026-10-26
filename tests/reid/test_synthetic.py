@@ -79,7 +79,7 @@ def test_same_seed_is_byte_identical_and_a_different_seed_differs() -> None:
     first = make_synthetic_reid_set(seed=0)
     second = make_synthetic_reid_set(seed=0)
     third = make_synthetic_reid_set(seed=1)
-    assert len(first) == 16
+    assert len(first) == 32
     for left, right in zip(first, second, strict=True):
         assert left.crop is not None and right.crop is not None
         assert left.crop.tobytes() == right.crop.tobytes()
@@ -94,11 +94,11 @@ def test_same_seed_is_byte_identical_and_a_different_seed_differs() -> None:
 def test_ids_are_fx_synreid_and_the_use_tag_is_dev() -> None:
     samples = make_synthetic_reid_set()
     assert [sample.fixture_id for sample in samples] == [
-        f"FX-SYNREID-{number:03d}" for number in range(1, 17)
+        f"FX-SYNREID-{number:03d}" for number in range(1, 33)
     ]
     assert [sample.use for sample in samples] == ["DEV"] * len(samples)
     assert {sample.camera_id for sample in samples} == {"cam-0", "cam-1"}
-    assert {sample.label for sample in samples} == {0, 1, 2, 3}
+    assert {sample.label for sample in samples} == set(range(8))
     assert all(sample.path is None for sample in samples)
     for sample in samples:
         crop = sample.crop
@@ -188,8 +188,8 @@ def test_generator_does_not_write_files(tmp_path: Path, capsys: pytest.CaptureFi
 def test_camera_shift_moves_the_colour_pattern() -> None:
     """Cameras in one group differ by more than the per-pixel noise.
 
-    Noise is at most 15. Removing the band shift leaves every channel
-    inside that bound, so this fails.
+    Noise is at most 15. The per-camera band move and the darkened band
+    push the max channel gap above that bound.
     """
     samples = make_synthetic_reid_set(seed=0)
     by_label: dict[int, dict[str, np.ndarray]] = {}
@@ -199,6 +199,135 @@ def test_camera_shift_moves_the_colour_pattern() -> None:
     for cameras in by_label.values():
         diff = np.abs(cameras["cam-0"].astype(np.int16) - cameras["cam-1"].astype(np.int16))
         assert int(diff.max()) > 15
+
+
+def test_odd_groups_stay_close_to_their_partner_on_the_same_camera() -> None:
+    """Group 1 shares group 0's bands. Group 2 does not.
+
+    Same camera, so the gap is the colours. Noise is at most 15, and the
+    shared pair's mean gap stays under that. An unrelated palette does not.
+    """
+    samples = make_synthetic_reid_set(seed=0)
+    partner = _mean_gap(samples, 0, 1)
+    unrelated = _mean_gap(samples, 0, 2)
+    assert partner < 15
+    assert unrelated > 60
+    assert partner < unrelated
+
+
+def test_camera_layouts_do_not_repeat_every_four_cameras() -> None:
+    """Camera k and camera k+4 are different layouts.
+
+    The old roll was ``(camera + 1)`` whole bands. On a 4-band crop that
+    made camera 4 match camera 0 apart from noise of at most 15. A large
+    share of pixels now differs by more than that.
+    """
+    samples = make_synthetic_reid_set(n_groups=1, per_group=8, n_cameras=8, seed=0)
+    crops = _one_crop_per_camera(samples, 8)
+    for left, right in _camera_pairs(8):
+        assert _max_gap(crops[left], crops[right]) > 15
+    height, width = crops[0].shape[:2]
+    # At least one full band, not a single marked pixel.
+    assert _pixels_over(crops[0], crops[4], 15) >= (height // 4) * width
+
+
+def test_wrapped_roll_stays_distinct() -> None:
+    """A later cycle does not copy an earlier camera.
+
+    At height 4 the band roll repeats every 2 cameras. Camera 4 lands on
+    camera 0's rows and darkens the same band. Without the cycle mark
+    those crops would differ only by noise of at most 15.
+    """
+    samples = make_synthetic_reid_set(
+        n_groups=1,
+        per_group=5,
+        n_cameras=5,
+        size=(4, 4),
+        seed=0,
+    )
+    crops = _one_crop_per_camera(samples, 5)
+    for left, right in _camera_pairs(5):
+        assert _max_gap(crops[left], crops[right]) > 15
+
+
+_NOTE = "Placeholder or synthetic embeddings. Not an AC-06 result."
+
+
+def test_seed_0_separates_placeholder_from_random_init_osnet(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Seed 0 does not give random-init osnet-lite a perfect score.
+
+    The placeholder and osnet-lite Rank-1 / mAP differ. osnet-lite is
+    above the placeholder and is not Rank-1 1.0 and mAP 1.0 together.
+    ``evidence`` stays false. The note says this is not an AC-06 result.
+    These figures are synthetic diagnostics, not an AC-06 number.
+    """
+    placeholder = _eval_json("placeholder", capsys)
+    osnet = _eval_json("osnet-lite", capsys)
+    assert placeholder["evidence"] is False
+    assert osnet["evidence"] is False
+    assert placeholder["note"] == _NOTE
+    assert osnet["note"] == _NOTE
+    assert "Not an AC-06 result" in str(osnet["note"])
+    assert placeholder["num_valid_query"] == 16
+    assert osnet["num_valid_query"] == 16
+    assert placeholder["num_gallery"] == 16
+    assert osnet["num_gallery"] == 16
+    assert placeholder["rank1"] == 0.125
+    assert placeholder["mAP"] == 0.2686762889887889
+    assert osnet["rank1"] == 0.5
+    assert osnet["mAP"] == 0.7083333333333331
+    assert osnet["rank1"] > placeholder["rank1"]
+    assert osnet["mAP"] > placeholder["mAP"]
+    assert not (osnet["rank1"] == 1.0 and osnet["mAP"] == 1.0)
+
+
+def _eval_json(embedder: str, capsys: pytest.CaptureFixture[str]) -> dict[str, object]:
+    code = eval_module.main(["--embedder", embedder, "--synthetic-seed", "0", "--json"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _mean_gap(samples: list, left: int, right: int) -> float:
+    gap = np.abs(_cam0(samples, left).astype(np.int16) - _cam0(samples, right).astype(np.int16))
+    return float(np.mean(gap))
+
+
+def _cam0(samples: list, label: int) -> np.ndarray:
+    for sample in samples:
+        if sample.label == label and sample.camera_id == "cam-0" and sample.crop is not None:
+            return sample.crop
+    raise AssertionError(f"missing cam-0 crop for label {label}")
+
+
+def _one_crop_per_camera(samples: list, n_cameras: int) -> list[np.ndarray]:
+    found: dict[str, np.ndarray] = {}
+    for sample in samples:
+        if sample.crop is not None and sample.camera_id not in found:
+            found[sample.camera_id] = sample.crop
+    return [found[f"cam-{camera}"] for camera in range(n_cameras)]
+
+
+def _camera_pairs(n_cameras: int) -> list[tuple[int, int]]:
+    pairs: list[tuple[int, int]] = []
+    for left in range(n_cameras):
+        for right in range(left + 1, n_cameras):
+            pairs.append((left, right))
+    return pairs
+
+
+def _max_gap(left: np.ndarray, right: np.ndarray) -> int:
+    return int(np.abs(left.astype(np.int16) - right.astype(np.int16)).max())
+
+
+def _pixels_over(left: np.ndarray, right: np.ndarray, bound: int) -> int:
+    diff = np.abs(left.astype(np.int16) - right.astype(np.int16))
+    return int(np.any(diff > bound, axis=2).sum())
 
 
 @pytest.mark.parametrize(
