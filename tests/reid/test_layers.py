@@ -40,6 +40,13 @@ _LAYER_NAMES = (
     "GlobalAvgPool",
 )
 _WEIGHTED = _LAYER_NAMES[:5]
+# Batch-norm scale is fixed at 1, so it is not a He draw and does not depend on the seed.
+_HE_DRAWN = (
+    "Conv2d",
+    "DepthwiseConv2d",
+    "PointwiseConv2d",
+    "Linear",
+)
 _CLOSE = {"rtol": 1e-5, "atol": 1e-5}
 
 
@@ -112,10 +119,6 @@ def _he_weight(kind: str, rng: np.random.Generator) -> tuple[np.ndarray, np.ndar
         shape = (4, 3)
         fan_in = 3
         bias_shape = (4,)
-    elif kind == "BatchNorm2d":
-        shape = (3,)
-        fan_in = 1
-        bias_shape = (3,)
     elif kind == "Linear":
         shape = (4, 75)
         fan_in = 75
@@ -372,7 +375,7 @@ def test_defaults() -> None:
     assert linear.out_features == 4
 
 
-@pytest.mark.parametrize("kind", _WEIGHTED)
+@pytest.mark.parametrize("kind", _HE_DRAWN)
 def test_weight_draw_matches_he_normal(kind: str) -> None:
     probe = np.random.default_rng(7)
     expected_weight, expected_bias = _he_weight(kind, probe)
@@ -380,9 +383,28 @@ def test_weight_draw_matches_he_normal(kind: str) -> None:
     assert np.array_equal(layer.weight, expected_weight)
     assert np.array_equal(layer.bias, expected_bias)
     assert layer.weight.dtype == np.float64
-    if kind == "BatchNorm2d":
-        assert np.array_equal(layer.running_mean, np.zeros(3, dtype=np.float64))
-        assert np.array_equal(layer.running_var, np.ones(3, dtype=np.float64))
+
+
+def test_batch_norm_scale_starts_at_one_and_shift_at_zero() -> None:
+    """Scale is 1 and shift is 0. He-normal with fan_in 1 is not used.
+
+    He-normal with fan_in 1 has standard deviation sqrt(2), so about half of
+    the scales are negative. Seed 0 at 64 channels is the case that showed
+    31 negative scales.
+    """
+    layer = BatchNorm2d(64, np.random.default_rng(0))
+    other = BatchNorm2d(64, np.random.default_rng(1))
+    ones = np.ones(64, dtype=np.float64)
+    zeros = np.zeros(64, dtype=np.float64)
+    assert layer.weight.dtype == np.float64
+    assert layer.bias.dtype == np.float64
+    assert np.array_equal(layer.weight, ones)
+    assert np.array_equal(layer.bias, zeros)
+    assert np.array_equal(other.weight, ones)
+    assert np.array_equal(other.bias, zeros)
+    assert np.array_equal(layer.running_mean, zeros)
+    assert np.array_equal(layer.running_var, ones)
+    assert int(np.count_nonzero(layer.weight < 0.0)) == 0
 
 
 @pytest.mark.parametrize("kind", _WEIGHTED)
@@ -393,7 +415,7 @@ def test_same_seed_draws_identical_weights(kind: str) -> None:
     assert np.array_equal(left.bias, right.bias)
 
 
-@pytest.mark.parametrize("kind", _WEIGHTED)
+@pytest.mark.parametrize("kind", _HE_DRAWN)
 def test_different_seed_draws_different_weights(kind: str) -> None:
     left = _make(kind, np.random.default_rng(0))
     right = _make(kind, np.random.default_rng(1))
@@ -460,6 +482,7 @@ def test_conv2d_matches_loop_reference(
     ("stride", "padding"),
     [
         pytest.param(1, 0, id="s1-p0"),
+        pytest.param(1, 1, id="s1-p1"),
         pytest.param(2, 1, id="s2-p1"),
         pytest.param((1, 2), (1, 0), id="s1x2-p1x0"),
     ],
@@ -680,6 +703,10 @@ def test_forward_rejects_bad_shapes() -> None:
         Conv2d(3, 1, 6, rng).forward(values)
     with pytest.raises(ValueError, match="output spatial size"):
         Conv2d(3, 1, (1, 6), rng).forward(values)
+    with pytest.raises(ValueError, match="output spatial size"):
+        DepthwiseConv2d(3, rng).forward(np.zeros((2, 3, 2, 2), dtype=np.float64))
+    with pytest.raises(ValueError, match="output spatial size"):
+        DepthwiseConv2d(3, rng).forward(np.zeros((2, 3, 5, 1), dtype=np.float64))
     with pytest.raises(ValueError, match="ndim 4"):
         Conv2d(3, 1, 1, rng).forward(np.zeros((2, 3, 5), dtype=np.float64))
     with pytest.raises(ValueError, match="expected 4 channels"):
@@ -700,6 +727,17 @@ def test_forward_rejects_bad_shapes() -> None:
 
 def _layers_source() -> str:
     return Path(inspect.getfile(Conv2d)).read_text(encoding="utf-8")
+
+
+def test_depthwise_convolution_is_one_einsum_without_a_channel_loop() -> None:
+    """The 3x3 depthwise path is one window einsum, not a Python loop over channels."""
+    source = _layers_source()
+    start = source.index("def _depthwise_conv2d(")
+    helper = source[start : source.index("\ndef _moments(")]
+    forward = inspect.getsource(DepthwiseConv2d.forward)
+    assert "einsum" in helper
+    assert "for " not in helper
+    assert "for " not in forward
 
 
 def test_layers_module_has_no_backward_step_or_zero_grad() -> None:
