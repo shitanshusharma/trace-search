@@ -20,12 +20,44 @@ from trace_search.reid import AppearanceEmbedder
 from trace_search.reid.nn.layers import BatchNorm2d, DepthwiseConv2d
 from trace_search.reid.osnet_lite import (
     OsnetLiteEmbedder,
+    _AggregationGate,
     _as_appearance_embedder,
+    _batch_from_crops,
+    _gate_hidden,
+    _OmniScaleBlock,
     _Passthrough,
     _Projection,
 )
 
+# First four values of row 0 from OsnetLiteEmbedder(seed=0).embed on _fixed_crops().
+# Recorded by running that call. Tolerance is 1e-6.
+_SEED0_PREFIX = np.array(
+    [
+        0.06925279647111893,
+        -0.008996392600238323,
+        0.027177950367331505,
+        0.028381571173667908,
+    ],
+    dtype=np.float32,
+)
+
 _NORM_TOLERANCE = 1e-5
+
+
+def _fixed_crops() -> list[npt.NDArray[np.uint8]]:
+    """Two crops that are not already 64x32, so the resize is not a no-op."""
+    return _crops(seed=21, count=2, shape=(70, 28, 3))
+
+
+def _varied_crops() -> list[npt.NDArray[np.uint8]]:
+    """A batch of crops that are not copies of each other."""
+    crops = _crops(seed=100, count=2, shape=(48, 36, 3))
+    dark = np.zeros((48, 36, 3), dtype=np.uint8)
+    dark[:, :8, :] = 255
+    bright = np.full((48, 36, 3), 255, dtype=np.uint8)
+    bright[::3, :, 0] = 0
+    crops.extend((dark, bright))
+    return crops
 
 
 def _crops(
@@ -44,6 +76,81 @@ def _crops(
 
 def _row_norms(rows: npt.NDArray[np.float32]) -> npt.NDArray[np.float64]:
     return np.linalg.norm(rows.astype(np.float64), axis=1)
+
+
+def _explicit_gate(
+    gate: _AggregationGate, features: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Pool, reduce, ReLU, expand, sigmoid, using the gate's own layers."""
+    pooled = gate.pool.forward(features)
+    hidden = gate.relu.forward(gate.reduce.forward(pooled))
+    return gate.sigmoid.forward(gate.expand.forward(hidden))
+
+
+def _scale_by_gate(
+    features: npt.NDArray[np.float64], gates: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    scale = gates.reshape(int(gates.shape[0]), int(gates.shape[1]), 1, 1)
+    return np.ascontiguousarray(np.asarray(features * scale, dtype=np.float64))
+
+
+def _mix_from_layers(
+    stage: _OmniScaleBlock, hidden: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Four chained streams, each gated on its own output, then summed."""
+    carried = hidden
+    parts: list[npt.NDArray[np.float64]] = []
+    for stream in stage.streams:
+        carried = stream.forward(carried)
+        weights = _explicit_gate(stage.gate, carried)
+        parts.append(_scale_by_gate(carried, weights))
+    total = parts[0]
+    for part in parts[1:]:
+        total = np.ascontiguousarray(np.asarray(total + part, dtype=np.float64))
+    return total
+
+
+def _block_from_layers(
+    stage: _OmniScaleBlock, batch: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Reduce, mix, expand, and add the shortcut. No pooling inside the block."""
+    skip = stage.shortcut.forward(batch)
+    reduced = stage.relu.forward(stage.reduce_norm.forward(stage.reduce.forward(batch)))
+    restored = stage.expand_norm.forward(stage.expand.forward(_mix_from_layers(stage, reduced)))
+    added = np.asarray(restored + skip, dtype=np.float64)
+    return stage.relu.forward(np.ascontiguousarray(added))
+
+
+def _reference_embed(
+    embedder: OsnetLiteEmbedder, crops: Sequence[npt.NDArray[np.uint8]]
+) -> npt.NDArray[np.float32]:
+    """Rebuild ``embed`` from the embedder's own layers, in paper order."""
+    batch = _batch_from_crops(crops)
+    network = embedder._network
+    hidden = network.stem_relu.forward(network.stem_norm.forward(network.stem.forward(batch)))
+    for stage in network.stages:
+        hidden = _block_from_layers(stage, hidden)
+    projected = network.embed.forward(network.pool.forward(hidden))
+    norms = np.linalg.norm(projected, axis=1, keepdims=True)
+    unit = np.asarray(projected / norms, dtype=np.float32)
+    return np.ascontiguousarray(unit)
+
+
+def _stream_gates(
+    embedder: OsnetLiteEmbedder, batch: npt.NDArray[np.float64]
+) -> list[npt.NDArray[np.float64]]:
+    """Gate output for each chained stream. One row per crop."""
+    network = embedder._network
+    hidden = network.stem_relu.forward(network.stem_norm.forward(network.stem.forward(batch)))
+    found: list[npt.NDArray[np.float64]] = []
+    for stage in network.stages:
+        reduced = stage.relu.forward(stage.reduce_norm.forward(stage.reduce.forward(hidden)))
+        carried = reduced
+        for stream in stage.streams:
+            carried = stream.forward(carried)
+            found.append(np.asarray(stage.gate.forward(carried), dtype=np.float64))
+        hidden = _block_from_layers(stage, hidden)
+    return found
 
 
 def _construct_rejected(keyword: str, value: object) -> None:
@@ -191,9 +298,13 @@ def test_two_stages_have_four_streams_and_one_shared_gate() -> None:
     assert isinstance(first.shortcut, _Passthrough)
     assert isinstance(second.shortcut, _Projection)
     assert first.gate.reduce.in_features == 8
-    assert first.gate.reduce.out_features == 1
+    assert first.gate.reduce.out_features == 4
     assert second.gate.reduce.in_features == 16
-    assert second.gate.reduce.out_features == 1
+    assert second.gate.reduce.out_features == 4
+    assert _gate_hidden(8) == 4
+    assert _gate_hidden(16) == 4
+    assert _gate_hidden(64) == 4
+    assert _gate_hidden(128) == 8
 
 
 def test_batch_norm_stays_at_init_and_does_not_update() -> None:
@@ -335,3 +446,68 @@ def test_different_spatial_shapes_share_one_output_shape() -> None:
     found = OsnetLiteEmbedder(seed=0, dim=8).embed(crops)
     assert found.shape == (2, 8)
     assert np.all(np.abs(_row_norms(found) - 1.0) <= _NORM_TOLERANCE)
+
+
+def test_embed_matches_layer_reference() -> None:
+    """The forward pass is the stem, two chained gated blocks, pool, and linear."""
+    crops = _fixed_crops()
+    embedder = OsnetLiteEmbedder(seed=0)
+    found = embedder.embed(crops)
+    expected = _reference_embed(embedder, crops)
+    assert found.shape == expected.shape
+    assert np.allclose(found, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_stem_input_is_64_high_and_32_wide(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tensor that reaches the stem is NCHW with height 64 and width 32."""
+    embedder = OsnetLiteEmbedder(seed=0, dim=8)
+    seen: list[tuple[int, ...]] = []
+    stem = embedder._network.stem
+    original = stem.forward
+
+    def spy(batch: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        seen.append(tuple(int(axis) for axis in batch.shape))
+        return original(batch)
+
+    monkeypatch.setattr(stem, "forward", spy)
+    crops = _fixed_crops()
+    embedder.embed(crops)
+    assert len(seen) == 1
+    batch, channels, height, width = seen[0]
+    assert batch == len(crops)
+    assert channels == 3
+    assert height == 64
+    assert width == 32
+
+
+def test_seed_zero_prefix_matches_recorded_values() -> None:
+    found = OsnetLiteEmbedder(seed=0).embed(_fixed_crops())
+    assert found.shape == (2, 256)
+    assert np.allclose(found[0, :4], _SEED0_PREFIX, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_stream_gates_are_not_constant_across_a_batch(seed: int) -> None:
+    embedder = OsnetLiteEmbedder(seed=seed, dim=8)
+    batch = _batch_from_crops(_varied_crops())
+    gates = _stream_gates(embedder, batch)
+    assert len(gates) == 8
+    for weights in gates:
+        assert weights.shape[0] == batch.shape[0]
+        spread = float(np.max(np.abs(weights - weights[0])))
+        assert spread > 1e-4
+
+
+@pytest.mark.parametrize("seed", [None, True, False, -1, 1.5])
+def test_invalid_seed_raises_type_error(seed: object) -> None:
+    with pytest.raises(TypeError, match="seed"):
+        OsnetLiteEmbedder(seed=seed)  # type: ignore[arg-type]
+
+
+def test_caller_generator_is_not_shared() -> None:
+    fresh = np.random.default_rng(5)
+    expected = float(fresh.random())
+    caller = np.random.default_rng(5)
+    with pytest.raises(TypeError, match="seed"):
+        OsnetLiteEmbedder(seed=caller)  # type: ignore[arg-type]
+    assert float(caller.random()) == expected

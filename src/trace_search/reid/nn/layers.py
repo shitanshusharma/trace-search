@@ -354,17 +354,20 @@ class BatchNorm2d:
     variance when more than one element is present. Eval uses the running
     estimates and leaves them unchanged.
 
-    The scale starts at one and the shift starts at zero.
+    The scale starts at one and the shift starts at zero. ``rng`` may be
+    omitted. When it is passed, it is checked and not drawn from, so
+    batch-norm does not consume random state.
     """
 
     def __init__(
         self,
         num_features: int,
-        rng: np.random.Generator,
+        rng: np.random.Generator | None = None,
         eps: float = _DEFAULT_EPS,
         momentum: float = _DEFAULT_MOMENTUM,
     ) -> None:
-        _require_generator(rng)
+        if rng is not None:
+            _require_generator(rng)
         self.num_features = _require_positive_int(num_features, "num_features")
         self.eps = _require_positive_float(eps, "eps")
         self.momentum = _require_momentum(momentum)

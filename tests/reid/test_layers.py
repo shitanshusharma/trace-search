@@ -407,6 +407,23 @@ def test_batch_norm_scale_starts_at_one_and_shift_at_zero() -> None:
     assert int(np.count_nonzero(layer.weight < 0.0)) == 0
 
 
+def test_batch_norm_generator_is_optional_and_not_drawn() -> None:
+    """The generator is checked when supplied and is not drawn from."""
+    rng = np.random.default_rng(0)
+    expected = float(rng.random())
+    rng = np.random.default_rng(0)
+    layer = BatchNorm2d(8, rng)
+    assert float(rng.random()) == expected
+    ones = np.ones(8, dtype=np.float64)
+    zeros = np.zeros(8, dtype=np.float64)
+    assert np.array_equal(layer.weight, ones)
+    assert np.array_equal(layer.bias, zeros)
+    omitted = BatchNorm2d(8)
+    assert omitted.num_features == 8
+    assert np.array_equal(omitted.weight, ones)
+    assert np.array_equal(omitted.bias, zeros)
+
+
 @pytest.mark.parametrize("kind", _WEIGHTED)
 def test_same_seed_draws_identical_weights(kind: str) -> None:
     left = _make(kind, np.random.default_rng(0))

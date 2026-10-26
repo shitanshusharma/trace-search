@@ -1,27 +1,33 @@
 """Random-init OSNet-lite appearance embedder.
 
-The block follows the omni-scale residual in Zhou et al., arXiv 1905.00953.
-A 1x1 convolution reduces the width to a quarter of the stage width.
-Four lite streams follow the exponent:
-stream t stacks t lite 3x3 layers, and each later stream reuses the previous
-stream's output. A lite 3x3 is a pointwise 1x1 and then a depthwise 3x3
-with padding 1, so every stream keeps the same spatial size. One aggregation
-gate is shared by the streams in a block. The gate is global average
-pooling, a ReLU hidden layer at the paper's reduction ratio of 16 (at least
-one unit), and a sigmoid. The sigmoid outputs channel weights. The weighted
-streams are summed, a 1x1 convolution restores the width, and the shortcut
-is added.
+The block is an OSNet-style omni-scale residual (Zhou et al., arXiv
+1905.00953) with chained streams. Each block has four lite 3x3 layers,
+not the paper's ten separate layers (1+2+3+4). Later streams reuse the
+previous stream's output, so those four layers produce receptive fields
+3, 5, 7 and 9 inside the block. A lite 3x3 is a pointwise 1x1, then
+batch-norm and ReLU, then a depthwise 3x3 with padding 1, then batch-norm
+and ReLU. The paper's lite 3x3 is a linear 1x1, then depthwise, then one
+batch-norm and ReLU. There is no pooling inside a block, no max-pool
+after the stem, and no pooling between stages. Each stage is one block.
+
+One aggregation gate is shared by the streams in a block. The gate is
+global average pooling, a ReLU hidden layer, and a sigmoid. The hidden
+width is ``max(channels // 16, 4)``. The paper's reduction is 16. The
+floor of 4 keeps one dead ReLU from turning the gate into the constant
+0.5 at the narrow mid widths used here. The sigmoid outputs channel
+weights. Each stream is weighted by the gate on that stream's own output.
+The weighted streams are summed, a 1x1 convolution restores the width,
+and the shortcut is added.
 
 The network is a 7x7 stride-2 stem, two of those stages, global average
 pooling, and a linear map to ``dim``. Each output row is L2-normalised.
 Widths are 32, then 32, then 64, which is a narrow cut of the paper's
-table. The constructor takes ``seed`` and ``dim`` only. It does not read a
-parameter file and it does not open a connection.
+table. The constructor takes ``seed`` and ``dim`` only. It does not read
+a parameter file and it does not open a connection.
 """
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from typing import cast
 
@@ -44,6 +50,7 @@ from trace_search.reid.types import AppearanceEmbedder
 _STREAMS = 4
 _BOTTLENECK = 4
 _GATE_REDUCTION = 16
+_GATE_FLOOR = 4
 _HEIGHT = 64
 _WIDTH = 32
 _CHANNELS = 3
@@ -75,7 +82,10 @@ class _Lite3x3:
 
 
 class _AggregationGate:
-    """Shared channel gate: pool, ReLU hidden layer, sigmoid."""
+    """Shared channel gate: pool, ReLU hidden layer, sigmoid.
+
+    The hidden width is ``max(channels // 16, 4)``.
+    """
 
     def __init__(self, channels: int, rng: np.random.Generator) -> None:
         hidden = _gate_hidden(channels)
@@ -113,7 +123,10 @@ class _Projection:
 
 
 class _OmniScaleBlock:
-    """One omni-scale residual stage with four lite streams and one gate."""
+    """One omni-scale residual block: four chained lite layers and one gate.
+
+    There is no pooling inside the block.
+    """
 
     def __init__(self, in_channels: int, out_channels: int, rng: np.random.Generator) -> None:
         mid = out_channels // _BOTTLENECK
@@ -185,8 +198,8 @@ class OsnetLiteEmbedder:
 
     def __init__(self, seed: int = 0, dim: int = 256) -> None:
         self.dim = _require_dim(dim)
-        self._seed = seed
-        self._network = _Network(np.random.default_rng(seed), self.dim)
+        checked = _require_seed(seed)
+        self._network = _Network(np.random.default_rng(checked), self.dim)
 
     @property
     def name(self) -> str:
@@ -221,12 +234,24 @@ def _require_dim(dim: object) -> int:
     return dim
 
 
+def _require_seed(seed: object) -> int:
+    """Return ``seed`` when it is a non-bool int of at least 0.
+
+    ``None``, ``bool``, and a ``Generator`` raise ``TypeError``. A generator
+    is never passed to ``default_rng``, so the caller's generator is not shared.
+    """
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise TypeError(f"seed must be a non-negative int, got {seed!r}")
+    return seed
+
+
 def _gate_hidden(channels: int) -> int:
-    """Hidden width of the gate. The paper's ratio is 16, and at least 1."""
-    hidden = channels // _GATE_REDUCTION
-    if hidden < 1:
-        return 1
-    return hidden
+    """Hidden width of the gate.
+
+    The paper reduces by 16. The floor keeps a single dead ReLU from
+    making every channel weight 0.5 when the mid width is 8 or 16.
+    """
+    return max(channels // _GATE_REDUCTION, _GATE_FLOOR)
 
 
 def _scale_channels(
@@ -299,8 +324,5 @@ def _unit_rows(projected: npt.NDArray[np.float64]) -> npt.NDArray[np.float32]:
 
 def _any_unusable(norms: npt.NDArray[np.float64]) -> bool:
     flat = np.asarray(norms, dtype=np.float64).reshape(-1)
-    for value in flat:
-        number = float(value)
-        if not math.isfinite(number) or number == 0.0:
-            return True
-    return False
+    bad = np.logical_or(np.logical_not(np.isfinite(flat)), flat <= 0.0)
+    return bool(np.any(bad))
