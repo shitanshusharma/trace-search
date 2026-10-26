@@ -956,8 +956,8 @@ def test_one_seed_is_regenerated_once(
     assert calls == [0]
 
 
-def _write_rgb_png(directory: Path, name: str, crop: np.ndarray) -> Path:
-    path = directory / name
+def _write_rgb_png(directory: Path, filename: str, crop: np.ndarray) -> Path:
+    path = directory / filename
     Image.fromarray(np.ascontiguousarray(crop), mode="RGB").save(path)
     return path
 
@@ -1036,14 +1036,14 @@ def test_non_rgb_path_is_refused(tmp_path: Path) -> None:
 class _TwoReadCrop(ReidSample):
     """First ``crop`` read is foreign. Later reads are the generator crop."""
 
-    def __getattribute__(self, name: str) -> object:
-        if name == "crop":
+    def __getattribute__(self, attr: str) -> object:
+        if attr == "crop":
             reads = object.__getattribute__(self, "_reads")
             object.__setattr__(self, "_reads", reads + 1)
             if reads == 0:
                 return object.__getattribute__(self, "_foreign")
             return object.__getattribute__(self, "_genuine")
-        return object.__getattribute__(self, name)
+        return object.__getattribute__(self, attr)
 
 
 def test_switching_crop_is_refused(tmp_path: Path) -> None:
