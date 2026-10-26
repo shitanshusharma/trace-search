@@ -4,9 +4,18 @@ Anonymous cross-camera route search.
 
 ## What trace-search is
 
-trace-search is an on-premises prototype for same-day forensic search. The aim is to follow one anonymous person across cameras, then leave the result for a person to review. This repository is code only. Cut 01 is still in progress.
+trace-search is an on-premises prototype for same-day forensic search. The aim is to follow one anonymous person across cameras, then leave the result for a person to review. This repository is code only.
 
-End-to-end route search does not run yet. What you can run today is below.
+Words used later in this file:
+
+- **Cut 01** is this first build. It is still in progress.
+- **ReID** (re-identification) means matching one anonymous person from one camera to the next by how they look, not by a name.
+- **AC-06** is the acceptance check for that match. The harness is deferred. A number from the eval script is not an AC-06 result.
+- An **embedder** turns a person image into a list of numbers. **Random init** means those numbers start out random. These embedders are not trained.
+- **SMOKE** is a label for a synthetic wiring run. Smoke output is not evidence for any acceptance criterion.
+- **T9** is the retention and purge task. Some of its pieces are merged. The rest are not. The status list says which.
+
+Cut 01 is still in progress. End-to-end route search does not run yet. What you can run today is below.
 
 ## What it is not
 
@@ -22,9 +31,18 @@ It also does not match across days, match across a clothing change, or send real
 
 ## Install and run it today
 
-Use Python 3.11 or 3.12. The `Lint, Test, and License Check` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) uses Python 3.11. Run the commands from the repository root.
+Use Python 3.11 or 3.12. Pillow 13 requires 3.11+. The `Lint, Test, and License Check` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) uses Python 3.11. `venv/` is gitignored. Run the later commands from the repository root, with that virtualenv active.
 
-Install the way that job does:
+From a new machine:
+
+```bash
+git clone https://github.com/shitanshusharma/trace-search.git
+cd trace-search
+python3.11 -m venv venv
+source venv/bin/activate
+```
+
+Install the way that job does. The install downloads large wheels (OpenCV and onnxruntime).
 
 ```bash
 python -m pip install --upgrade pip
@@ -33,10 +51,16 @@ pip install --require-hashes -r requirements.txt
 pip install -e .
 ```
 
-Tests, same job:
+Tests, same job. The full pytest run takes about 5 minutes.
 
 ```bash
 pytest tests/ -v --tb=short
+```
+
+An HTML coverage report. This shorter command is not what CI runs. It writes `htmlcov/`, which is gitignored. The `quality / tests+coverage` job runs pytest with coverage (xml, term, and html), branch coverage, and `-v`, then fails under 80%.
+
+```bash
+pytest --cov=src/trace_search --cov-report=html
 ```
 
 Lint, same job:
@@ -45,7 +69,9 @@ Lint, same job:
 ruff check src/ tests/ scripts/
 ```
 
-Synthetic smoke. No workflow step runs these scripts. CI calls the runner in-process from `tests/test_smoke_runner.py`. Generate the clips first. They go in `smoke/`, which is gitignored, and they are not committed. With no flags the generator writes 5 clips, seed 42. It prints a hint about `--update-manifest`. Do not add that flag. The manifest already lists these clips, and this command does not edit it.
+Synthetic smoke. Generate the clips first. They go in `smoke/`, which is gitignored, and they are not committed. With no flags the generator writes 5 clips, seed 42.
+
+Do not pass `--update-manifest`. The generator prints a hint about that flag. The manifest already lists these clips, and this command does not edit it.
 
 The database path has to sit outside the repo. `/tmp/smoke.sqlite` does.
 
@@ -59,7 +85,7 @@ PYTHONPATH=src python scripts/run_smoke.py \
   --min-clips 5
 ```
 
-Synthetic ReID eval. No workflow step runs this script. Both embedders are random init. The JSON sets `evidence` to false. Its note says the numbers are not an AC-06 result. Do not treat them as evidence.
+Synthetic ReID eval. Both embedders are random init. The JSON sets `evidence` to false. Its note says the numbers are not an AC-06 result. Do not treat them as evidence.
 
 ```bash
 python scripts/run_reid_eval.py --embedder placeholder --synthetic-seed 0 --json
@@ -76,7 +102,7 @@ python scripts/run_reid_eval.py --embedder osnet-lite --synthetic-seed 0 --json
 - Cut 01 is still in progress.
 - The web UI and the search API are planned. Both packages are stubs.
 - End-to-end route search is planned. `matching/` has route, topology, and tracklet code, and nothing serves that as a search yet.
-- Retention windows and a footage-derived purge function are in `retention/`. There is no operator UI for them. The status list still marks T9 in progress.
+- Retention windows and a footage-derived purge function are in `retention/`. There is no operator UI for them. The status list marks T9 partly done.
 
 A GPU is not required for the commands above. The planned on-prem target is below.
 
@@ -116,7 +142,16 @@ trace-search/
 └── .github/workflows/      # CI/CD
 ```
 
-The design target is mixed-brand CCTV file ingest (Hikvision and CP Plus estates), with optional RTSP. File and RTSP ingest code is in `ingest/`. Live RTSP is a stretch goal. Brand-specific accuracy is not claimed here.
+### Design targets (not built yet)
+
+These are goals. They are not working features in this repo.
+
+- Indian hospitals and tech parks
+- Mixed Hikvision/CP Plus estates (2+ brands, 6+ cameras)
+- Video files from NVR native exports (optional RTSP)
+- Attribute-based search: clothing color, bags/backpacks
+
+File and RTSP ingest code is in `ingest/`. Live RTSP is a stretch goal. Brand-specific accuracy is not claimed here. `attributes/` has clothing-color and bag code. Nothing serves that as a search yet.
 
 ### Licence fence
 
@@ -171,6 +206,8 @@ Not required for the commands above. The deployment target is:
 
 ### Smoke runner (M1a)
 
+No workflow step runs `scripts/generate_smoke_fixtures.py` or `scripts/run_smoke.py`. CI calls the runner in-process from `tests/test_smoke_runner.py`.
+
 `scripts/run_smoke.py` imports `trace_search` from `src/`, so the command above sets `PYTHONPATH=src`. It calls `run_cameras` with `derived_from='SMOKE'`. After the arguments are accepted it prints `SMOKE: not evidence for any AC`. That output is not evidence for any acceptance criterion.
 
 `--detector` is `scripted-figures` or `yolox`. The script does not download weights.
@@ -191,7 +228,7 @@ The T-3-9 local real-weights `yolox` run on 5 Pexels/Pixabay clips (kept outside
 
 ### CI
 
-Pull requests to `main`, and pushes to `main`, run these checks. The CI workflow also runs on pushes to `cursor/**`. In [`.github/workflows/ci.yml`](.github/workflows/ci.yml), `Lint, Test, and License Check` does this:
+Pull requests to `main`, and pushes to `main`, run these checks. The CI workflow also runs on pushes to `cursor/**`. No workflow step runs `scripts/run_reid_eval.py`. In [`.github/workflows/ci.yml`](.github/workflows/ci.yml), `Lint, Test, and License Check` does this:
 
 1. **Lint** with ruff (`ruff check src/ tests/ scripts/`)
 2. **FFmpeg LGPL check** before the tests
@@ -223,8 +260,8 @@ This is a **multi-task build** (T0–T10). Each task is one pull request. Curren
 - ⏳ **T5:** ReID has landed: untrained placeholder and random-init OSNet-lite embedders, vector stores, and an eval harness. The AC-06 harness is DEFERRED. No training runs.
 - ⏳ **T6:** Cross-camera matching + route
 - ⏳ **T7:** Web UI + auth
-- ⏳ **T8:** Audit log (HMAC chain and signed head anchor; see below)
-- ⏳ **T9:** Retention + purge
+- ✅ **T8:** Audit log (HMAC chain and signed head anchor; see below). Merged in #5.
+- **Partly done — T9:** Retention and purge. T-P-1, T-P-2, and T-P-3 are merged (#48, #49, #50). T-P-4 through T-P-9 are not.
 - ⏳ **T10:** Zero-face guarantee
 
 `docs/trace-search-cut01-plan.md` is not in this repo. The cut notes that are here are [docs/cut-01-prototype.md](docs/cut-01-prototype.md).
@@ -235,16 +272,16 @@ The audit log records operator username, IST time, action, query, case ID, purpo
 
 The key comes only from `TRACE_AUDIT_HMAC_KEY` or from an explicit key file outside the configured audit directory. There is no default key. `verify()` never creates a key. `init_hmac_key()` is the only function that creates one. `AUDIT_LOG_DIR` and `is_audit_path()` (exported from `trace_search.audit`) are the default path and the purge-exemption check. `is_audit_path()` matches the resolved configured directory only, not every folder named `audit_logs`.
 
-An attacker who holds the key and deletes both the log and the anchor is not detectable on this host. An attacker without the key who restores an older copy of both the log and the anchor also passes `verify()`. Logs written before `details` existed fail HMAC verification, because the canonical payload now includes `"details": null`. External anchoring is out of scope for Cut 01. The 1-year purge checkpoint is T9. Audit retention is 365 days.
+An attacker who holds the key and deletes both the log and the anchor is not detectable on this host. An attacker without the key who restores an older copy of both the log and the anchor also passes `verify()`. Logs written before `details` existed fail HMAC verification, because the canonical payload now includes `"details": null`. External anchoring is out of scope for Cut 01. The 1-year purge checkpoint is still T9 (T-P-6). It is not built yet. Audit retention is 365 days.
 
-`tests/test_audit_log.py` collects 58 tests, all under `tmp_path`. pytest collects 1886 tests under `tests/`. The package note at [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md) still says 55. That file was not edited here. Details and a sample proof are in that note.
+`tests/test_audit_log.py` collects 58 tests, all under `tmp_path`. The package note at [`src/trace_search/audit/README.md`](src/trace_search/audit/README.md) still says 55. Details and a sample proof are in that note.
 
 ### Privacy and ethics
 
 - **No face recognition.** No face embeddings, no face crops, no identity lookup.
 - **No demographic outputs.** No gender, age, ethnicity, or other sensitive attributes.
 - **Human review only.** Every result is meant to be reviewed by a person before action. There is no web UI for that review yet.
-- **Short retention.** The shipped windows are 7 days for footage-derived data and 365 days for the audit log (`trace_search.retention`). `purge_expired` deletes expired footage-derived rows. T9 is still marked in progress above.
+- **Short retention.** The shipped windows are 7 days for footage-derived data and 365 days for the audit log (`trace_search.retention`). `purge_expired` deletes expired footage-derived rows. T9 is partly done (see the status list). The 1-year audit purge checkpoint is not built yet.
 - **Consent-first rule.** Training does not run. The ReID eval in this repo uses in-memory synthetic samples only. Later training, if it is ever allowed, is consented self-recorded fixtures only. No public datasets.
 - **Anonymous queries.** No names, no watchlists. The audit log requires a case ID and purpose on search, view, and export.
 
