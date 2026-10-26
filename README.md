@@ -94,6 +94,12 @@ python scripts/run_reid_eval.py --embedder osnet-lite --synthetic-seed 0 --json
 
 `--embedder osnet-lite` is `OsnetLiteEmbedder` with random init only. The placeholder is `UntrainedPlaceholderEmbedder`. Neither one is trained.
 
+A short terminal demo of these commands is in `docs/demo.cast`. It shows the current pipeline steps, not route search.
+
+```bash
+asciinema play docs/demo.cast
+```
+
 ## Limits
 
 - Smoke clips are synthetic only. This repo has no real footage and no consented footage.
