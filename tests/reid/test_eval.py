@@ -23,6 +23,7 @@ import pytest
 
 import trace_search.reid.data as data_module
 import trace_search.reid.eval as eval_module
+from tests.reid.conftest import rgb_frame
 from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
 from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
 
@@ -369,7 +370,9 @@ def test_gallery_vectors_must_share_a_length() -> None:
 
 
 def test_production_allowlist_stays_empty() -> None:
-    assert data_module._ALLOWED_ID_PATTERNS == ()
+    """Training still has no id. Evaluation has only the synthetic prefix."""
+    assert data_module._TRAINING_ID_PATTERNS == ()
+    assert data_module._EVALUATION_ID_PATTERNS == (data_module._SYNREID_ID,)
 
 
 @pytest.mark.parametrize("context", (LoaderContext.EVALUATION, LoaderContext.TRAINING))
@@ -378,7 +381,8 @@ def test_sample_with_neither_crop_nor_path_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_TRAINING_ID_PATTERNS", (_BATCH_PATTERN,))
     sample = _reid("FX-BATCH-001", crop=None, path=None)
     manifest = _write_manifest(tmp_path)
     with pytest.raises(FixtureSeparationError, match="neither a crop nor a path") as caught:
@@ -390,19 +394,23 @@ def test_sample_with_neither_crop_nor_path_is_refused(
 def test_crop_without_path_is_accepted(
     context: LoaderContext,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
 ) -> None:
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
-    sample = _reid("FX-BATCH-004", crop=_crop(3))
-    loaded = load_reid_samples([sample], context, _write_manifest(tmp_path))
-    assert loaded[0] is sample
+    """A crop-only sample cut from a smoke frame is refused by the crop hash."""
+    directory, entries = smoke_clips
+    fixture_id = str(entries[0]["fixture_id"])
+    matches = sorted(directory.glob(f"{fixture_id}_*.mp4"))
+    assert len(matches) == 1
+    sample = _reid("FX-SYNREID-001", use="DEV", crop=rgb_frame(matches[0]))
+    with pytest.raises(FixtureSeparationError, match="identified by SHA-256 or pHash"):
+        load_reid_samples([sample], context, _write_manifest(tmp_path))
 
 
 def test_path_without_crop_is_accepted_when_the_manifest_row_matches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
     payload = b"not-media-eval-sample"
     source = tmp_path / "crop-source.txt"
     source.write_bytes(payload)
@@ -438,7 +446,7 @@ def test_cli_prints_json_with_evidence_false(
         return real(self, crops)
 
     monkeypatch.setattr(UntrainedPlaceholderEmbedder, "embed", wrapped)
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
     monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: (query, gallery))
     code = eval_module.main(["--embedder", "placeholder", "--synthetic-seed", "1", "--json"])
     captured = capsys.readouterr()
@@ -468,7 +476,7 @@ def test_fx_smoke_is_refused_before_any_embedding(
     """The allowlist pattern would accept this id. The prefix check refuses it."""
     calls: list[int] = []
     _count_embed(monkeypatch, calls)
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_ANY_FX_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_ANY_FX_PATTERN,))
     smoke = _reid("fx-smoke", crop=_crop(1), camera_id="q", track_id=1, label=1)
     gallery = _reid(
         "FX-BATCH-002",
@@ -498,6 +506,8 @@ def test_empty_allowlist_prints_no_metric(
 ) -> None:
     calls: list[int] = []
     _count_embed(monkeypatch, calls)
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", ())
+    monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: ((), ()))
     code = eval_module.main(_CLI)
     captured = capsys.readouterr()
     assert code != 0
@@ -520,9 +530,12 @@ def test_main_reads_sys_argv_when_argv_is_omitted(
     )
     code = eval_module.main()
     captured = capsys.readouterr()
-    assert code != 0
-    assert captured.out == ""
-    assert "allowlist is empty" in captured.err
+    assert code == 0
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["evidence"] is False
+    assert "AC-06" in payload["note"]
+    assert "Placeholder" in payload["note"]
 
 
 def test_filled_source_is_refused_when_the_allowlist_is_empty(
@@ -547,7 +560,8 @@ def test_empty_split_with_a_pattern_prints_no_metric(
 ) -> None:
     calls: list[int] = []
     _count_embed(monkeypatch, calls)
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: ((), ()))
     code = eval_module.main(["--embedder", "placeholder", "--synthetic-seed", "4", "--json"])
     captured = capsys.readouterr()
     assert code == 1
@@ -573,7 +587,7 @@ def test_cli_pins_the_repo_manifest(
         contexts.append(context)
         return list(samples)
 
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
     monkeypatch.setattr(data_module, "load_reid_samples", spy)
     monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: (query, gallery))
     code = eval_module.main(["--embedder", "placeholder", "--synthetic-seed", "3", "--json"])
@@ -672,7 +686,7 @@ def test_embed_step_refuses_a_loader_sample_without_a_crop(
 ) -> None:
     calls: list[int] = []
     _count_embed(monkeypatch, calls)
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
     bare = _reid("FX-BATCH-001", crop=None, path=Path("not-a-real-crop.txt"))
     good = _reid("FX-BATCH-002", crop=_crop(8), camera_id="g", track_id=2, label=1)
 
@@ -707,7 +721,7 @@ def test_embedder_row_count_mismatch_prints_no_metric(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     query, gallery = _hand_split(6)
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
     monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: (query, gallery))
 
     def bad_embed(
@@ -723,6 +737,63 @@ def test_embedder_row_count_mismatch_prints_no_metric(
     assert code != 0
     assert captured.out == ""
     assert "embedder returned shape" in captured.err
+
+
+def test_all_invalid_queries_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Every query lacks a cross-camera match, so the command prints no 0.0."""
+    calls: list[int] = []
+    _count_embed(monkeypatch, calls)
+    query = (
+        _reid(
+            "FX-SYNREID-001",
+            use="DEV",
+            crop=_crop(1),
+            camera_id="cam-a",
+            track_id=1,
+            label=1,
+        ),
+    )
+    gallery = (
+        _reid(
+            "FX-SYNREID-002",
+            use="DEV",
+            crop=_crop(2),
+            camera_id="cam-a",
+            track_id=2,
+            label=1,
+        ),
+    )
+    monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: (query, gallery))
+    code = eval_module.main(_CLI)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "0.0" not in captured.out
+    assert "0.0" not in captured.err
+    assert "rank1" not in captured.out
+    assert "mAP" not in captured.out
+    assert "invalid" in captured.err
+    assert "No metric was computed." in captured.err
+    assert calls == []
+
+
+def test_cli_on_the_synthetic_split_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    code = eval_module.main(_CLI)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert tuple(payload) == _JSON_KEYS
+    assert payload["evidence"] is False
+    assert payload["note"] == _NOTE
+    assert "AC-06" in str(payload["note"])
+    assert "Placeholder" in str(payload["note"])
+    assert payload["num_valid_query"] > 0
+    assert payload["num_query"] > 0
+    assert payload["num_gallery"] > 0
 
 
 def test_build_embedder_rejects_an_unknown_name() -> None:
@@ -749,10 +820,13 @@ def test_script_entrypoint_prints_no_metric() -> None:
         text=True,
         check=False,
     )
-    assert completed.returncode != 0
-    assert completed.stdout == ""
-    assert "allowlist is empty" in completed.stderr
-    assert "mAP" not in completed.stdout
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["evidence"] is False
+    assert "AC-06" in payload["note"]
+    assert "Placeholder" in payload["note"]
+    assert payload["num_valid_query"] > 0
+    assert completed.stderr == ""
 
 
 def test_eval_makes_no_network_call(
@@ -775,6 +849,6 @@ def test_eval_makes_no_network_call(
     assert rank1_map(query, gallery).num_query == 3
     code = eval_module.main(_CLI)
     captured = capsys.readouterr()
-    assert code != 0
-    assert captured.out == ""
+    assert code == 0
+    assert captured.err == ""
     assert calls == []

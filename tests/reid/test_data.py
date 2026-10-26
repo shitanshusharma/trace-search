@@ -6,6 +6,7 @@ Clips are generated into pytest's temp directory. Nothing is read from
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Sequence
@@ -18,9 +19,9 @@ import pytest
 import trace_search.reid as reid
 import trace_search.reid.data as data_module
 from tests.media_helpers import write_mp4v_variant
+from tests.reid.conftest import rgb_frame
 from trace_search.fixtures.content import sha256_file
-from trace_search.fixtures.generator import generate_smoke_fixtures
-from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
+from trace_search.fixtures.guards import FixtureSeparationError, FixtureUseTag, LoaderContext
 
 ReidSample = data_module.ReidSample
 load_reid_samples = data_module.load_reid_samples
@@ -57,7 +58,7 @@ _FORBIDDEN_TAGS = (
 _UNKNOWN_TAGS = ("", "TRAINING")
 _UNLISTED_IDS = ("FX-HOLD-001", "anything")
 
-# Test-only. Production ``_ALLOWED_ID_PATTERNS`` stays empty.
+# Test-only. Production training patterns stay empty.
 _BATCH_PATTERN = re.compile(r"FX-BATCH-\d{3}")
 
 
@@ -111,18 +112,6 @@ def _entry_clip(directory: Path, entry: dict[str, object]) -> Path:
     clip = matches[0]
     assert sha256_file(clip) == entry["sha256"]
     return clip
-
-
-@pytest.fixture(scope="module")
-def smoke_clips(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[dict[str, object]]]:
-    """Generate the smoke set once, outside the repo tree."""
-    directory = tmp_path_factory.mktemp("reid-smoke-clips")
-    repo_root = Path(__file__).resolve().parents[2]
-    assert not directory.resolve().is_relative_to(repo_root)
-    entries = generate_smoke_fixtures(directory, base_seed=42, num_clips=5)
-    assert len(entries) >= 5
-    assert all(entry["use"] == "SMOKE_ONLY" for entry in entries)
-    return directory, entries
 
 
 def test_reid_sample_fields_are_the_spec_set() -> None:
@@ -318,7 +307,8 @@ def test_one_planted_sample_refuses_the_whole_batch(
     injects a pattern only here, which makes the nine samples good-looking.
     The planted id still refuses the batch, and the caller gets nothing back.
     """
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_TRAINING_ID_PATTERNS", (_BATCH_PATTERN,))
     crop = np.zeros((2, 2, 3), dtype=np.uint8)
     samples = [
         _sample(f"FX-BATCH-{index:03d}", track_id=index, label=index, crop=crop)
@@ -341,12 +331,22 @@ def test_injected_pattern_returns_a_matching_sample(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A test-only pattern can accept one id. The production tuple stays empty."""
-    monkeypatch.setattr(data_module, "_ALLOWED_ID_PATTERNS", (_BATCH_PATTERN,))
-    crop = np.zeros((2, 2, 3), dtype=np.uint8)
+    """A test-only pattern can accept one id in evaluation.
+
+    Training still refuses TRAIN, HOLD, and DEV. The production training
+    tuple stays empty.
+    """
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
+    monkeypatch.setattr(data_module, "_TRAINING_ID_PATTERNS", (_BATCH_PATTERN,))
+    crop = np.zeros((8, 8, 3), dtype=np.uint8)
+    crop[0, 0] = (1, 2, 3)
     sample = _sample("FX-BATCH-004", track_id=4, label=2, crop=crop)
-    loaded = load_reid_samples([sample], context, _write_manifest(tmp_path))
-    assert loaded[0] is sample
+    manifest = _write_manifest(tmp_path)
+    if context is LoaderContext.TRAINING:
+        _refused([sample], context, manifest, "refused in TRAINING")
+        return
+    loaded = load_reid_samples([sample], context, manifest)
+    assert len(loaded) == 1 and loaded[0] is sample
 
 
 @pytest.mark.parametrize("context", _OTHER_CONTEXTS)
@@ -363,3 +363,276 @@ def test_string_context_is_refused(tmp_path: Path) -> None:
 @pytest.mark.parametrize("context", _REID_CONTEXTS)
 def test_empty_batch_is_accepted(context: LoaderContext, tmp_path: Path) -> None:
     assert load_reid_samples([], context, _write_manifest(tmp_path)) == []
+
+
+def _benign_crop(fill: int = 17) -> np.ndarray:
+    crop = np.full((8, 8, 3), fill, dtype=np.uint8)
+    crop[0, 0] = (fill, fill + 1, fill + 2)
+    return crop
+
+
+def test_training_allowlist_stays_empty() -> None:
+    assert data_module._TRAINING_ID_PATTERNS == ()
+    assert data_module._EVALUATION_ID_PATTERNS == (data_module._SYNREID_ID,)
+
+
+def test_recognised_use_tags_match_fixture_use_tag() -> None:
+    assert data_module._RECOGNISED_USE_TAGS == frozenset(tag.value for tag in FixtureUseTag)
+
+
+@pytest.mark.parametrize("use", ("TRAIN", "HOLD", "DEV"))
+def test_train_hold_and_dev_are_refused_in_training(
+    use: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tag gate refuses these even when the id is injected onto TRAINING."""
+    monkeypatch.setattr(data_module, "_TRAINING_ID_PATTERNS", (data_module._SYNREID_ID,))
+    sample = _sample("FX-SYNREID-001", use=use, crop=_benign_crop())
+    message = _refused(
+        [sample],
+        LoaderContext.TRAINING,
+        _write_manifest(tmp_path),
+        "refused in TRAINING",
+    )
+    assert use in message
+
+
+@pytest.mark.parametrize("use", ("HOLD", "TRAIN"))
+def test_hold_and_train_are_refused_on_synreid_in_evaluation(
+    use: str,
+    tmp_path: Path,
+) -> None:
+    sample = _sample("FX-SYNREID-001", use=use, crop=_benign_crop(40))
+    message = _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "refused in EVALUATION",
+    )
+    assert use in message
+
+
+def test_arabic_indic_digits_are_refused(tmp_path: Path) -> None:
+    """Digits that NFKC leaves unchanged are not ASCII ``[0-9]``."""
+    fixture_id = "FX-SYNREID-" + "\u0660\u0660\u0661"
+    sample = _sample(fixture_id, use="DEV", crop=_benign_crop(21))
+    message = _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "not on the ReID allowlist",
+    )
+    assert fixture_id in message
+
+
+def test_fullwidth_digits_fold_onto_the_evaluation_allowlist(tmp_path: Path) -> None:
+    fixture_id = "FX-SYNREID-\uff10\uff10\uff11"
+    sample = _sample(fixture_id, use="DEV", crop=_benign_crop(22))
+    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
+    assert len(loaded) == 1 and loaded[0] is sample
+
+
+def test_non_string_fixture_id_raises_fixture_separation_error(tmp_path: Path) -> None:
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=_benign_crop())
+    sample = ReidSample(
+        fixture_id=1,  # type: ignore[arg-type]
+        use=sample.use,
+        camera_id=sample.camera_id,
+        track_id=sample.track_id,
+        label=sample.label,
+        crop=sample.crop,
+        path=sample.path,
+    )
+    with pytest.raises(FixtureSeparationError, match="fixture id must be a string"):
+        load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
+
+
+def test_non_string_use_tag_raises_fixture_separation_error(tmp_path: Path) -> None:
+    sample = ReidSample(
+        fixture_id="FX-SYNREID-001",
+        use=1,  # type: ignore[arg-type]
+        camera_id="cam-1",
+        track_id=1,
+        label=0,
+        crop=_benign_crop(),
+        path=None,
+    )
+    with pytest.raises(FixtureSeparationError, match="use tag must be a string"):
+        load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
+
+
+def test_loaded_crop_is_a_read_only_copy(tmp_path: Path) -> None:
+    crop = _benign_crop(4)
+    original = crop.copy()
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
+    assert len(loaded) == 1 and loaded[0] is sample
+    sealed = loaded[0].crop
+    assert sealed is not None
+    assert sealed is not crop
+    assert sealed.flags.writeable is False
+    crop[0, 0] = (9, 9, 9)
+    assert np.array_equal(sealed, original)
+    with pytest.raises(ValueError):
+        sealed[0, 0] = (1, 1, 1)
+
+
+def test_smoke_frame_crop_is_refused(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    directory, entries = smoke_clips
+    clip = _entry_clip(directory, entries[0])
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=rgb_frame(clip))
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "identified by SHA-256 or pHash",
+    )
+
+
+def test_smoke_bytes_retagged_as_dev_are_refused(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    directory, entries = smoke_clips
+    clip = _entry_clip(directory, entries[0])
+    manifest = _write_manifest(
+        tmp_path,
+        [
+            {
+                "fixture_id": "FX-SYNREID-001",
+                "use": "DEV",
+                "sha256": entries[0]["sha256"],
+                "phash": entries[0]["phash"],
+            }
+        ],
+    )
+    sample = _sample("FX-SYNREID-001", use="DEV", path=clip)
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        manifest,
+        "identified by SHA-256 or pHash",
+    )
+
+
+def test_manifest_row_id_must_match_the_sample(tmp_path: Path) -> None:
+    payload = b"plain-bytes-for-row-mismatch"
+    source = tmp_path / "row.txt"
+    source.write_bytes(payload)
+    manifest = _write_manifest(
+        tmp_path,
+        [
+            {
+                "fixture_id": "FX-SYNREID-002",
+                "use": "DEV",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    )
+    sample = _sample("FX-SYNREID-001", use="DEV", path=source)
+    _refused([sample], LoaderContext.EVALUATION, manifest, "does not match")
+
+
+def test_manifest_row_use_must_match_the_sample(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
+    payload = b"plain-bytes-for-use-mismatch"
+    source = tmp_path / "use.txt"
+    source.write_bytes(payload)
+    manifest = _write_manifest(
+        tmp_path,
+        [
+            {
+                "fixture_id": "FX-BATCH-007",
+                "use": "HOLD",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    )
+    sample = _sample("FX-BATCH-007", use="TRAIN", path=source)
+    _refused([sample], LoaderContext.EVALUATION, manifest, "does not match")
+
+
+def test_repo_row_must_match_the_sample(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"repo-row-bytes"
+    source = tmp_path / "repo-row.txt"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    caller = _write_manifest(
+        tmp_path,
+        [{"fixture_id": "FX-SYNREID-001", "use": "DEV", "sha256": digest}],
+    )
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    repo = _write_manifest(
+        pinned,
+        [{"fixture_id": "FX-SYNREID-009", "use": "DEV", "sha256": digest}],
+    )
+    monkeypatch.setattr(data_module, "_repo_manifest_path", lambda: repo)
+    sample = _sample("FX-SYNREID-001", use="DEV", path=source)
+    _refused([sample], LoaderContext.EVALUATION, caller, "does not match")
+
+
+def test_missing_path_is_refused(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.bin"
+    manifest = _write_manifest(
+        tmp_path,
+        [{"fixture_id": "FX-SYNREID-001", "use": "DEV", "sha256": "a" * 64}],
+    )
+    sample = _sample("FX-SYNREID-001", use="DEV", path=missing)
+    _refused([sample], LoaderContext.EVALUATION, manifest, "FAIL-CLOSED")
+
+
+def test_manifest_is_loaded_once_and_each_path_is_hashed_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loads: list[Path] = []
+    hashes: list[Path] = []
+    real_load = data_module.load_manifest_fixtures
+    real_hash = data_module.perceptual_hashes
+
+    def spy_load(path: Path) -> object:
+        loads.append(Path(path))
+        return real_load(path)
+
+    def spy_hash(path: Path) -> list[str]:
+        hashes.append(Path(path))
+        return real_hash(path)
+
+    monkeypatch.setattr(data_module, "load_manifest_fixtures", spy_load)
+    monkeypatch.setattr(data_module, "perceptual_hashes", spy_hash)
+    entries = []
+    samples = []
+    for index, name in enumerate(("one.txt", "two.txt"), start=1):
+        payload = f"path-sample-{index}".encode()
+        source = tmp_path / name
+        source.write_bytes(payload)
+        entries.append(
+            {
+                "fixture_id": f"FX-SYNREID-{index:03d}",
+                "use": "DEV",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+        samples.append(_sample(f"FX-SYNREID-{index:03d}", use="DEV", path=source))
+    samples.append(_sample("FX-SYNREID-003", use="DEV", crop=_benign_crop(33)))
+    manifest = _write_manifest(tmp_path, entries)
+    loaded = load_reid_samples(samples, LoaderContext.EVALUATION, manifest)
+    assert len(loaded) == 3
+    assert len(loads) == 2
+    assert len(hashes) == 2
+
+
+def test_repo_manifest_path_is_the_checkout_manifest() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    assert data_module._repo_manifest_path() == repo_root / "licenses" / "manifest.json"

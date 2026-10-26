@@ -1109,6 +1109,17 @@
       "source_url": "https://github.com/Megvii-BaseDetection/YOLOX/commit/6ddff4824372906469a7fae2dc3206c7aa4bbaee",
       "sha256": "103b59b2d679f2ab829e7f7bf348242c400efa925a4adb262cbf3dd375c4ec0c",
       "notes": "B-46. Reference implementation pinned to commit 6ddff4824372906469a7fae2dc3206c7aa4bbaee. The short prefix 6ddff482 matched one commit. sha256 is the GitHub archive tarball for that commit. Apache-2.0."
+    },
+    {
+      "name": "reid/synthetic.py",
+      "version": "e2b4562e1709bdcfe117ca023aa5b1488e477282",
+      "type": "generator",
+      "license": "MIT",
+      "source_url": "https://github.com/shitanshusharma/trace-search",
+      "sha256": "debeb8ecf84bc499a108c8c2893d868701181bbe2ba8b5c3ebb939862899a80c",
+      "generator_license": "MIT",
+      "seed": "0",
+      "notes": "In-memory flat-colour block patterns for the evaluation command only. Nothing is written to disk. The DEV tag lives only on the in-memory samples. Shitanshu confirmed DEV on 24 Oct 2026 at 1:06 PM IST. This row has no use and no fixture_id."
     }
   ]
 }
