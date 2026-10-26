@@ -7,8 +7,9 @@ gallery order. The JSON evidence flag is always false. These numbers
 are not an AC-06 result.
 
 The synthetic query and gallery set is one function, ``synthetic_evaluation_split``.
-T-R-5 fills that function in. Until then it returns no samples, and the
-empty id allowlist makes the command fail closed.
+It builds flat-colour blocks in memory. The command loads them through
+the ReID loader before any embedding. An empty allowlist, an empty
+split, or a split whose every query is invalid fails closed.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import numpy.typing as npt
 import trace_search.reid.data as data_module
 from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
 from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
+from trace_search.reid.synthetic import make_synthetic_reid_set
 from trace_search.reid.types import AppearanceEmbedder
 
 ReidSample = data_module.ReidSample
@@ -44,6 +46,10 @@ _CLOSED_ALLOWLIST = (
 _CLOSED_EMPTY = (
     "ReID evaluation refused: the query set and the gallery set must both "
     "be non-empty. No metric was computed."
+)
+_CLOSED_INVALID = (
+    "ReID evaluation refused: every query is invalid because it has no "
+    "gallery match on another camera. No metric was computed."
 )
 _DESCRIPTION = (
     "Print Rank-1 and mAP as JSON. "
@@ -143,12 +149,14 @@ def synthetic_evaluation_split(
 ) -> tuple[tuple[ReidSample, ...], tuple[ReidSample, ...]]:
     """Return seeded query samples and gallery samples.
 
-    T-R-5 replaces this body with the synthetic set. Until then there
-    are no samples, and the empty id allowlist makes the command fail
-    closed before a metric is printed.
+    Query samples are the ``cam-0`` rows of the in-memory set. Gallery
+    samples are the other cameras. The set is not written to disk.
     """
     _require_seed(seed)
-    return (), ()
+    samples = make_synthetic_reid_set(seed=seed)
+    query = tuple(sample for sample in samples if sample.camera_id == "cam-0")
+    gallery = tuple(sample for sample in samples if sample.camera_id != "cam-0")
+    return query, gallery
 
 
 def pinned_manifest_path() -> Path:
@@ -256,11 +264,31 @@ def _closed_reason(
     query: Sequence[ReidSample],
     gallery: Sequence[ReidSample],
 ) -> str | None:
-    if len(data_module._ALLOWED_ID_PATTERNS) == 0:
+    if len(data_module._EVALUATION_ID_PATTERNS) == 0:
         return _CLOSED_ALLOWLIST
     if len(query) == 0 or len(gallery) == 0:
         return _CLOSED_EMPTY
+    if not _any_valid_query(query, gallery):
+        return _CLOSED_INVALID
     return None
+
+
+def _any_valid_query(
+    query: Sequence[ReidSample],
+    gallery: Sequence[ReidSample],
+) -> bool:
+    """True when some query has the same label on another camera."""
+    for sample in query:
+        if _has_cross_camera_match(sample, gallery):
+            return True
+    return False
+
+
+def _has_cross_camera_match(query: ReidSample, gallery: Sequence[ReidSample]) -> bool:
+    for item in gallery:
+        if item.label == query.label and item.camera_id != query.camera_id:
+            return True
+    return False
 
 
 def _items_from_loaded(

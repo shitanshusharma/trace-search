@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print Rank-1 / mAP JSON for one synthetic ReID evaluation.
 
-Samples come from one function that a later task fills in. They are
+Samples come from the in-memory synthetic set. They are
 loaded with the ReID loader in the evaluation context before any
 embedding. The manifest is ``licenses/manifest.json`` in this repo.
 There is no data directory and no file input. Only the placeholder
