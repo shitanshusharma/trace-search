@@ -972,6 +972,21 @@ def test_build_embedder_rejects_an_unknown_name() -> None:
     assert osnet.name == "osnet-lite-random-init"
 
 
+def test_osnet_lite_eval_embedder_uses_the_given_seed() -> None:
+    """Seed 7 from the eval builder matches ``OsnetLiteEmbedder(seed=7)``.
+
+    The comparison is the embedding values. Hard-coding ``seed=0`` in
+    ``build_embedder`` fails it. Seed 0 on the same crops differs, so a
+    passed-through seed is visible.
+    """
+    crops = [_crop(11), _crop(12, shape=(16, 10, 3))]
+    from_eval = eval_module.build_embedder("osnet-lite", 7).embed(crops)
+    direct = OsnetLiteEmbedder(seed=7).embed(crops)
+    other = OsnetLiteEmbedder(seed=0).embed(crops)
+    np.testing.assert_array_equal(from_eval, direct)
+    assert not np.array_equal(from_eval, other)
+
+
 def test_script_entrypoint_prints_no_metric() -> None:
     completed = subprocess.run(
         [
