@@ -25,7 +25,8 @@ from tests.reid.conftest import rgb_frame
 from trace_search.fixtures.content import sha256_file
 from trace_search.fixtures.guards import FixtureSeparationError, FixtureUseTag, LoaderContext
 from trace_search.reid.data import SyntheticProvenance
-from trace_search.reid.synthetic import make_synthetic_reid_set
+
+make_synthetic_reid_set = synthetic_module.make_synthetic_reid_set
 
 ReidSample = data_module.ReidSample
 load_reid_samples = data_module.load_reid_samples
