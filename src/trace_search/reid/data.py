@@ -5,12 +5,17 @@ normalise to an ``FX-SMOKE`` or ``FX-CODE`` prefix, ``SMOKE_ONLY`` and
 ``CODE_TEST`` tags, and any unknown tag. A sample path is checked against
 the caller manifest and the repo smoke manifest by SHA-256 and pHash.
 
-A crop with no path is checked by pHash. That matches a whole smoke frame,
-including one that was only resized, blurred, or shifted. A box of at
-least 128 by 64 pixels cut from a smoke frame is refused as well: the
-loader regenerates the manifest's smoke sample frames in memory and
-compares the crop to those frames. Manifest sha256 values are file hashes,
-so crop bytes are not compared to them.
+A crop is also checked by pHash as a whole frame. That matches a smoke
+frame, including one that was only resized, blurred, or shifted. It does
+not search inside a frame. An evaluation sample that carries a crop is
+accepted only when ``SyntheticProvenance`` regenerates
+``make_synthetic_reid_set`` and the crop is byte-identical to the
+regenerated crop with the same id. No provenance, an unknown or invalid
+seed, a bad config, a set that will not render, an unknown id, a tampered
+digest, or any other digest mismatch is a refusal. A crop cut from smoke
+footage has none of that provenance, so it is refused whatever its source.
+Manifest sha256 values are file hashes, so crop bytes are not compared
+to them.
 
 TRAINING refuses every sample before the id allowlist and before any tag
 deny-list. The training id allowlist stays empty. Evaluation accepts only
@@ -20,7 +25,7 @@ and the caller's samples and arrays are left unchanged.
 
 from __future__ import annotations
 
-import json
+import hashlib
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -28,7 +33,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-import cv2
 import imagehash
 import numpy as np
 import numpy.typing as npt
@@ -41,7 +45,6 @@ from trace_search.fixtures.content import (
     perceptual_hashes,
     sha256_file,
 )
-from trace_search.fixtures.generator import SyntheticVideoGenerator
 from trace_search.fixtures.guards import (
     FORBIDDEN_TAGS_BY_CONTEXT,
     FixtureSeparationError,
@@ -60,17 +63,29 @@ _DENIED_USE_TAGS = frozenset({FixtureUseTag.SMOKE_ONLY.value, FixtureUseTag.CODE
 _RECOGNISED_USE_TAGS = frozenset(tag.value for tag in FixtureUseTag)
 _DEV_TAG = FixtureUseTag.DEV.value
 
-# A 128 by 64 box is the smallest smoke crop the pixel check refuses.
-_MIN_SMOKE_BOX_PIXELS = 64 * 128
-_CROP_MAE_LIMIT = 12.0
-_PREVIEW_FACTOR = 8
-_PREVIEW_GATE = 0.15
-
 _Rows = dict[str, tuple[FixtureUseTag, str, list[str]]]
 _Match = tuple[FixtureUseTag, str]
-_Frame = tuple[str, npt.NDArray[np.uint8], npt.NDArray[np.uint8]]
-_SmokeFrames = tuple[_Frame, ...]
-_SMOKE_FRAMES: _SmokeFrames | None = None
+_ProvenanceKey = tuple[int, int, int, int, int, int]
+_RegenCache = dict[_ProvenanceKey, list["ReidSample"]]
+
+
+@dataclass(frozen=True)
+class SyntheticProvenance:
+    """Arguments that regenerate one in-memory synthetic crop.
+
+    ``digest`` is the SHA-256 of the crop bytes from
+    ``make_synthetic_reid_set`` for this seed, shape, and id. The loader
+    builds that set again and compares digests. ``digest`` is not a
+    manifest file hash.
+    """
+
+    seed: int
+    n_groups: int = 8
+    per_group: int = 4
+    n_cameras: int = 2
+    height: int = 64
+    width: int = 32
+    digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,7 +93,8 @@ class ReidSample:
     """One sample the ReID loader may accept.
 
     ``label`` is an anonymous same-appearance group index used only by the
-    metric. It is not a person id.
+    metric. It is not a person id. ``provenance`` is set by the in-repo
+    synthetic generator. A hand-built crop leaves it empty.
     """
 
     fixture_id: str
@@ -88,6 +104,7 @@ class ReidSample:
     label: int
     crop: npt.NDArray[np.uint8] | None
     path: Path | None
+    provenance: SyntheticProvenance | None = None
 
 
 def load_reid_samples(
@@ -133,7 +150,8 @@ def _accept_batch(
     _refuse_forbidden_ids(samples)
     caller_rows = load_manifest_fixtures(manifest_path)
     repo_rows = load_manifest_fixtures(_repo_manifest_path())
-    sealed = [_require_sample(sample, context, caller_rows, repo_rows) for sample in samples]
+    cache: _RegenCache = {}
+    sealed = [_require_sample(sample, context, caller_rows, repo_rows, cache) for sample in samples]
     _install_sealed_crops(samples, sealed)
     return list(samples)
 
@@ -164,6 +182,7 @@ def _require_sample(
     context: LoaderContext,
     caller_rows: _Rows,
     repo_rows: _Rows,
+    cache: _RegenCache,
 ) -> npt.NDArray[np.uint8] | None:
     normalised_id = _normalise_fixture_id(sample.fixture_id)
     _refuse_smoke_prefix(sample.fixture_id, normalised_id)
@@ -179,6 +198,7 @@ def _require_sample(
     _refuse_without_crop_or_path(sample)
     if context is LoaderContext.EVALUATION:
         _refuse_evaluation_tag(sample.use, normalised_use, normalised_id)
+        _refuse_unproven_crop(sample, cache)
     return sealed
 
 
@@ -295,18 +315,18 @@ def _sealed_crop(
     sample: ReidSample,
     repo_rows: _Rows,
 ) -> npt.NDArray[np.uint8] | None:
-    """Copy a crop, refuse smoke pixels, and return the copy still read-only.
+    """Copy a crop and refuse it when the copy's pHash is a whole smoke frame.
 
-    The copy is installed on the sample only after the whole batch
-    passes. pHash matches a whole smoke frame. A box of at least 128 by
-    64 pixels cut from a smoke frame is refused by a pixel compare.
-    Manifest sha256 values are file hashes, so this check does not use them.
+    The copy is installed only after the whole batch passes. pHash sees
+    the crop as one frame, including a frame that was resized, blurred,
+    or shifted. It does not look for a box inside a frame. Byte identity
+    with the synthetic generator is ``_refuse_unproven_crop``. Manifest
+    sha256 values are file hashes and are not used here.
     """
     if sample.crop is None:
         return None
     sealed = _readonly_copy(_require_rgb_uint8(sample.crop))
     _refuse_smoke_phash(sample, sealed, repo_rows)
-    _refuse_smoke_subcrop(sample, sealed)
     return sealed
 
 
@@ -366,193 +386,93 @@ def _match_phash(phash: str, rows: _Rows) -> _Match | None:
     return None
 
 
-def _refuse_smoke_subcrop(sample: ReidSample, sealed: npt.NDArray[np.uint8]) -> None:
-    """Refuse a box cut from a regenerated smoke sample frame."""
-    if int(sealed.shape[0]) * int(sealed.shape[1]) < _MIN_SMOKE_BOX_PIXELS:
+def _refuse_unproven_crop(sample: ReidSample, cache: _RegenCache) -> None:
+    """Refuse an evaluation crop that is not byte-identical generator output."""
+    if sample.crop is None:
         return
-    fixture_id = _smoke_frame_id_for_crop(sealed)
-    if fixture_id is None:
-        return
-    raise FixtureSeparationError(
-        f"crop on {sample.fixture_id} is a box cut from smoke frame {fixture_id} and is FORBIDDEN"
+    provenance = sample.provenance
+    if provenance is None:
+        raise FixtureSeparationError(f"{sample.fixture_id} is refused: no synthetic provenance")
+    if not isinstance(provenance, SyntheticProvenance):
+        raise FixtureSeparationError(f"{sample.fixture_id} is refused: wrong provenance type")
+    _refuse_bad_seed(sample.fixture_id, provenance.seed)
+    _refuse_bad_config(sample.fixture_id, provenance)
+    regenerated = _regenerated_samples(sample.fixture_id, provenance, cache)
+    match = _sample_with_id(regenerated, sample.fixture_id)
+    if match is None or match.crop is None:
+        raise FixtureSeparationError(f"{sample.fixture_id} is refused: unknown id")
+    expected = _crop_digest(match.crop)
+    if provenance.digest != expected:
+        raise FixtureSeparationError(f"{sample.fixture_id} is refused: tampered digest")
+    if sample.crop.shape != match.crop.shape or _crop_digest(sample.crop) != expected:
+        raise FixtureSeparationError(f"{sample.fixture_id} is refused: digest mismatch")
+
+
+def _refuse_bad_seed(fixture_id: str, seed: object) -> None:
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise FixtureSeparationError(f"{fixture_id} is refused: unknown seed")
+    if seed < 0:
+        raise FixtureSeparationError(f"{fixture_id} is refused: invalid seed")
+
+
+def _refuse_bad_config(fixture_id: str, provenance: SyntheticProvenance) -> None:
+    fields = (
+        ("n_groups", provenance.n_groups),
+        ("per_group", provenance.per_group),
+        ("n_cameras", provenance.n_cameras),
+        ("height", provenance.height),
+        ("width", provenance.width),
     )
+    for name, value in fields:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise FixtureSeparationError(f"{fixture_id} is refused: bad synthetic config {name}")
 
 
-def _smoke_frame_id_for_crop(crop: npt.NDArray[np.uint8]) -> str | None:
-    for fixture_id, frame, preview in _smoke_sample_frames():
-        if _crop_matches_smoke_frame(crop, frame, preview):
-            return fixture_id
-    return None
-
-
-def _smoke_sample_frames() -> _SmokeFrames:
-    """Smoke sample frames from the repo manifest. Built once, in memory."""
-    global _SMOKE_FRAMES
-    if _SMOKE_FRAMES is None:
-        _SMOKE_FRAMES = tuple(_load_smoke_sample_frames(_repo_manifest_path()))
-    return _SMOKE_FRAMES
-
-
-def _load_smoke_sample_frames(path: Path) -> list[_Frame]:
-    document = json.loads(path.read_text(encoding="utf-8"))
-    frames: list[_Frame] = []
-    for entry in document.get("entries", []):
-        frames.extend(_render_manifest_entry(entry))
-    return frames
-
-
-def _render_manifest_entry(entry: object) -> list[_Frame]:
-    if not isinstance(entry, dict):
-        return []
-    if entry.get("type") != "synthetic_clip" or entry.get("use") != "SMOKE_ONLY":
-        return []
-    fixture_id = entry.get("fixture_id")
-    seed_text = entry.get("seed")
-    if not isinstance(fixture_id, str) or not isinstance(seed_text, str):
-        return []
-    spec = _smoke_render_spec(seed_text)
-    if spec is None:
-        return []
-    seed, duration, figures, bright, obstructions = spec
-    generator = SyntheticVideoGenerator(seed=seed)
-    rendered = generator.render_sampled_rgb_frames(
-        duration_sec=duration,
-        num_figures=figures,
-        background_brightness=bright,
-        num_obstructions=obstructions,
+def _regenerated_samples(
+    fixture_id: str,
+    provenance: SyntheticProvenance,
+    cache: _RegenCache,
+) -> list[ReidSample]:
+    key = (
+        provenance.seed,
+        provenance.n_groups,
+        provenance.per_group,
+        provenance.n_cameras,
+        provenance.height,
+        provenance.width,
     )
-    return [(fixture_id, frame, _downscale(frame)) for frame in rendered]
+    found = cache.get(key)
+    if found is not None:
+        return found
+    from trace_search.reid.synthetic import make_synthetic_reid_set
 
-
-def _smoke_render_spec(seed_text: str) -> tuple[int, float, int, float, int] | None:
-    payload = _json_object(seed_text)
-    if payload is None:
-        return None
-    config = payload.get("config")
-    if not isinstance(config, dict):
-        return None
-    return _spec_from_config(payload, cast(dict[str, object], config))
-
-
-def _json_object(text: str) -> dict[str, object] | None:
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    return cast(dict[str, object], payload)
+        found = make_synthetic_reid_set(
+            n_groups=provenance.n_groups,
+            per_group=provenance.per_group,
+            n_cameras=provenance.n_cameras,
+            size=(provenance.height, provenance.width),
+            seed=provenance.seed,
+        )
+    except ValueError as exc:
+        raise FixtureSeparationError(
+            f"{fixture_id} is refused: synthetic set will not render: {exc}"
+        ) from exc
+    cache[key] = found
+    return found
 
 
-def _spec_from_config(
-    payload: dict[str, object],
-    config: dict[str, object],
-) -> tuple[int, float, int, float, int] | None:
-    base = _json_int(payload.get("base_seed"))
-    offset = _json_int(payload.get("offset"))
-    duration = _json_float(config.get("duration_sec"))
-    figures = _json_int(config.get("num_figures"))
-    bright = _json_float(config.get("background_brightness"))
-    obstructions = _json_int(config.get("num_obstructions"))
-    if base is None or offset is None or duration is None:
-        return None
-    if figures is None or bright is None or obstructions is None:
-        return None
-    return (base + offset, duration, figures, bright, obstructions)
-
-
-def _json_int(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
-
-
-def _json_float(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
+def _sample_with_id(samples: Sequence[ReidSample], fixture_id: str) -> ReidSample | None:
+    wanted = _normalise_fixture_id(fixture_id)
+    for sample in samples:
+        if _normalise_fixture_id(sample.fixture_id) == wanted:
+            return sample
     return None
 
 
-def _crop_matches_smoke_frame(
-    crop: npt.NDArray[np.uint8],
-    frame: npt.NDArray[np.uint8],
-    preview: npt.NDArray[np.uint8],
-) -> bool:
-    if crop.shape[0] > frame.shape[0] or crop.shape[1] > frame.shape[1]:
-        return False
-    top, left = _centre_origin(frame.shape[0], frame.shape[1], crop.shape[0], crop.shape[1])
-    if _window_mae(frame, crop, top, left) <= _CROP_MAE_LIMIT:
-        return True
-    origin = _preview_origin(crop, preview)
-    if origin is None:
-        return False
-    return _mae_near(frame, crop, origin[0], origin[1]) <= _CROP_MAE_LIMIT
-
-
-def _centre_origin(frame_h: int, frame_w: int, crop_h: int, crop_w: int) -> tuple[int, int]:
-    return ((frame_h - crop_h) // 2, (frame_w - crop_w) // 2)
-
-
-def _preview_origin(
-    crop: npt.NDArray[np.uint8],
-    preview: npt.NDArray[np.uint8],
-) -> tuple[int, int] | None:
-    preview_crop = _downscale(crop)
-    if preview_crop.shape[0] < 2 or preview_crop.shape[1] < 2:
-        return None
-    if preview_crop.shape[0] > preview.shape[0] or preview_crop.shape[1] > preview.shape[1]:
-        return None
-    scores = cv2.matchTemplate(preview, preview_crop, cv2.TM_SQDIFF_NORMED)
-    minimum, _maximum, loc, _worst = cv2.minMaxLoc(scores)
-    if float(minimum) > _PREVIEW_GATE:
-        return None
-    return (int(loc[1]) * _PREVIEW_FACTOR, int(loc[0]) * _PREVIEW_FACTOR)
-
-
-def _downscale(frame: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
-    width = max(int(frame.shape[1]) // _PREVIEW_FACTOR, 1)
-    height = max(int(frame.shape[0]) // _PREVIEW_FACTOR, 1)
-    preview = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-    return np.ascontiguousarray(preview, dtype=np.uint8)
-
-
-def _mae_near(
-    frame: npt.NDArray[np.uint8],
-    crop: npt.NDArray[np.uint8],
-    top: int,
-    left: int,
-) -> float:
-    best = _window_mae(frame, crop, top, left)
-    if best <= _CROP_MAE_LIMIT:
-        return best
-    step = _PREVIEW_FACTOR // 2
-    for row in range(top - _PREVIEW_FACTOR, top + _PREVIEW_FACTOR + 1, step):
-        for col in range(left - _PREVIEW_FACTOR, left + _PREVIEW_FACTOR + 1, step):
-            score = _window_mae(frame, crop, row, col)
-            if score < best:
-                best = score
-            if best <= _CROP_MAE_LIMIT:
-                return best
-    return best
-
-
-def _window_mae(
-    frame: npt.NDArray[np.uint8],
-    crop: npt.NDArray[np.uint8],
-    top: int,
-    left: int,
-) -> float:
-    crop_h, crop_w = int(crop.shape[0]), int(crop.shape[1])
-    frame_h, frame_w = int(frame.shape[0]), int(frame.shape[1])
-    if crop_h > frame_h or crop_w > frame_w:
-        return 255.0
-    top = min(max(top, 0), frame_h - crop_h)
-    left = min(max(left, 0), frame_w - crop_w)
-    window = frame[top : top + crop_h, left : left + crop_w]
-    difference = np.abs(window.astype(np.int16) - crop.astype(np.int16))
-    return float(difference.mean())
+def _crop_digest(crop: npt.NDArray[np.uint8]) -> str:
+    """SHA-256 of the crop's bytes. The shape is compared separately."""
+    return hashlib.sha256(np.ascontiguousarray(crop).tobytes()).hexdigest()
 
 
 def _patterns_for(context: LoaderContext) -> tuple[re.Pattern[str], ...]:

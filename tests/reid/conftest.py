@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+from collections.abc import Iterator
 from pathlib import Path
 
 import cv2
@@ -12,14 +13,30 @@ import pytest
 from trace_search.fixtures.generator import generate_smoke_fixtures
 
 
-@pytest.fixture(autouse=True)
-def refuse_socket_connect(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test under ``tests/reid`` refuses ``socket.socket.connect``."""
+def fail_if_socket_connect_attempted(attempts: list[tuple[object, object]]) -> None:
+    """Fail when ``socket.socket.connect`` ran, including a caught ``OSError``."""
+    if attempts:
+        pytest.fail(f"socket.socket.connect was called {len(attempts)} time(s)")
 
-    def refuse(*_args: object, **_kwargs: object) -> None:
+
+@pytest.fixture(autouse=True)
+def refuse_socket_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[list[tuple[object, object]]]:
+    """Record every ``socket.socket.connect`` and fail the test if one happened.
+
+    The replacement raises before a network call. A test that catches that
+    ``OSError`` still fails here, because the attempt was recorded.
+    """
+    attempts: list[tuple[object, object]] = []
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        attempts.append((args, kwargs))
         raise OSError("ReID tests refuse socket.socket.connect")
 
     monkeypatch.setattr(socket.socket, "connect", refuse)
+    yield attempts
+    fail_if_socket_connect_attempted(attempts)
 
 
 @pytest.fixture(scope="module")

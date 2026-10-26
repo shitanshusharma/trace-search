@@ -27,6 +27,7 @@ from tests.reid.conftest import rgb_frame
 from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
 from trace_search.reid.osnet_lite import OsnetLiteEmbedder
 from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
+from trace_search.reid.synthetic import make_synthetic_reid_set
 
 ReidSample = data_module.ReidSample
 load_reid_samples = data_module.load_reid_samples
@@ -460,7 +461,14 @@ def test_cli_prints_json_with_evidence_false(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    query, gallery = _hand_split(1)
+    """JSON from a generator set. Each crop carries synthetic provenance.
+
+    The old split was hand-built FX-BATCH crops. Those have no provenance,
+    so the loader refuses them. This set is two groups, two cameras.
+    """
+    samples = make_synthetic_reid_set(n_groups=2, per_group=2, n_cameras=2, seed=1)
+    query = tuple(sample for sample in samples if sample.camera_id == "cam-0")
+    gallery = tuple(sample for sample in samples if sample.camera_id != "cam-0")
     seen: list[tuple[np.ndarray, ...]] = []
     real = UntrainedPlaceholderEmbedder.embed
 
@@ -472,7 +480,6 @@ def test_cli_prints_json_with_evidence_false(
         return real(self, crops)
 
     monkeypatch.setattr(UntrainedPlaceholderEmbedder, "embed", wrapped)
-    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
     monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: (query, gallery))
     code = eval_module.main(["--embedder", "placeholder", "--synthetic-seed", "1", "--json"])
     captured = capsys.readouterr()
@@ -486,7 +493,7 @@ def test_cli_prints_json_with_evidence_false(
     assert "evidence: false" in str(payload["report"])
     assert payload["note"] == _NOTE
     assert payload["num_query"] == 2
-    assert payload["num_gallery"] == 3
+    assert payload["num_gallery"] == 2
     assert payload["num_valid_query"] == 2
     assert isinstance(payload["rank1"], float)
     assert isinstance(payload["mAP"], float)
@@ -495,7 +502,6 @@ def test_cli_prints_json_with_evidence_false(
     assert seen[0][1] is query[1].crop
     assert seen[1][0] is gallery[0].crop
     assert seen[1][1] is gallery[1].crop
-    assert seen[1][2] is gallery[2].crop
 
 
 @pytest.mark.parametrize("embedder_name", ("placeholder", "osnet-lite"))
@@ -844,8 +850,9 @@ def test_embedder_row_count_mismatch_prints_no_metric(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    query, gallery = _hand_split(6)
-    monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
+    samples = make_synthetic_reid_set(n_groups=2, per_group=2, n_cameras=2, seed=6)
+    query = tuple(sample for sample in samples if sample.camera_id == "cam-0")
+    gallery = tuple(sample for sample in samples if sample.camera_id != "cam-0")
     monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: (query, gallery))
 
     def bad_embed(
@@ -870,26 +877,12 @@ def test_all_invalid_queries_fail_closed(
     """Every query lacks a cross-camera match, so the command prints no 0.0."""
     calls: list[int] = []
     _count_embed(monkeypatch, calls)
-    query = (
-        _reid(
-            "FX-SYNREID-001",
-            use="DEV",
-            crop=_crop(1),
-            camera_id="cam-a",
-            track_id=1,
-            label=1,
-        ),
-    )
-    gallery = (
-        _reid(
-            "FX-SYNREID-002",
-            use="DEV",
-            crop=_crop(2),
-            camera_id="cam-a",
-            track_id=2,
-            label=1,
-        ),
-    )
+    samples = make_synthetic_reid_set(n_groups=1, per_group=2, n_cameras=1, seed=0)
+    query = (samples[0],)
+    gallery = (samples[1],)
+    assert query[0].camera_id == gallery[0].camera_id
+    assert query[0].label == gallery[0].label
+    assert query[0].provenance is not None
     monkeypatch.setattr(eval_module, "synthetic_evaluation_split", lambda _seed: (query, gallery))
     code = eval_module.main(_CLI)
     captured = capsys.readouterr()

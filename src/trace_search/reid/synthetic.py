@@ -16,12 +16,13 @@ Fixture ids are ``FX-SYNREID-nnn``. The use tag on each sample is
 
 from __future__ import annotations
 
+import hashlib
 import math
 
 import numpy as np
 import numpy.typing as npt
 
-from trace_search.reid.data import ReidSample
+from trace_search.reid.data import ReidSample, SyntheticProvenance
 
 _BANDS = 4
 _NOISE_LIMIT = 16
@@ -62,7 +63,21 @@ def make_synthetic_reid_set(
             camera = slot % n_cameras
             next_track[camera] += 1
             image = _with_noise(_camera_view(base, camera), rng)
-            samples.append(_make_sample(number, group, camera, next_track[camera], image))
+            samples.append(
+                _make_sample(
+                    number,
+                    group,
+                    camera,
+                    next_track[camera],
+                    image,
+                    seed=seed,
+                    n_groups=n_groups,
+                    per_group=per_group,
+                    n_cameras=n_cameras,
+                    height=height,
+                    width=width,
+                )
+            )
             number += 1
     return samples
 
@@ -283,13 +298,30 @@ def _make_sample(
     camera: int,
     track_id: int,
     image: npt.NDArray[np.uint8],
+    *,
+    seed: int,
+    n_groups: int,
+    per_group: int,
+    n_cameras: int,
+    height: int,
+    width: int,
 ) -> ReidSample:
+    owned = np.ascontiguousarray(image)
     return ReidSample(
         fixture_id=f"FX-SYNREID-{number:0{_ID_WIDTH}d}",
         use="DEV",
         camera_id=f"cam-{camera}",
         track_id=track_id,
         label=group,
-        crop=image,
+        crop=owned,
         path=None,
+        provenance=SyntheticProvenance(
+            seed=seed,
+            n_groups=n_groups,
+            per_group=per_group,
+            n_cameras=n_cameras,
+            height=height,
+            width=width,
+            digest=hashlib.sha256(owned.tobytes()).hexdigest(),
+        ),
     )

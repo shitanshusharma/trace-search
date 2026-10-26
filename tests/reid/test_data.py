@@ -10,18 +10,22 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
 import trace_search.reid as reid
 import trace_search.reid.data as data_module
+import trace_search.reid.synthetic as synthetic_module
 from tests.media_helpers import write_mp4v_variant
 from tests.reid.conftest import rgb_frame
 from trace_search.fixtures.content import sha256_file
 from trace_search.fixtures.guards import FixtureSeparationError, FixtureUseTag, LoaderContext
+from trace_search.reid.data import SyntheticProvenance
+from trace_search.reid.synthetic import make_synthetic_reid_set
 
 ReidSample = data_module.ReidSample
 load_reid_samples = data_module.load_reid_samples
@@ -123,6 +127,7 @@ def test_reid_sample_fields_are_the_spec_set() -> None:
         "label",
         "crop",
         "path",
+        "provenance",
     ]
 
 
@@ -335,10 +340,11 @@ def test_injected_pattern_returns_a_matching_sample(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A test-only pattern can accept one id in evaluation.
+    """Training still refuses. Evaluation refuses a crop with no provenance.
 
-    Training still refuses TRAIN, HOLD, and DEV. The production training
-    tuple stays empty.
+    The old assertion returned this crop once a test-only id pattern
+    matched. A crop is now accepted only when it matches the synthetic
+    generator, so this hand-built crop is refused before it is returned.
     """
     monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
     monkeypatch.setattr(data_module, "_TRAINING_ID_PATTERNS", (_BATCH_PATTERN,))
@@ -349,8 +355,7 @@ def test_injected_pattern_returns_a_matching_sample(
     if context is LoaderContext.TRAINING:
         _refused([sample], context, manifest, "refused in TRAINING")
         return
-    loaded = load_reid_samples([sample], context, manifest)
-    assert len(loaded) == 1 and loaded[0] is sample
+    _refused([sample], context, manifest, "no synthetic provenance")
 
 
 @pytest.mark.parametrize("context", _OTHER_CONTEXTS)
@@ -432,8 +437,9 @@ def test_arabic_indic_digits_are_refused(tmp_path: Path) -> None:
 
 
 def test_fullwidth_digits_fold_onto_the_evaluation_allowlist(tmp_path: Path) -> None:
+    source = make_synthetic_reid_set(seed=0)[0]
     fixture_id = "FX-SYNREID-\uff10\uff10\uff11"
-    sample = _sample(fixture_id, use="DEV", crop=_benign_crop(22))
+    sample = replace(source, fixture_id=fixture_id)
     loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
     assert len(loaded) == 1 and loaded[0] is sample
 
@@ -469,8 +475,7 @@ def test_non_string_use_tag_raises_fixture_separation_error(tmp_path: Path) -> N
 
 def test_loaded_crop_base_cannot_be_made_writable(tmp_path: Path) -> None:
     """``crop.base.setflags(write=True)`` fails, and a write through ``base`` fails."""
-    crop = _benign_crop(4)
-    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    sample = make_synthetic_reid_set(seed=0)[0]
     loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
     sealed = loaded[0].crop
     assert sealed is not None
@@ -483,9 +488,10 @@ def test_loaded_crop_base_cannot_be_made_writable(tmp_path: Path) -> None:
 
 
 def test_loaded_crop_is_a_read_only_copy(tmp_path: Path) -> None:
-    crop = _benign_crop(4)
+    sample = make_synthetic_reid_set(seed=0)[0]
+    crop = sample.crop
+    assert crop is not None
     original = crop.copy()
-    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
     loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
     assert len(loaded) == 1 and loaded[0] is sample
     sealed = loaded[0].crop
@@ -565,7 +571,7 @@ def _refuse_smoke_crop(
         [sample],
         LoaderContext.EVALUATION,
         _write_manifest(tmp_path),
-        "box cut from",
+        "no synthetic provenance",
     )
 
 
@@ -619,6 +625,333 @@ def _off_centre_128x64(frame: np.ndarray) -> np.ndarray:
     return best
 
 
+def _clip_for(
+    directory: Path,
+    entries: Sequence[dict[str, object]],
+    fixture_id: str,
+) -> Path:
+    matches = [entry for entry in entries if entry["fixture_id"] == fixture_id]
+    assert len(matches) == 1
+    return _entry_clip(directory, matches[0])
+
+
+def _frame_count(clip: Path) -> int:
+    cap = cv2.VideoCapture(str(clip))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    finally:
+        cap.release()
+
+
+def _sample_frame_indices(total: int) -> set[int]:
+    """The 10 frames the smoke pHash list is built from."""
+    return {int(index) for index in np.linspace(0, total - 1, 10)}
+
+
+def _rgb_frames(clip: Path, indices: Sequence[int]) -> dict[int, np.ndarray]:
+    """Read RGB frames by walking the clip. The indices are outside the repo."""
+    wanted = set(indices)
+    last = max(wanted)
+    found: dict[int, np.ndarray] = {}
+    cap = cv2.VideoCapture(str(clip))
+    try:
+        for index in range(last + 1):
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                raise AssertionError(f"cannot read frame {index} of {clip}")
+            if index in wanted:
+                found[index] = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        return found
+    finally:
+        cap.release()
+
+
+def _figure_centred_box(frame: np.ndarray, crop_h: int = 128, crop_w: int = 64) -> np.ndarray:
+    """A 128 by 64 box centred on the tallest person-like blob in ``frame``."""
+    background = frame[0, 0].astype(np.int16)
+    diff = np.abs(frame.astype(np.int16) - background).max(axis=2)
+    mask = np.ascontiguousarray((diff > 25).astype(np.uint8))
+    count, _labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    centre: tuple[float, float] | None = None
+    best_area = 0
+    for label in range(1, int(count)):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        if height <= width or area < 800 or area > 25000:
+            continue
+        if area > best_area:
+            best_area = area
+            centre = (float(centroids[label][1]), float(centroids[label][0]))
+    assert centre is not None
+    top = int(round(centre[0] - crop_h / 2))
+    left = int(round(centre[1] - crop_w / 2))
+    top = min(max(top, 0), frame.shape[0] - crop_h)
+    left = min(max(left, 0), frame.shape[1] - crop_w)
+    box = np.ascontiguousarray(frame[top : top + crop_h, left : left + crop_w])
+    assert box.shape == (crop_h, crop_w, 3)
+    overlap = np.abs(box.astype(np.int16) - background).max(axis=2)
+    assert int((overlap > 25).sum()) > 0
+    return box
+
+
+def _with_provenance(sample: ReidSample, **changes: object) -> ReidSample:
+    provenance = sample.provenance
+    assert isinstance(provenance, SyntheticProvenance)
+    return replace(sample, provenance=replace(provenance, **changes))  # type: ignore[arg-type]
+
+
+def test_non_sample_figure_boxes_are_refused(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    """Figure-centred boxes on FX-SMOKE-SYN-003 frames 156-174 are refused.
+
+    Those frames are outside the 10 pHash samples. The boxes have no
+    synthetic provenance.
+    """
+    directory, entries = smoke_clips
+    clip = _clip_for(directory, entries, "FX-SMOKE-SYN-003")
+    total = _frame_count(clip)
+    sampled = _sample_frame_indices(total)
+    indices = (156, 162, 168, 174)
+    frames = _rgb_frames(clip, indices)
+    for index in indices:
+        assert index not in sampled
+        crop = _figure_centred_box(frames[index])
+        sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+        _refused(
+            [sample],
+            LoaderContext.EVALUATION,
+            _write_manifest(tmp_path),
+            "no synthetic provenance",
+        )
+
+
+def test_smoke_frame_213_box_is_refused(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    """FX-SMOKE-SYN-005 frame 213, rows 100-356 and cols 300-428, is refused.
+
+    The frame is outside the 10 pHash samples. The box is 256 by 128.
+    """
+    directory, entries = smoke_clips
+    clip = _clip_for(directory, entries, "FX-SMOKE-SYN-005")
+    index = 213
+    assert index not in _sample_frame_indices(_frame_count(clip))
+    frame = _rgb_frames(clip, (index,))[index]
+    crop = np.ascontiguousarray(frame[100:356, 300:428])
+    assert crop.shape == (256, 128, 3)
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "no synthetic provenance",
+    )
+
+
+def test_smoke_box_with_copied_provenance_is_refused(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    """A smoke box that carries a real digest is still a digest mismatch."""
+    directory, entries = smoke_clips
+    clip = _clip_for(directory, entries, "FX-SMOKE-SYN-005")
+    frame = _rgb_frames(clip, (213,))[213]
+    crop = np.ascontiguousarray(frame[100:356, 300:428])
+    genuine = make_synthetic_reid_set(seed=0)[0]
+    sample = replace(genuine, crop=crop)
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "digest mismatch",
+    )
+
+
+def test_genuine_synthetic_crop_is_accepted(tmp_path: Path) -> None:
+    """A generator crop with its own provenance is accepted."""
+    sample = make_synthetic_reid_set(seed=0)[0]
+    crop = sample.crop
+    assert crop is not None
+    provenance = sample.provenance
+    assert provenance is not None
+    assert provenance.digest == hashlib.sha256(np.ascontiguousarray(crop).tobytes()).hexdigest()
+    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
+    assert loaded == [sample]
+    sealed = loaded[0].crop
+    assert sealed is not None
+    assert np.array_equal(sealed, crop)
+
+
+def test_large_synthetic_crop_is_accepted(tmp_path: Path) -> None:
+    """A generator crop of 128 by 64 is accepted when its provenance matches."""
+    sample = make_synthetic_reid_set(
+        n_groups=1,
+        per_group=1,
+        n_cameras=1,
+        size=(128, 64),
+        seed=1,
+    )[0]
+    crop = sample.crop
+    assert crop is not None
+    assert crop.shape == (128, 64, 3)
+    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
+    assert loaded == [sample]
+    sealed = loaded[0].crop
+    assert sealed is not None
+    assert np.array_equal(sealed, crop)
+
+
+def test_tampered_digest_is_refused(tmp_path: Path) -> None:
+    sample = make_synthetic_reid_set(seed=0)[0]
+    provenance = sample.provenance
+    assert provenance is not None
+    assert provenance.digest != "0" * 64
+    sample = _with_provenance(sample, digest="0" * 64)
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "tampered digest",
+    )
+
+
+def test_changed_pixel_is_refused(tmp_path: Path) -> None:
+    """One changed pixel keeps the stored digest and is a digest mismatch."""
+    sample = make_synthetic_reid_set(seed=0)[0]
+    crop = sample.crop
+    assert crop is not None
+    changed = crop.copy()
+    changed[0, 0, 0] ^= np.uint8(1)
+    sample = replace(sample, crop=changed)
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "digest mismatch",
+    )
+
+
+def test_reshaped_crop_is_refused(tmp_path: Path) -> None:
+    sample = make_synthetic_reid_set(seed=0)[0]
+    crop = sample.crop
+    assert crop is not None
+    sample = replace(sample, crop=np.ascontiguousarray(crop[:-1]))
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "digest mismatch",
+    )
+
+
+def test_crop_with_no_provenance_is_refused(tmp_path: Path) -> None:
+    sample = replace(make_synthetic_reid_set(seed=0)[0], provenance=None)
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "no synthetic provenance",
+    )
+
+
+@pytest.mark.parametrize("seed", ("nope", True, 1.5))
+def test_unknown_seed_is_refused(tmp_path: Path, seed: object) -> None:
+    sample = _with_provenance(make_synthetic_reid_set(seed=0)[0], seed=seed)
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "unknown seed")
+
+
+def test_invalid_seed_is_refused(tmp_path: Path) -> None:
+    sample = _with_provenance(make_synthetic_reid_set(seed=0)[0], seed=-1)
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "invalid seed")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("height", 0),
+        ("width", True),
+        ("n_groups", "8"),
+        ("per_group", 1.5),
+        ("n_cameras", -1),
+    ],
+)
+def test_bad_synthetic_config_is_refused(tmp_path: Path, field: str, value: object) -> None:
+    sample = _with_provenance(make_synthetic_reid_set(seed=0)[0], **{field: value})
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        f"bad synthetic config {field}",
+    )
+
+
+def test_wrong_provenance_type_is_refused(tmp_path: Path) -> None:
+    sample = replace(
+        make_synthetic_reid_set(seed=0)[0],
+        provenance="not-a-provenance",  # type: ignore[arg-type]
+    )
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "wrong provenance type",
+    )
+
+
+def test_synthetic_set_that_will_not_render_is_refused(tmp_path: Path) -> None:
+    """A positive config the generator rejects is a refusal, not an empty set."""
+    sample = _with_provenance(make_synthetic_reid_set(seed=0)[0], n_groups=1000, per_group=1)
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "synthetic set will not render",
+    )
+
+
+def test_unknown_synthetic_id_is_refused(tmp_path: Path) -> None:
+    sample = replace(make_synthetic_reid_set(seed=0)[0], fixture_id="FX-SYNREID-999")
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "unknown id")
+
+
+def test_regenerated_sample_without_a_crop_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A regenerated id whose crop is missing is an unknown id."""
+    sample = make_synthetic_reid_set(seed=0)[0]
+    real = synthetic_module.make_synthetic_reid_set
+
+    def spy(*args: object, **kwargs: object) -> list[ReidSample]:
+        found = real(*args, **kwargs)  # type: ignore[arg-type]
+        return [replace(item, crop=None) for item in found]
+
+    monkeypatch.setattr(synthetic_module, "make_synthetic_reid_set", spy)
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "unknown id")
+
+
+def test_one_seed_is_regenerated_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = make_synthetic_reid_set(seed=0)[:2]
+    calls: list[int] = []
+    real = synthetic_module.make_synthetic_reid_set
+
+    def spy(*args: object, **kwargs: object) -> list[ReidSample]:
+        calls.append(int(kwargs["seed"]))  # type: ignore[arg-type]
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(synthetic_module, "make_synthetic_reid_set", spy)
+    loaded = load_reid_samples(samples, LoaderContext.EVALUATION, _write_manifest(tmp_path))
+    assert loaded == list(samples)
+    assert calls == [0]
+
+
 def test_zero_by_zero_crop_is_refused(tmp_path: Path) -> None:
     crop = np.zeros((0, 0, 3), dtype=np.uint8)
     sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
@@ -645,11 +978,12 @@ def test_float_crop_is_refused(tmp_path: Path) -> None:
 
 def test_refused_batch_does_not_change_the_callers_crops(tmp_path: Path) -> None:
     """A later refusal must not swap crops on samples that already passed."""
-    first_crop = _benign_crop(4)
+    first = make_synthetic_reid_set(seed=0)[0]
+    first_crop = first.crop
+    assert first_crop is not None
     second_crop = _benign_crop(6)
     first_bytes = first_crop.tobytes()
     second_bytes = second_crop.tobytes()
-    first = _sample("FX-SYNREID-001", use="DEV", crop=first_crop)
     second = _sample("FX-SYNREID-002", use="HOLD", crop=second_crop)
     _refused(
         [first, second],
@@ -816,7 +1150,7 @@ def test_manifest_is_loaded_once_and_each_path_is_hashed_once(
             }
         )
         samples.append(_sample(f"FX-SYNREID-{index:03d}", use="DEV", path=source))
-    samples.append(_sample("FX-SYNREID-003", use="DEV", crop=_benign_crop(33)))
+    samples.append(make_synthetic_reid_set(seed=0)[2])
     manifest = _write_manifest(tmp_path, entries)
     loaded = load_reid_samples(samples, LoaderContext.EVALUATION, manifest)
     assert len(loaded) == 3

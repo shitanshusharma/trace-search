@@ -105,6 +105,15 @@ def test_ids_are_fx_synreid_and_the_use_tag_is_dev() -> None:
         assert crop is not None
         assert crop.shape == (64, 32, 3)
         assert crop.dtype == np.uint8
+        provenance = sample.provenance
+        assert provenance is not None
+        assert provenance.seed == 0
+        assert provenance.n_groups == 8
+        assert provenance.per_group == 4
+        assert provenance.n_cameras == 2
+        assert provenance.height == 64
+        assert provenance.width == 32
+        assert provenance.digest == hashlib.sha256(np.ascontiguousarray(crop).tobytes()).hexdigest()
 
 
 def test_samples_load_in_evaluation_and_are_refused_in_training() -> None:

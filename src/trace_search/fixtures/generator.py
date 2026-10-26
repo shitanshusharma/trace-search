@@ -14,7 +14,6 @@ from typing import Any
 import cv2
 import imagehash
 import numpy as np
-import numpy.typing as npt
 from PIL import Image
 
 
@@ -53,45 +52,6 @@ class Obstruction:
     width: int
     height: int
     color: tuple[int, int, int]
-
-
-def _raw_frame(
-    figures: list[PersonFigure],
-    obstructions: list[Obstruction],
-    width: int,
-    height: int,
-    base_bg: int,
-) -> npt.NDArray[np.uint8]:
-    """One pre-encode frame. Figure positions advance, matching ``generate_clip``."""
-    frame = np.full((height, width, 3), base_bg, dtype=np.uint8)
-    for figure in figures:
-        figure.update(width, height)
-        origin_x, origin_y = int(figure.x), int(figure.y)
-        fig_w, fig_h = int(figure.width), int(figure.height)
-        cv2.rectangle(
-            frame,
-            (origin_x, origin_y),
-            (origin_x + fig_w, origin_y + fig_h),
-            figure.color,
-            -1,
-        )
-        head_radius = fig_w // 4
-        cv2.circle(
-            frame,
-            (origin_x + fig_w // 2, origin_y + head_radius),
-            head_radius,
-            figure.color,
-            -1,
-        )
-    for obs in obstructions:
-        cv2.rectangle(
-            frame,
-            (obs.x, obs.y),
-            (obs.x + obs.width, obs.y + obs.height),
-            obs.color,
-            -1,
-        )
-    return frame
 
 
 class SyntheticVideoGenerator:
@@ -216,41 +176,6 @@ class SyntheticVideoGenerator:
                 Obstruction(x=x, y=y, width=obs_width, height=obs_height, color=color)
             )
         return obstructions
-
-    def render_sampled_rgb_frames(
-        self,
-        *,
-        duration_sec: float,
-        num_figures: int,
-        background_brightness: float,
-        num_obstructions: int,
-        fps: int = 30,
-        width: int = 1920,
-        height: int = 1080,
-        samples: int = 10,
-    ) -> list[npt.NDArray[np.uint8]]:
-        """Return the pHash sample frames as RGB. Nothing is written.
-
-        Channel order matches a frame read back from the mp4 ``generate_clip``
-        writes. The sample indices match the ten-frame pHash list.
-        """
-        total = int(duration_sec * fps)
-        if total < 1 or samples < 1:
-            raise ValueError("duration_sec and samples must cover at least one frame")
-        count = min(samples, total)
-        order = [int(index) for index in np.linspace(0, total - 1, count, dtype=int)]
-        wanted = set(order)
-        base_bg = int(40 * background_brightness)
-        figures = self._create_figures(num_figures, width, height)
-        obstructions = self._create_obstructions(num_obstructions, width, height)
-        kept: dict[int, npt.NDArray[np.uint8]] = {}
-        for index in range(total):
-            raw = _raw_frame(figures, obstructions, width, height, base_bg)
-            if index in wanted:
-                kept[index] = np.ascontiguousarray(raw[:, :, ::-1])
-            if len(kept) == len(wanted):
-                break
-        return [kept[index] for index in order]
 
     @staticmethod
     def compute_sha256(file_path: Path) -> str:
