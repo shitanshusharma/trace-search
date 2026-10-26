@@ -25,6 +25,7 @@ import trace_search.reid.data as data_module
 import trace_search.reid.eval as eval_module
 from tests.reid.conftest import rgb_frame
 from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
+from trace_search.reid.osnet_lite import OsnetLiteEmbedder
 from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
 
 ReidSample = data_module.ReidSample
@@ -47,6 +48,9 @@ _JSON_KEYS = (
     "evidence",
     "note",
 )
+_OSNET_LITE_LABEL = "OSNet-style, chained streams, random init"
+_PLACEHOLDER_LABEL = "untrained-placeholder-v1"
+_CLI_JSON_KEYS = (*_JSON_KEYS, "embedder", "report")
 _CLI = [
     "--embedder",
     "placeholder",
@@ -132,6 +136,23 @@ def _count_embed(monkeypatch: pytest.MonkeyPatch, calls: list[int]) -> None:
         return real(self, crops)
 
     monkeypatch.setattr(UntrainedPlaceholderEmbedder, "embed", wrapped)
+
+
+def _count_named_embeds(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
+    """Record which embedder class would run. A missed class stays at zero."""
+
+    def wrap(cls: type, label: str) -> None:
+        real = cls.embed
+
+        def wrapped(self: object, crops: Sequence[np.ndarray]) -> np.ndarray:
+            calls.append(label)
+            found: np.ndarray = real(self, crops)
+            return found
+
+        monkeypatch.setattr(cls, "embed", wrapped)
+
+    wrap(UntrainedPlaceholderEmbedder, "placeholder")
+    wrap(OsnetLiteEmbedder, "osnet-lite")
 
 
 def _hand_built() -> tuple[list[EvalItem], list[EvalItem]]:
@@ -458,8 +479,11 @@ def test_cli_prints_json_with_evidence_false(
     assert code == 0
     assert captured.err == ""
     payload = json.loads(captured.out)
-    assert tuple(payload) == _JSON_KEYS
+    assert tuple(payload) == _CLI_JSON_KEYS
     assert payload["evidence"] is False
+    assert payload["embedder"] == _PLACEHOLDER_LABEL
+    assert str(payload["report"]).splitlines()[0] == f"embedder: {_PLACEHOLDER_LABEL}"
+    assert "evidence: false" in str(payload["report"])
     assert payload["note"] == _NOTE
     assert payload["num_query"] == 2
     assert payload["num_gallery"] == 3
@@ -474,13 +498,19 @@ def test_cli_prints_json_with_evidence_false(
     assert seen[1][2] is gallery[2].crop
 
 
+@pytest.mark.parametrize("embedder_name", ("placeholder", "osnet-lite"))
 def test_fx_smoke_is_refused_before_any_embedding(
+    embedder_name: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The allowlist pattern would accept this id. The prefix check refuses it."""
-    calls: list[int] = []
-    _count_embed(monkeypatch, calls)
+    """The allowlist pattern would accept this id. The prefix check refuses it.
+
+    Placeholder and osnet-lite both stop in the evaluation loader. Neither
+    embedder is called.
+    """
+    calls: list[str] = []
+    _count_named_embeds(monkeypatch, calls)
     monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_ANY_FX_PATTERN,))
     smoke = _reid("fx-smoke", crop=_crop(1), camera_id="q", track_id=1, label=1)
     gallery = _reid(
@@ -495,7 +525,10 @@ def test_fx_smoke_is_refused_before_any_embedding(
         return (smoke,), (gallery,)
 
     monkeypatch.setattr(eval_module, "synthetic_evaluation_split", _split)
-    code = eval_module.main(_CLI)
+    try:
+        code = eval_module.main(["--embedder", embedder_name, "--synthetic-seed", "0", "--json"])
+    except SystemExit as exc:
+        pytest.fail(f"{embedder_name} was refused before the loader: {exc.code}")
     captured = capsys.readouterr()
     assert code != 0
     assert calls == []
@@ -636,12 +669,95 @@ def test_cli_rejects_path_arguments(
     assert "rank1" not in captured.err
 
 
-def test_osnet_lite_is_not_a_choice(capsys: pytest.CaptureFixture[str]) -> None:
+def test_osnet_lite_cli_exits_zero_with_the_chained_streams_label(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """osnet-lite runs through the evaluation loader and is labelled as chained.
+
+    The label is not the paper network. ``evidence`` stays false. The note
+    still says this is not an AC-06 result.
+    """
+    contexts: list[LoaderContext] = []
+    real_load = data_module.load_reid_samples
+
+    def spy_load(
+        samples: Sequence[ReidSample],
+        context: LoaderContext,
+        manifest_path: Path,
+    ) -> list[ReidSample]:
+        contexts.append(context)
+        return real_load(samples, context, manifest_path)
+
+    constructed: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    real_init = OsnetLiteEmbedder.__init__
+
+    def spy_init(self: OsnetLiteEmbedder, *args: object, **kwargs: object) -> None:
+        constructed.append((args, dict(kwargs)))
+        real_init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    calls: list[str] = []
+    monkeypatch.setattr(data_module, "load_reid_samples", spy_load)
+    monkeypatch.setattr(OsnetLiteEmbedder, "__init__", spy_init)
+    _count_named_embeds(monkeypatch, calls)
+    try:
+        code = eval_module.main(["--embedder", "osnet-lite", "--synthetic-seed", "0", "--json"])
+    except SystemExit as exc:
+        pytest.fail(f"osnet-lite was refused before evaluation: {exc.code}")
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert tuple(payload) == _CLI_JSON_KEYS
+    assert payload["evidence"] is False
+    assert payload["embedder"] == _OSNET_LITE_LABEL
+    assert payload["note"] == _NOTE
+    report = str(payload["report"])
+    assert report.splitlines()[0] == f"embedder: {_OSNET_LITE_LABEL}"
+    assert "evidence: false" in report
+    assert _NOTE in report
+    assert "evidence: true" not in report
+    assert contexts == [LoaderContext.EVALUATION, LoaderContext.EVALUATION]
+    assert constructed == [((), {"seed": 0})]
+    assert calls == ["osnet-lite", "osnet-lite"]
+    assert payload["num_valid_query"] > 0
+
+
+def test_placeholder_default_matches_the_explicit_placeholder(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Omitting ``--embedder`` stays on the placeholder. Its label is its name."""
+    try:
+        code_default = eval_module.main(["--synthetic-seed", "0", "--json"])
+    except SystemExit as exc:
+        pytest.fail(f"--embedder still required, default did not apply: {exc.code}")
+    default_out = capsys.readouterr()
+    code_explicit = eval_module.main(
+        ["--embedder", "placeholder", "--synthetic-seed", "0", "--json"]
+    )
+    explicit_out = capsys.readouterr()
+    assert code_default == 0
+    assert code_explicit == 0
+    assert default_out.err == ""
+    assert explicit_out.err == ""
+    default_payload = json.loads(default_out.out)
+    explicit_payload = json.loads(explicit_out.out)
+    assert default_payload == explicit_payload
+    assert tuple(default_payload) == _CLI_JSON_KEYS
+    assert default_payload["embedder"] == _PLACEHOLDER_LABEL
+    assert default_payload["evidence"] is False
+    assert default_payload["note"] == _NOTE
+    assert str(default_payload["report"]).splitlines()[0] == f"embedder: {_PLACEHOLDER_LABEL}"
+    assert _OSNET_LITE_LABEL not in default_out.out
+
+
+def test_unknown_embedder_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as caught:
-        eval_module.main(["--embedder", "osnet-lite", "--synthetic-seed", "0", "--json"])
+        eval_module.main(["--embedder", "paper-osnet", "--synthetic-seed", "0", "--json"])
     captured = capsys.readouterr()
     assert caught.value.code != 0
     assert captured.out == ""
+    assert "rank1" not in captured.out
     assert "rank1" not in captured.err
 
 
@@ -828,11 +944,13 @@ def test_cli_on_the_synthetic_split_exits_zero(capsys: pytest.CaptureFixture[str
     assert code == 0
     assert captured.err == ""
     payload = json.loads(captured.out)
-    assert tuple(payload) == _JSON_KEYS
+    assert tuple(payload) == _CLI_JSON_KEYS
     assert payload["evidence"] is False
+    assert payload["embedder"] == _PLACEHOLDER_LABEL
     assert payload["note"] == _NOTE
     assert "AC-06" in str(payload["note"])
     assert "Placeholder" in str(payload["note"])
+    assert str(payload["report"]).splitlines()[0] == f"embedder: {_PLACEHOLDER_LABEL}"
     assert payload["num_valid_query"] > 0
     assert payload["num_query"] > 0
     assert payload["num_gallery"] > 0
@@ -840,10 +958,15 @@ def test_cli_on_the_synthetic_split_exits_zero(capsys: pytest.CaptureFixture[str
 
 def test_build_embedder_rejects_an_unknown_name() -> None:
     with pytest.raises(ValueError, match="not available"):
-        eval_module.build_embedder("osnet-lite", 0)
+        eval_module.build_embedder("paper-osnet", 0)
     embedder = eval_module.build_embedder("placeholder", 0)
+    assert isinstance(embedder, UntrainedPlaceholderEmbedder)
     assert embedder.placeholder is True
-    assert embedder.name == "untrained-placeholder-v1"
+    assert embedder.name == _PLACEHOLDER_LABEL
+    osnet = eval_module.build_embedder("osnet-lite", 7)
+    assert isinstance(osnet, OsnetLiteEmbedder)
+    assert osnet.placeholder is True
+    assert osnet.name == "osnet-lite-random-init"
 
 
 def test_script_entrypoint_prints_no_metric() -> None:

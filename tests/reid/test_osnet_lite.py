@@ -186,6 +186,13 @@ def _batch_norms(embedder: OsnetLiteEmbedder) -> list[BatchNorm2d]:
     return found
 
 
+def test_package_exports_osnet_lite_embedder() -> None:
+    from trace_search import reid
+
+    assert reid.OsnetLiteEmbedder is OsnetLiteEmbedder
+    assert "OsnetLiteEmbedder" in reid.__all__
+
+
 def test_defaults_placeholder_and_name() -> None:
     embedder = OsnetLiteEmbedder()
     assert embedder.dim == 256
