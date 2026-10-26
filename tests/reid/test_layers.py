@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import math
 import socket
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,18 @@ def _make(kind: str, rng: np.random.Generator, **extra: object) -> Any:
     if kind == "GlobalAvgPool":
         return GlobalAvgPool(**extra)
     raise AssertionError(kind)
+
+
+def _draw_bias(layer: Any, rng: np.random.Generator) -> None:
+    """Replace a constructed zero shift with a non-zero draw from ``rng``.
+
+    The constructor is not given a bias argument. A forward that drops the
+    add no longer matches the loop reference.
+    """
+    drawn = np.asarray(rng.standard_normal(np.shape(layer.bias)), dtype=np.float64)
+    drawn[drawn == 0.0] = 0.5
+    assert bool(np.all(drawn != 0.0))
+    layer.bias = drawn
 
 
 def _he_weight(kind: str, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
@@ -431,7 +444,9 @@ def test_conv2d_matches_loop_reference(
 ) -> None:
     values = _nchw(11)
     original = values.copy()
-    layer = Conv2d(3, 2, kernel, np.random.default_rng(3), stride=stride, padding=padding)
+    rng = np.random.default_rng(3)
+    layer = Conv2d(3, 2, kernel, rng, stride=stride, padding=padding)
+    _draw_bias(layer, rng)
     assert layer.kernel_size == _pair(kernel)
     assert layer.stride == _pair(stride)
     assert layer.padding == _pair(padding)
@@ -455,7 +470,9 @@ def test_depthwise_conv2d_matches_loop_reference(
 ) -> None:
     values = _nchw(12)
     original = values.copy()
-    layer = DepthwiseConv2d(3, np.random.default_rng(4), stride=stride, padding=padding)
+    rng = np.random.default_rng(4)
+    layer = DepthwiseConv2d(3, rng, stride=stride, padding=padding)
+    _draw_bias(layer, rng)
     found = layer.forward(values)
     expected = _depthwise_reference(values, layer.weight, layer.bias, stride, padding)
     _assert_close(found, expected)
@@ -465,7 +482,9 @@ def test_depthwise_conv2d_matches_loop_reference(
 def test_pointwise_conv2d_matches_loop_reference() -> None:
     values = _nchw(13)
     original = values.copy()
-    layer = PointwiseConv2d(3, 4, np.random.default_rng(5))
+    rng = np.random.default_rng(5)
+    layer = PointwiseConv2d(3, 4, rng)
+    _draw_bias(layer, rng)
     found = layer.forward(values)
     expected = _pointwise_reference(values, layer.weight, layer.bias)
     _assert_close(found, expected)
@@ -476,7 +495,9 @@ def test_pointwise_conv2d_matches_loop_reference() -> None:
 def test_linear_matches_loop_reference() -> None:
     values = _nchw(14)
     original = values.copy()
-    layer = Linear(75, 4, np.random.default_rng(6))
+    rng = np.random.default_rng(6)
+    layer = Linear(75, 4, rng)
+    _draw_bias(layer, rng)
     flat = values.reshape(2, 75)
     found = layer.forward(values)
     found_flat = layer.forward(flat.copy())
@@ -505,6 +526,31 @@ def test_sigmoid_matches_loop_reference() -> None:
     assert np.array_equal(values, original)
 
 
+def test_sigmoid_large_inputs_stay_finite_without_warning() -> None:
+    """Large positive and negative inputs stay finite and inside [0, 1]."""
+    mixed = np.array(
+        [[1000.0, -1000.0, 0.0], [800.0, -800.0, 1.25], [-0.5, 40.0, -40.0]],
+        dtype=np.float64,
+    )
+    wide = _nchw(23)
+    flat = wide.reshape(-1)
+    flat[0] = 1000.0
+    flat[1] = -1000.0
+    flat[2] = 0.0
+    original = wide.copy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        found_mixed = Sigmoid().forward(mixed)
+        found_wide = Sigmoid().forward(wide)
+    for found in (found_mixed, found_wide):
+        assert found.dtype == np.float64
+        assert bool(np.isfinite(found).all())
+        assert bool(np.all((found >= 0.0) & (found <= 1.0)))
+    _assert_close(found_mixed, _sigmoid_reference(mixed))
+    _assert_close(found_wide, _sigmoid_reference(wide))
+    assert np.array_equal(wide, original)
+
+
 def test_global_avg_pool_matches_loop_reference() -> None:
     values = _nchw(17)
     original = values.copy()
@@ -517,7 +563,9 @@ def test_global_avg_pool_matches_loop_reference() -> None:
 def test_batchnorm2d_train_matches_loop_reference() -> None:
     values = _nchw(18)
     original = values.copy()
-    layer = BatchNorm2d(3, np.random.default_rng(8), eps=0.5, momentum=0.25)
+    rng = np.random.default_rng(8)
+    layer = BatchNorm2d(3, rng, eps=0.5, momentum=0.25)
+    _draw_bias(layer, rng)
     layer.train()
     assert layer.training is True
     mean_0 = layer.running_mean.copy()
@@ -547,7 +595,9 @@ def test_batchnorm2d_eval_matches_loop_reference() -> None:
     train_values = _nchw(20)
     eval_values = _nchw(21) + 4.0
     original = eval_values.copy()
-    layer = BatchNorm2d(3, np.random.default_rng(9), eps=0.5, momentum=0.25)
+    rng = np.random.default_rng(9)
+    layer = BatchNorm2d(3, rng, eps=0.5, momentum=0.25)
+    _draw_bias(layer, rng)
     layer.forward(train_values)
     layer.eval()
     assert layer.training is False
@@ -574,7 +624,9 @@ def test_batchnorm2d_one_sample_matches_loop_reference() -> None:
     values = np.zeros((1, 2, 1, 1), dtype=np.float64)
     values[0, 0, 0, 0] = 2.0
     values[0, 1, 0, 0] = -3.0
-    layer = BatchNorm2d(2, np.random.default_rng(1), eps=0.5, momentum=0.4)
+    rng = np.random.default_rng(1)
+    layer = BatchNorm2d(2, rng, eps=0.5, momentum=0.4)
+    _draw_bias(layer, rng)
     mean_0 = layer.running_mean.copy()
     var_0 = layer.running_var.copy()
     found = layer.forward(values)

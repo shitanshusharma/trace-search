@@ -90,7 +90,9 @@ def _pair(value: int | tuple[int, ...], label: str, *, positive: bool) -> tuple[
 
 
 def _f64(array: npt.ArrayLike) -> npt.NDArray[np.float64]:
-    copied = np.ascontiguousarray(np.asarray(array, dtype=np.float64))
+    """Return a new contiguous float64 array. The caller's object is not reused."""
+    values = np.asarray(array, dtype=np.float64)
+    copied = np.array(values, dtype=np.float64, order="C", copy=True)
     return cast(npt.NDArray[np.float64], copied)
 
 
