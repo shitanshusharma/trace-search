@@ -406,6 +406,28 @@ def test_manifest_sha256_matches_synthetic_py() -> None:
     assert len(digest) == 64
 
 
+def test_in_repo_generator_version_is_the_base_commit_not_a_content_pin() -> None:
+    """``version`` on an in-repo generator row is the base commit.
+
+    It stays that commit when the file bytes change. ``sha256`` pins the
+    bytes. The notes are what keep the rule true over time.
+    """
+    row = _generator_row()
+    notes = str(row["notes"])
+    version = str(row["version"])
+    digest = hashlib.sha256(_SOURCE.read_bytes()).hexdigest()
+    assert "in-repo generator row" in notes
+    assert "version is the base commit" in notes
+    assert "not a content pin" in notes
+    assert "not updated when the file bytes change" in notes
+    assert "sha256" in notes
+    assert len(version) == 40
+    assert version == version.lower()
+    assert all(character in "0123456789abcdef" for character in version)
+    assert version != digest
+    assert row["sha256"] == digest
+
+
 def test_generator_row_without_seed_fails_schema() -> None:
     row = dict(_generator_row())
     del row["seed"]

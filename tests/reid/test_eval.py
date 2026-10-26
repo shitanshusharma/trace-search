@@ -1018,15 +1018,10 @@ def test_eval_makes_no_network_call(
 ) -> None:
     calls: list[str] = []
 
-    def refuse_connect(*_args: object, **_kwargs: object) -> None:
-        calls.append("connect")
-        raise OSError("refused")
-
     def refuse_create_connection(*_args: object, **_kwargs: object) -> None:
         calls.append("create_connection")
         raise OSError("refused")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse_connect)
     monkeypatch.setattr(socket, "create_connection", refuse_create_connection)
     query, gallery = _hand_built()
     assert rank1_map(query, gallery).num_query == 3

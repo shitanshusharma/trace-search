@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import fields
 from pathlib import Path
 
@@ -467,6 +467,21 @@ def test_non_string_use_tag_raises_fixture_separation_error(tmp_path: Path) -> N
         load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
 
 
+def test_loaded_crop_base_cannot_be_made_writable(tmp_path: Path) -> None:
+    """``crop.base.setflags(write=True)`` fails, and a write through ``base`` fails."""
+    crop = _benign_crop(4)
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
+    sealed = loaded[0].crop
+    assert sealed is not None
+    base = sealed.base
+    assert isinstance(base, np.ndarray)
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        base.setflags(write=True)
+    with pytest.raises(ValueError):
+        base[0] = 0
+
+
 def test_loaded_crop_is_a_read_only_copy(tmp_path: Path) -> None:
     crop = _benign_crop(4)
     original = crop.copy()
@@ -500,25 +515,108 @@ def test_smoke_frame_crop_is_refused(
     )
 
 
-def test_known_gap_centre_crop_of_a_smoke_frame_is_accepted(
+def test_smoke_centre_50_percent_crop_is_refused(
     tmp_path: Path,
     smoke_clips: tuple[Path, list[dict[str, object]]],
 ) -> None:
-    """Known gap: a box cut from a smoke frame is not refused.
+    """The old known gap is closed. A 50% centre crop is refused.
 
-    The crop check matches a whole smoke frame by pHash. It does not
-    match the centre of that frame. This pins the current behaviour.
+    ``load_reid_samples`` raises before it returns the sample.
     """
+    _refuse_smoke_crop(tmp_path, smoke_clips, _half_centre)
+
+
+def test_smoke_centre_80_percent_crop_is_refused(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    """An 80% centre crop of a smoke frame is refused before return."""
+    _refuse_smoke_crop(tmp_path, smoke_clips, _eighty_centre)
+
+
+def test_smoke_128x64_box_is_refused(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    """A 128 by 64 centre box is refused in both orientations."""
+    _refuse_smoke_crop(tmp_path, smoke_clips, _centre_128x64)
+    _refuse_smoke_crop(tmp_path, smoke_clips, _portrait_128x64)
+
+
+def test_off_centre_128x64_smoke_box_is_refused(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+) -> None:
+    """A 128 by 64 box that is not the centre window is still refused."""
+    _refuse_smoke_crop(tmp_path, smoke_clips, _off_centre_128x64)
+
+
+def _refuse_smoke_crop(
+    tmp_path: Path,
+    smoke_clips: tuple[Path, list[dict[str, object]]],
+    cut: Callable[[np.ndarray], np.ndarray],
+) -> None:
     directory, entries = smoke_clips
     clip = _entry_clip(directory, entries[0])
     frame = rgb_frame(clip)
+    crop = cut(frame)
+    sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
+    _refused(
+        [sample],
+        LoaderContext.EVALUATION,
+        _write_manifest(tmp_path),
+        "box cut from",
+    )
+
+
+def _half_centre(frame: np.ndarray) -> np.ndarray:
     height, width = frame.shape[:2]
     top = height // 4
     left = width // 4
-    centre = np.ascontiguousarray(frame[top : top + height // 2, left : left + width // 2])
-    sample = _sample("FX-SYNREID-001", use="DEV", crop=centre)
-    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path))
-    assert len(loaded) == 1 and loaded[0] is sample
+    return np.ascontiguousarray(frame[top : top + height // 2, left : left + width // 2])
+
+
+def _eighty_centre(frame: np.ndarray) -> np.ndarray:
+    height, width = frame.shape[:2]
+    crop_h = int(height * 0.8)
+    crop_w = int(width * 0.8)
+    top = (height - crop_h) // 2
+    left = (width - crop_w) // 2
+    return np.ascontiguousarray(frame[top : top + crop_h, left : left + crop_w])
+
+
+def _centre_128x64(frame: np.ndarray) -> np.ndarray:
+    """Landscape 128 by 64 box (height 64, width 128) from the centre."""
+    return _centre_box(frame, 64, 128)
+
+
+def _portrait_128x64(frame: np.ndarray) -> np.ndarray:
+    """Portrait 128 by 64 box (height 128, width 64) from the centre."""
+    return _centre_box(frame, 128, 64)
+
+
+def _centre_box(frame: np.ndarray, crop_h: int, crop_w: int) -> np.ndarray:
+    top = (frame.shape[0] - crop_h) // 2
+    left = (frame.shape[1] - crop_w) // 2
+    return np.ascontiguousarray(frame[top : top + crop_h, left : left + crop_w])
+
+
+def _off_centre_128x64(frame: np.ndarray) -> np.ndarray:
+    """A 64x128 window whose mean is far from the centre window."""
+    centre = _centre_box(frame, 64, 128)
+    centre_mean = float(centre.mean())
+    best: np.ndarray | None = None
+    best_gap = 0.0
+    for top in range(0, frame.shape[0] - 64, 48):
+        for left in range(0, frame.shape[1] - 128, 48):
+            box = np.ascontiguousarray(frame[top : top + 64, left : left + 128])
+            gap = abs(float(box.mean()) - centre_mean)
+            if gap > best_gap:
+                best_gap = gap
+                best = box
+    assert best is not None
+    assert best_gap > 20
+    return best
 
 
 def test_zero_by_zero_crop_is_refused(tmp_path: Path) -> None:

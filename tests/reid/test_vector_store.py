@@ -484,15 +484,10 @@ def test_store_satisfies_vector_store() -> None:
 def test_no_network_on_add_search_delete_and_count(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    def refuse_connect(*_args: object, **_kwargs: object) -> None:
-        calls.append("connect")
-        raise OSError("refused")
-
     def refuse_create_connection(*_args: object, **_kwargs: object) -> None:
         calls.append("create_connection")
         raise OSError("refused")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse_connect)
     monkeypatch.setattr(socket, "create_connection", refuse_create_connection)
     store, _row, query = _axis_store()
     assert store.search(query, k=1)

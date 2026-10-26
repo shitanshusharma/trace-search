@@ -365,15 +365,10 @@ def test_harness_does_not_open_files(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_harness_does_not_connect(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    def refuse_connect(*_args: object, **_kwargs: object) -> None:
-        calls.append("connect")
-        raise OSError("refused")
-
     def refuse_create_connection(*_args: object, **_kwargs: object) -> None:
         calls.append("create_connection")
         raise OSError("refused")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse_connect)
     monkeypatch.setattr(socket, "create_connection", refuse_create_connection)
     query, gallery = _hand_built()
     assert run("FX-HOLD-001", query=query, gallery=gallery)["status"] == "DEFERRED"

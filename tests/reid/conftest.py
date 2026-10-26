@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import cv2
@@ -9,6 +10,16 @@ import numpy as np
 import pytest
 
 from trace_search.fixtures.generator import generate_smoke_fixtures
+
+
+@pytest.fixture(autouse=True)
+def refuse_socket_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test under ``tests/reid`` refuses ``socket.socket.connect``."""
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError("ReID tests refuse socket.socket.connect")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
 
 
 @pytest.fixture(scope="module")
