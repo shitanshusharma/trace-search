@@ -100,6 +100,8 @@ A short terminal demo of these commands is in `docs/demo.cast`. It shows the cur
 asciinema play docs/demo.cast
 ```
 
+Or [watch the GIF](https://github.com/user-attachments/assets/efbd22e3-568c-4c1a-a2f5-c1a41ffecbdf).
+
 ## Limits
 
 - Smoke clips are synthetic only. This repo has no real footage and no consented footage.
