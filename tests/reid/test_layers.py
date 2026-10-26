@@ -65,50 +65,50 @@ def _assert_close(found: np.ndarray, expected: np.ndarray) -> None:
     assert np.allclose(found, expected, **_CLOSE), delta
 
 
-def _make(name: str, rng: np.random.Generator, **extra: object) -> Any:
-    if name == "Conv2d":
+def _make(kind: str, rng: np.random.Generator, **extra: object) -> Any:
+    if kind == "Conv2d":
         return Conv2d(3, 4, 3, rng, **extra)
-    if name == "DepthwiseConv2d":
+    if kind == "DepthwiseConv2d":
         return DepthwiseConv2d(3, rng, **extra)
-    if name == "PointwiseConv2d":
+    if kind == "PointwiseConv2d":
         return PointwiseConv2d(3, 4, rng, **extra)
-    if name == "BatchNorm2d":
+    if kind == "BatchNorm2d":
         return BatchNorm2d(3, rng, **extra)
-    if name == "Linear":
+    if kind == "Linear":
         return Linear(75, 4, rng, **extra)
-    if name == "ReLU":
+    if kind == "ReLU":
         return ReLU(**extra)
-    if name == "Sigmoid":
+    if kind == "Sigmoid":
         return Sigmoid(**extra)
-    if name == "GlobalAvgPool":
+    if kind == "GlobalAvgPool":
         return GlobalAvgPool(**extra)
-    raise AssertionError(name)
+    raise AssertionError(kind)
 
 
-def _he_weight(name: str, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+def _he_weight(kind: str, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """Independent He-normal draw. ``fan_in`` is the input count of one output."""
-    if name == "Conv2d":
+    if kind == "Conv2d":
         shape: tuple[int, ...] = (4, 3, 3, 3)
         fan_in = 3 * 3 * 3
         bias_shape: tuple[int, ...] = (4,)
-    elif name == "DepthwiseConv2d":
+    elif kind == "DepthwiseConv2d":
         shape = (3, 3, 3)
         fan_in = 3 * 3
         bias_shape = (3,)
-    elif name == "PointwiseConv2d":
+    elif kind == "PointwiseConv2d":
         shape = (4, 3)
         fan_in = 3
         bias_shape = (4,)
-    elif name == "BatchNorm2d":
+    elif kind == "BatchNorm2d":
         shape = (3,)
         fan_in = 1
         bias_shape = (3,)
-    elif name == "Linear":
+    elif kind == "Linear":
         shape = (4, 75)
         fan_in = 75
         bias_shape = (4,)
     else:
-        raise AssertionError(name)
+        raise AssertionError(kind)
     weight = rng.standard_normal(shape) * math.sqrt(2.0 / fan_in)
     bias = np.zeros(bias_shape, dtype=np.float64)
     return np.asarray(weight, dtype=np.float64), bias
@@ -359,53 +359,53 @@ def test_defaults() -> None:
     assert linear.out_features == 4
 
 
-@pytest.mark.parametrize("name", _WEIGHTED)
-def test_weight_draw_matches_he_normal(name: str) -> None:
+@pytest.mark.parametrize("kind", _WEIGHTED)
+def test_weight_draw_matches_he_normal(kind: str) -> None:
     probe = np.random.default_rng(7)
-    expected_weight, expected_bias = _he_weight(name, probe)
-    layer = _make(name, np.random.default_rng(7))
+    expected_weight, expected_bias = _he_weight(kind, probe)
+    layer = _make(kind, np.random.default_rng(7))
     assert np.array_equal(layer.weight, expected_weight)
     assert np.array_equal(layer.bias, expected_bias)
     assert layer.weight.dtype == np.float64
-    if name == "BatchNorm2d":
+    if kind == "BatchNorm2d":
         assert np.array_equal(layer.running_mean, np.zeros(3, dtype=np.float64))
         assert np.array_equal(layer.running_var, np.ones(3, dtype=np.float64))
 
 
-@pytest.mark.parametrize("name", _WEIGHTED)
-def test_same_seed_draws_identical_weights(name: str) -> None:
-    left = _make(name, np.random.default_rng(0))
-    right = _make(name, np.random.default_rng(0))
+@pytest.mark.parametrize("kind", _WEIGHTED)
+def test_same_seed_draws_identical_weights(kind: str) -> None:
+    left = _make(kind, np.random.default_rng(0))
+    right = _make(kind, np.random.default_rng(0))
     assert np.array_equal(left.weight, right.weight)
     assert np.array_equal(left.bias, right.bias)
 
 
-@pytest.mark.parametrize("name", _WEIGHTED)
-def test_different_seed_draws_different_weights(name: str) -> None:
-    left = _make(name, np.random.default_rng(0))
-    right = _make(name, np.random.default_rng(1))
+@pytest.mark.parametrize("kind", _WEIGHTED)
+def test_different_seed_draws_different_weights(kind: str) -> None:
+    left = _make(kind, np.random.default_rng(0))
+    right = _make(kind, np.random.default_rng(1))
     assert not np.array_equal(left.weight, right.weight)
 
 
-@pytest.mark.parametrize("name", _LAYER_NAMES)
-def test_weights_keyword_raises_type_error(name: str) -> None:
+@pytest.mark.parametrize("kind", _LAYER_NAMES)
+def test_weights_keyword_raises_type_error(kind: str) -> None:
     kwargs = {"weights": np.zeros(1, dtype=np.float64)}
     with pytest.raises(TypeError, match="'weights'"):
-        _make(name, np.random.default_rng(0), **kwargs)
+        _make(kind, np.random.default_rng(0), **kwargs)
 
 
-@pytest.mark.parametrize("name", _WEIGHTED)
+@pytest.mark.parametrize("kind", _WEIGHTED)
 @pytest.mark.parametrize("keyword", ("weights_path", "checkpoint"))
-def test_path_and_checkpoint_keywords_raise_type_error(name: str, keyword: str) -> None:
+def test_path_and_checkpoint_keywords_raise_type_error(kind: str, keyword: str) -> None:
     kwargs = {keyword: "parameters.bin"}
     with pytest.raises(TypeError, match=f"'{keyword}'"):
-        _make(name, np.random.default_rng(0), **kwargs)
+        _make(kind, np.random.default_rng(0), **kwargs)
 
 
-@pytest.mark.parametrize("name", _WEIGHTED)
-def test_array_is_refused_where_a_generator_is_required(name: str) -> None:
+@pytest.mark.parametrize("kind", _WEIGHTED)
+def test_array_is_refused_where_a_generator_is_required(kind: str) -> None:
     with pytest.raises(TypeError, match="Generator"):
-        _make(name, np.zeros(4))  # type: ignore[arg-type]
+        _make(kind, np.zeros(4))  # type: ignore[arg-type]
 
 
 def test_string_is_refused_where_a_generator_is_required() -> None:
