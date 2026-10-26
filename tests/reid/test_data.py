@@ -14,8 +14,10 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 import cv2
+import imagehash
 import numpy as np
 import pytest
+from PIL import Image
 
 import trace_search.reid as reid
 import trace_search.reid.data as data_module
@@ -23,6 +25,7 @@ import trace_search.reid.synthetic as synthetic_module
 from tests.media_helpers import write_mp4v_variant
 from tests.reid.conftest import rgb_frame
 from trace_search.fixtures.content import sha256_file
+from trace_search.fixtures.generator import SyntheticVideoGenerator
 from trace_search.fixtures.guards import FixtureSeparationError, FixtureUseTag, LoaderContext
 from trace_search.reid.data import SyntheticProvenance
 
@@ -953,6 +956,119 @@ def test_one_seed_is_regenerated_once(
     assert calls == [0]
 
 
+def _write_rgb_png(directory: Path, name: str, crop: np.ndarray) -> Path:
+    path = directory / name
+    Image.fromarray(np.ascontiguousarray(crop), mode="RGB").save(path)
+    return path
+
+
+def _png_manifest_row(path: Path, fixture_id: str, image: np.ndarray) -> dict[str, object]:
+    phash = str(imagehash.phash(Image.fromarray(np.ascontiguousarray(image), mode="RGB")))
+    return {
+        "fixture_id": fixture_id,
+        "use": "DEV",
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "phash": [phash],
+    }
+
+
+def test_smoke_figure_png_without_provenance_is_refused(tmp_path: Path) -> None:
+    """A frame-156 figure box saved as a PNG is refused in EVALUATION.
+
+    The clip is regenerated in ``tmp_path``. The caller manifest has one
+    DEV row for that PNG. The sample has a path and no in-memory crop.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    assert not tmp_path.resolve().is_relative_to(repo_root)
+    clip = tmp_path / "FX-SMOKE-SYN-003_hallway_crowded.mp4"
+    SyntheticVideoGenerator(seed=44).generate_clip(
+        output_path=clip,
+        duration_sec=15.0,
+        fps=30,
+        width=1920,
+        height=1080,
+        num_figures=5,
+        background_brightness=0.85,
+        num_obstructions=3,
+    )
+    index = 156
+    assert index not in _sample_frame_indices(_frame_count(clip))
+    frame = _rgb_frames(clip, (index,))[index]
+    box = _figure_centred_box(frame)
+    png = _write_rgb_png(tmp_path, "figure.png", box)
+    manifest = _write_manifest(tmp_path, [_png_manifest_row(png, "FX-SYNREID-001", box)])
+    sample = _sample("FX-SYNREID-001", use="DEV", path=png)
+    _refused([sample], LoaderContext.EVALUATION, manifest, "no synthetic provenance")
+
+
+def test_path_only_generator_png_is_accepted(tmp_path: Path) -> None:
+    """A path-only file is accepted when its pixels match the generator."""
+    source = make_synthetic_reid_set(seed=0)[0]
+    crop = source.crop
+    assert crop is not None
+    original = np.array(crop, copy=True)
+    png = _write_rgb_png(tmp_path, "genuine.png", original)
+    manifest = _write_manifest(tmp_path, [_png_manifest_row(png, source.fixture_id, original)])
+    sample = replace(source, crop=None, path=png)
+    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, manifest)
+    assert loaded == [sample]
+    installed = loaded[0].crop
+    assert installed is not None
+    assert np.array_equal(installed, original)
+    assert installed.flags.writeable is False
+
+
+def test_non_rgb_path_is_refused(tmp_path: Path) -> None:
+    source = make_synthetic_reid_set(seed=0)[0]
+    crop = source.crop
+    assert crop is not None
+    path = tmp_path / "gray.png"
+    Image.fromarray(crop[:, :, 0], mode="L").save(path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest = _write_manifest(
+        tmp_path,
+        [{"fixture_id": source.fixture_id, "use": "DEV", "sha256": digest, "phash": []}],
+    )
+    sample = replace(source, crop=None, path=path)
+    _refused([sample], LoaderContext.EVALUATION, manifest, "path pixels will not load")
+
+
+class _TwoReadCrop(ReidSample):
+    """First ``crop`` read is foreign. Later reads are the generator crop."""
+
+    def __getattribute__(self, name: str) -> object:
+        if name == "crop":
+            reads = object.__getattribute__(self, "_reads")
+            object.__setattr__(self, "_reads", reads + 1)
+            if reads == 0:
+                return object.__getattribute__(self, "_foreign")
+            return object.__getattribute__(self, "_genuine")
+        return object.__getattribute__(self, name)
+
+
+def test_switching_crop_is_refused(tmp_path: Path) -> None:
+    """The sealed copy is hashed. A later read of ``crop`` cannot clear it."""
+    source = make_synthetic_reid_set(seed=0)[0]
+    genuine = source.crop
+    assert genuine is not None
+    foreign = np.array(genuine, copy=True)
+    foreign[0, 0, 0] ^= np.uint8(1)
+    sample = _TwoReadCrop(
+        fixture_id=source.fixture_id,
+        use=source.use,
+        camera_id=source.camera_id,
+        track_id=source.track_id,
+        label=source.label,
+        crop=genuine,
+        path=None,
+        provenance=source.provenance,
+    )
+    object.__setattr__(sample, "_reads", 0)
+    object.__setattr__(sample, "_foreign", foreign)
+    object.__setattr__(sample, "_genuine", genuine)
+    _refused([sample], LoaderContext.EVALUATION, _write_manifest(tmp_path), "digest mismatch")
+
+
 def test_zero_by_zero_crop_is_refused(tmp_path: Path) -> None:
     crop = np.zeros((0, 0, 3), dtype=np.uint8)
     sample = _sample("FX-SYNREID-001", use="DEV", crop=crop)
@@ -1137,21 +1253,17 @@ def test_manifest_is_loaded_once_and_each_path_is_hashed_once(
 
     monkeypatch.setattr(data_module, "load_manifest_fixtures", spy_load)
     monkeypatch.setattr(data_module, "perceptual_hashes", spy_hash)
+    generated = make_synthetic_reid_set(seed=0)
     entries = []
     samples = []
-    for index, name in enumerate(("one.txt", "two.txt"), start=1):
-        payload = f"path-sample-{index}".encode()
-        source = tmp_path / name
-        source.write_bytes(payload)
-        entries.append(
-            {
-                "fixture_id": f"FX-SYNREID-{index:03d}",
-                "use": "DEV",
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
-        )
-        samples.append(_sample(f"FX-SYNREID-{index:03d}", use="DEV", path=source))
-    samples.append(make_synthetic_reid_set(seed=0)[2])
+    for index, name in enumerate(("one.png", "two.png"), start=1):
+        source_sample = generated[index - 1]
+        crop = source_sample.crop
+        assert crop is not None
+        source = _write_rgb_png(tmp_path, name, crop)
+        entries.append(_png_manifest_row(source, source_sample.fixture_id, crop))
+        samples.append(replace(source_sample, crop=None, path=source))
+    samples.append(generated[2])
     manifest = _write_manifest(tmp_path, entries)
     loaded = load_reid_samples(samples, LoaderContext.EVALUATION, manifest)
     assert len(loaded) == 3

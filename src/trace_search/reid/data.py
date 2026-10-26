@@ -7,15 +7,17 @@ the caller manifest and the repo smoke manifest by SHA-256 and pHash.
 
 A crop is also checked by pHash as a whole frame. That matches a smoke
 frame, including one that was only resized, blurred, or shifted. It does
-not search inside a frame. An evaluation sample that carries a crop is
-accepted only when ``SyntheticProvenance`` regenerates
-``make_synthetic_reid_set`` and the crop is byte-identical to the
-regenerated crop with the same id. No provenance, an unknown or invalid
-seed, a bad config, a set that will not render, an unknown id, a tampered
-digest, or any other digest mismatch is a refusal. A crop cut from smoke
-footage has none of that provenance, so it is refused whatever its source.
-Manifest sha256 values are file hashes, so crop bytes are not compared
-to them.
+not search inside a frame. An evaluation sample is accepted only when
+``SyntheticProvenance`` regenerates ``make_synthetic_reid_set`` and the
+pixels are byte-identical to the regenerated crop with the same id. The
+pixels are the in-memory crop, or the image loaded from the sample path
+when that crop is absent. The digest is of the sealed copy that is
+installed. No provenance, an unknown or invalid seed, a bad config, a set
+that will not render, an unknown id, a tampered digest, a digest
+mismatch, or a path whose pixels will not load is a refusal. Pixels cut
+from smoke footage have none of that provenance, so they are refused
+whatever their source, in memory or in a file. Manifest sha256 values are
+file hashes, so crop bytes are not compared to them.
 
 TRAINING refuses every sample before the id allowlist and before any tag
 deny-list. The training id allowlist stays empty. Evaluation accepts only
@@ -75,8 +77,9 @@ class SyntheticProvenance:
 
     ``digest`` is the SHA-256 of the crop bytes from
     ``make_synthetic_reid_set`` for this seed, shape, and id. The loader
-    builds that set again and compares digests. ``digest`` is not a
-    manifest file hash.
+    builds that set again and compares the sealed pixels, whether they
+    arrived in memory or were loaded from the sample path. ``digest`` is
+    not a manifest file hash.
     """
 
     seed: int
@@ -198,7 +201,9 @@ def _require_sample(
     _refuse_without_crop_or_path(sample)
     if context is LoaderContext.EVALUATION:
         _refuse_evaluation_tag(sample.use, normalised_use, normalised_id)
-        _refuse_unproven_crop(sample, cache)
+        if sealed is None:
+            sealed = _pixels_from_path(sample, repo_rows)
+        _refuse_unproven_crop(sample, sealed, cache)
     return sealed
 
 
@@ -315,17 +320,19 @@ def _sealed_crop(
     sample: ReidSample,
     repo_rows: _Rows,
 ) -> npt.NDArray[np.uint8] | None:
-    """Copy a crop and refuse it when the copy's pHash is a whole smoke frame.
+    """Copy a crop once and refuse it when that copy's pHash is a smoke frame.
 
-    The copy is installed only after the whole batch passes. pHash sees
-    the crop as one frame, including a frame that was resized, blurred,
-    or shifted. It does not look for a box inside a frame. Byte identity
-    with the synthetic generator is ``_refuse_unproven_crop``. Manifest
-    sha256 values are file hashes and are not used here.
+    ``sample.crop`` is read once. The copy is what ``_refuse_unproven_crop``
+    hashes and what is installed after the batch passes. pHash sees the
+    copy as one frame, including a frame that was resized, blurred, or
+    shifted. It does not look for a box inside a frame. A path with no
+    in-memory crop is loaded by ``_pixels_from_path``. Manifest sha256
+    values are file hashes and are not used here.
     """
-    if sample.crop is None:
+    crop = sample.crop
+    if crop is None:
         return None
-    sealed = _readonly_copy(_require_rgb_uint8(sample.crop))
+    sealed = _readonly_copy(_require_rgb_uint8(crop))
     _refuse_smoke_phash(sample, sealed, repo_rows)
     return sealed
 
@@ -386,10 +393,46 @@ def _match_phash(phash: str, rows: _Rows) -> _Match | None:
     return None
 
 
-def _refuse_unproven_crop(sample: ReidSample, cache: _RegenCache) -> None:
-    """Refuse an evaluation crop that is not byte-identical generator output."""
-    if sample.crop is None:
-        return
+def _pixels_from_path(
+    sample: ReidSample,
+    repo_rows: _Rows,
+) -> npt.NDArray[np.uint8]:
+    """Load a path-only sample. The returned copy is hashed and installed."""
+    path = cast(Path, sample.path)
+    loaded = _read_rgb_path(sample.fixture_id, path)
+    sealed = _readonly_copy(loaded)
+    _refuse_smoke_phash(sample, sealed, repo_rows)
+    return sealed
+
+
+def _read_rgb_path(fixture_id: str, path: Path) -> npt.NDArray[np.uint8]:
+    """Read one RGB image. A file that will not load is a refusal."""
+    try:
+        with Image.open(path) as image:
+            if image.mode != "RGB":
+                raise FixtureSeparationError(
+                    f"{fixture_id} is refused: path pixels will not load: mode {image.mode}"
+                )
+            array = np.array(image, dtype=np.uint8, copy=True)
+    except FixtureSeparationError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise FixtureSeparationError(
+            f"{fixture_id} is refused: path pixels will not load: {exc}"
+        ) from exc
+    return _require_rgb_uint8(array)
+
+
+def _refuse_unproven_crop(
+    sample: ReidSample,
+    sealed: npt.NDArray[np.uint8],
+    cache: _RegenCache,
+) -> None:
+    """Refuse evaluation pixels that are not byte-identical generator output.
+
+    ``sealed`` is the copy that will be installed. The digest is of that
+    copy. It is not a second read of ``sample.crop``.
+    """
     provenance = sample.provenance
     if provenance is None:
         raise FixtureSeparationError(f"{sample.fixture_id} is refused: no synthetic provenance")
@@ -404,7 +447,7 @@ def _refuse_unproven_crop(sample: ReidSample, cache: _RegenCache) -> None:
     expected = _crop_digest(match.crop)
     if provenance.digest != expected:
         raise FixtureSeparationError(f"{sample.fixture_id} is refused: tampered digest")
-    if sample.crop.shape != match.crop.shape or _crop_digest(sample.crop) != expected:
+    if sealed.shape != match.crop.shape or _crop_digest(sealed) != expected:
         raise FixtureSeparationError(f"{sample.fixture_id} is refused: digest mismatch")
 
 

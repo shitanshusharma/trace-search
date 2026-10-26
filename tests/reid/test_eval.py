@@ -437,6 +437,12 @@ def test_path_without_crop_is_accepted_when_the_manifest_row_matches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A path-only file is refused when its pixels are not generator output.
+
+    The manifest row matches the file. That used to be enough. EVALUATION
+    now loads the file and requires synthetic provenance, so this text
+    file is refused.
+    """
     monkeypatch.setattr(data_module, "_EVALUATION_ID_PATTERNS", (_BATCH_PATTERN,))
     payload = b"not-media-eval-sample"
     source = tmp_path / "crop-source.txt"
@@ -453,8 +459,8 @@ def test_path_without_crop_is_accepted_when_the_manifest_row_matches(
         ],
     )
     sample = _reid("FX-BATCH-007", crop=None, path=source)
-    loaded = load_reid_samples([sample], LoaderContext.EVALUATION, manifest)
-    assert loaded[0] is sample
+    with pytest.raises(FixtureSeparationError, match="path pixels will not load"):
+        load_reid_samples([sample], LoaderContext.EVALUATION, manifest)
 
 
 def test_cli_prints_json_with_evidence_false(
