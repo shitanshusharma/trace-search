@@ -3,8 +3,10 @@
 Gallery items with the same label and the same ``camera_id`` are junk
 and are excluded. A query with no remaining match is invalid: it counts
 in ``num_invalid_query`` and is left out of CMC and mAP. Ties keep
-gallery order. The JSON evidence flag is always false. These numbers
-are not an AC-06 result.
+gallery order. ``--embedder`` is ``placeholder`` (the default) or
+``osnet-lite``. ``osnet-lite`` is random init only. The JSON and the
+human-readable report carry that embedder's label. The JSON evidence
+flag is always false. These numbers are not an AC-06 result.
 
 The synthetic query and gallery set is one function, ``synthetic_evaluation_split``.
 It builds flat-colour blocks in memory. The command loads them through
@@ -28,6 +30,7 @@ import numpy.typing as npt
 
 import trace_search.reid.data as data_module
 from trace_search.fixtures.guards import FixtureSeparationError, LoaderContext
+from trace_search.reid.osnet_lite import OsnetLiteEmbedder
 from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
 from trace_search.reid.synthetic import make_synthetic_reid_set
 from trace_search.reid.types import AppearanceEmbedder
@@ -36,6 +39,9 @@ ReidSample = data_module.ReidSample
 
 _NOTE = "Placeholder or synthetic embeddings. Not an AC-06 result."
 _PLACEHOLDER = "placeholder"
+_OSNET_LITE = "osnet-lite"
+_OSNET_LITE_LABEL = "OSNet-style, chained streams, random init"
+_EMBEDDER_CHOICES = (_PLACEHOLDER, _OSNET_LITE)
 _DISTANCE = "cosine"
 _CMC_RANKS = 5
 _JSON_REQUIRED = "ReID evaluation refused: --json is required. No metric was computed."
@@ -59,7 +65,7 @@ _DESCRIPTION = (
     "The JSON is not an AC-06 result."
 )
 
-_Prepared = tuple[tuple["EvalItem", ...], tuple["EvalItem", ...]]
+_Prepared = tuple[tuple["EvalItem", ...], tuple["EvalItem", ...], AppearanceEmbedder]
 
 
 @dataclass(frozen=True)
@@ -165,12 +171,17 @@ def pinned_manifest_path() -> Path:
     return repo_root / "licenses" / "manifest.json"
 
 
-def build_embedder(embedder: str, seed: int) -> UntrainedPlaceholderEmbedder:
-    """Return the placeholder embedder. Any other name is refused."""
-    if embedder != _PLACEHOLDER:
-        raise ValueError(f"embedder {embedder!r} is not available")
+def build_embedder(embedder: str, seed: int) -> AppearanceEmbedder:
+    """Return one random-init embedder. Any other name is refused.
+
+    ``osnet-lite`` is ``OsnetLiteEmbedder(seed=...)`` only.
+    """
     _require_seed(seed)
-    return UntrainedPlaceholderEmbedder(seed=seed)
+    if embedder == _PLACEHOLDER:
+        return UntrainedPlaceholderEmbedder(seed=seed)
+    if embedder == _OSNET_LITE:
+        return OsnetLiteEmbedder(seed=seed)
+    raise ValueError(f"embedder {embedder!r} is not available")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -183,8 +194,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     if isinstance(outcome, str):
         print(outcome, file=sys.stderr)
         return 1
-    print(json.dumps(rank1_map(outcome[0], outcome[1]).as_json()))
+    query, gallery, embedder = outcome
+    print(json.dumps(_labelled_json(rank1_map(query, gallery).as_json(), embedder)))
     return 0
+
+
+def _label_for(embedder: AppearanceEmbedder) -> str:
+    """Label for the JSON and the report. osnet-lite is not paper OSNet."""
+    if isinstance(embedder, OsnetLiteEmbedder):
+        return _OSNET_LITE_LABEL
+    return embedder.name
+
+
+def _format_report(payload: dict[str, object]) -> str:
+    """Human-readable lines. The first line is the embedder label."""
+    lines = (
+        f"embedder: {payload['embedder']}",
+        f"rank1: {payload['rank1']}",
+        f"mAP: {payload['mAP']}",
+        f"cmc_top5: {payload['cmc_top5']}",
+        f"num_query: {payload['num_query']}",
+        f"num_valid_query: {payload['num_valid_query']}",
+        f"num_gallery: {payload['num_gallery']}",
+        f"evidence: {json.dumps(payload['evidence'])}",
+        f"note: {payload['note']}",
+    )
+    return "\n".join(lines)
+
+
+def _labelled_json(
+    payload: dict[str, object],
+    embedder: AppearanceEmbedder,
+) -> dict[str, object]:
+    """Copy ``payload`` and attach the embedder label and its report."""
+    labelled = dict(payload)
+    labelled["embedder"] = _label_for(embedder)
+    labelled["report"] = _format_report(labelled)
+    return labelled
 
 
 def _evidence_flag() -> bool:
@@ -205,7 +251,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=_DESCRIPTION)
-    parser.add_argument("--embedder", choices=(_PLACEHOLDER,), required=True)
+    parser.add_argument("--embedder", choices=_EMBEDDER_CHOICES, default=_PLACEHOLDER)
     parser.add_argument("--synthetic-seed", type=int, required=True)
     parser.add_argument("--json", action="store_true", dest="emit_json")
     return parser
@@ -227,7 +273,7 @@ def _prepare(embedder_name: str, seed: int) -> _Prepared | str:
         gallery_items = _items_from_loaded(loaded_gallery, embedder)
     except (FixtureSeparationError, ValueError) as exc:
         return str(exc)
-    return query_items, gallery_items
+    return query_items, gallery_items, embedder
 
 
 def _load_split(
