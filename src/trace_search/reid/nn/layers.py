@@ -3,7 +3,8 @@
 Weights are drawn from the caller-supplied ``numpy.random.Generator`` with
 He normal initialisation: zero mean and standard deviation ``sqrt(2 / fan_in)``.
 ``fan_in`` is the number of inputs that one output value uses. Shifts start
-at zero. Batch-norm running mean starts at zero and running variance at one.
+at zero. Batch-norm scale starts at one, its shift starts at zero, its
+running mean starts at zero, and its running variance starts at one.
 
 No constructor takes an array, a filesystem path, or a saved parameter file.
 This module does not fetch parameters and does not open a connection.
@@ -175,6 +176,35 @@ def _conv2d(
     return _f64(np.transpose(shifted, (0, 3, 1, 2)))
 
 
+def _depthwise_conv2d(
+    data: npt.NDArray[np.float64],
+    weight: npt.NDArray[np.float64],
+    bias: npt.NDArray[np.float64],
+    stride: tuple[int, int],
+    padding: tuple[int, int],
+) -> npt.NDArray[np.float64]:
+    """Depthwise 3x3 as one im2col and one einsum over the kernel taps.
+
+    ``weight`` has shape ``(channels, 3, 3)``. Channels are not mixed and
+    there is no Python loop over them.
+    """
+    height = int(data.shape[2])
+    width = int(data.shape[3])
+    kernel_h = int(weight.shape[1])
+    kernel_w = int(weight.shape[2])
+    stride_h, stride_w = stride
+    pad_h, pad_w = padding
+    out_h = (height + 2 * pad_h - kernel_h) // stride_h + 1
+    out_w = (width + 2 * pad_w - kernel_w) // stride_w + 1
+    if out_h < 1 or out_w < 1:
+        raise ValueError(f"output spatial size must be positive, got {(out_h, out_w)}")
+    windows = _kernel_windows(_pad(data, pad_h, pad_w), kernel_h, kernel_w)
+    strided = windows[:, :, ::stride_h, ::stride_w, :, :]
+    product = np.einsum("nchwjk,cjk->nchw", strided, weight)
+    shifted = product + bias.reshape(1, -1, 1, 1)
+    return _f64(shifted)
+
+
 def _moments(
     data: npt.NDArray[np.float64],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], int]:
@@ -294,13 +324,7 @@ class DepthwiseConv2d:
     def forward(self, batch: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         """Convolve each channel with its own 3x3 kernel."""
         data = _as_nchw(batch, self.channels)
-        parts: list[npt.NDArray[np.float64]] = []
-        for index in range(self.channels):
-            kernel = _f64(self.weight[index].reshape(1, 1, 3, 3))
-            column = _f64(data[:, index : index + 1])
-            shift = self.bias[index : index + 1]
-            parts.append(_conv2d(column, kernel, shift, self.stride, self.padding))
-        return _f64(np.concatenate(parts, axis=1))
+        return _depthwise_conv2d(data, self.weight, self.bias, self.stride, self.padding)
 
 
 class PointwiseConv2d:
@@ -330,22 +354,25 @@ class BatchNorm2d:
     variance when more than one element is present. Eval uses the running
     estimates and leaves them unchanged.
 
-    The scale is He-normal with ``fan_in`` 1. The shift starts at zero.
+    The scale starts at one and the shift starts at zero. ``rng`` may be
+    omitted. When it is passed, it is checked and not drawn from, so
+    batch-norm does not consume random state.
     """
 
     def __init__(
         self,
         num_features: int,
-        rng: np.random.Generator,
+        rng: np.random.Generator | None = None,
         eps: float = _DEFAULT_EPS,
         momentum: float = _DEFAULT_MOMENTUM,
     ) -> None:
-        generator = _require_generator(rng)
+        if rng is not None:
+            _require_generator(rng)
         self.num_features = _require_positive_int(num_features, "num_features")
         self.eps = _require_positive_float(eps, "eps")
         self.momentum = _require_momentum(momentum)
         self.training = True
-        self.weight = _he_weight(generator, (self.num_features,), 1)
+        self.weight = _f64(np.ones(self.num_features, dtype=np.float64))
         self.bias = _zeros((self.num_features,))
         self.running_mean = _zeros((self.num_features,))
         self.running_var = _f64(np.ones(self.num_features, dtype=np.float64))
