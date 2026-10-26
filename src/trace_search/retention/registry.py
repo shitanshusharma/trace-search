@@ -9,9 +9,14 @@ are:
 - ``attributes.sqlite`` — ``TrackAttributeStore``, table
   ``track_attributes``. The attribute store has no default filename of its
   own. The registry places the file at ``attributes.sqlite``.
+- ``embeddings.sqlite`` — ``SqliteVectorStore``, table
+  ``appearance_embeddings``. The embedding store has no default filename of
+  its own. The registry places the file at ``embeddings.sqlite`` and opens
+  it at a fixed vector width. That width is only the constructor argument.
+  ``purge_expired`` and ``count_older_than`` do not read the vectors, so
+  they still run when the file holds a different width.
 
-The embedding store (T-R-7) and the export store (T-W-8) are not on main,
-so they are not registered.
+The export store (T-W-8) is not on main, so it is not registered.
 
 Paths are the resolved data root plus one of those filenames. A filename
 that leaves the directory is refused. The track store's outside-repo guard
@@ -21,7 +26,11 @@ refused and no file is created there.
 ``count_older_than`` counts with the same cutoff as ``purge_expired`` and
 does not delete. On the attribute store, ``read``, ``query``, ``count``,
 and ``write`` still purge first, so a count taken through those methods
-would drop the expired rows and then return zero.
+would drop the expired rows and then return zero. On the embedding store,
+``add``, ``search``, and ``count`` purge first. ``count_older_than`` does
+not. That is why ``purgeables`` passes ``purge_on_open=False``: a fresh
+registry can still count expired rows, and a later ``purge_expired``
+deletes them.
 
 Each store still purges on open by default, and that call throws the count
 away. ``purgeables`` passes ``purge_on_open=False`` so a fresh registry
@@ -35,11 +44,17 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from trace_search.attributes.store import TrackAttributeStore
+from trace_search.reid.sqlite_vector_store import SqliteVectorStore
 from trace_search.retention.config import FOOTAGE_DERIVED_DAYS
 from trace_search.tracking.store import TrackStore, _db_path_outside_repo
 
 TRACK_DB_FILENAME = "tracks.sqlite"
 ATTRIBUTE_DB_FILENAME = "attributes.sqlite"
+EMBEDDING_DB_FILENAME = "embeddings.sqlite"
+# Constructor width for the registry embedding file. Purge and
+# count_older_than do not read vectors, so this is not required to match
+# the blobs already stored. ``add`` on this instance refuses a mismatch.
+_EMBEDDING_DIM = 4
 
 _Clock = Callable[[], float]
 
@@ -102,16 +117,23 @@ def purgeables(data_root: Path, *, clock: _Clock | None = None) -> list[Purgeabl
     expired rows while they open and discard that count, so
     ``count_older_than`` on a fresh registry would return zero.
 
-    The annotated assignments are the mypy check that both real stores
-    satisfy ``Purgeable``.
+    The annotated assignments are the mypy check that each real store
+    satisfies ``Purgeable``.
     """
     root = _resolved_data_root(data_root)
     track_path = _path_under_data_root(root, TRACK_DB_FILENAME)
     attribute_path = _path_under_data_root(root, ATTRIBUTE_DB_FILENAME)
+    embedding_path = _path_under_data_root(root, EMBEDDING_DB_FILENAME)
     track: Purgeable = TrackStore(track_path, clock=clock, purge_on_open=False)
     attributes: Purgeable = TrackAttributeStore(
         attribute_path,
         clock=clock,
         purge_on_open=False,
     )
-    return [track, attributes]
+    embeddings: Purgeable = SqliteVectorStore(
+        embedding_path,
+        _EMBEDDING_DIM,
+        clock=clock,
+        purge_on_open=False,
+    )
+    return [track, attributes, embeddings]

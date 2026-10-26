@@ -15,6 +15,8 @@ from trace_search.attributes.store import (
 )
 from trace_search.detection.types import DetClass
 from trace_search.matching.tracklets import load_tracklets
+from trace_search.reid.sqlite_vector_store import DEFAULT_MAX_AGE_DAYS as EMBEDDING_MAX_AGE_DAYS
+from trace_search.reid.sqlite_vector_store import SqliteVectorStore
 from trace_search.retention import AUDIT_DAYS, FOOTAGE_DERIVED_DAYS, RetentionConfig, load
 from trace_search.tracking.store import DEFAULT_MAX_AGE_DAYS as TRACK_MAX_AGE_DAYS
 from trace_search.tracking.store import TrackStore
@@ -225,12 +227,21 @@ def test_store_defaults_alias_the_shipped_footage_window() -> None:
     """Each store imports the footage default. It does not keep its own number."""
     assert TRACK_MAX_AGE_DAYS == FOOTAGE_DERIVED_DAYS
     assert ATTRIBUTE_MAX_AGE_DAYS == FOOTAGE_DERIVED_DAYS
+    assert EMBEDDING_MAX_AGE_DAYS == FOOTAGE_DERIVED_DAYS
     track_default = inspect.signature(TrackStore.purge_expired).parameters["max_age_days"].default
     attribute_default = (
         inspect.signature(TrackAttributeStore.purge_expired).parameters["max_age_days"].default
     )
+    embedding_default = (
+        inspect.signature(SqliteVectorStore.purge_expired).parameters["max_age_days"].default
+    )
+    embedding_count_default = (
+        inspect.signature(SqliteVectorStore.count_older_than).parameters["max_age_days"].default
+    )
     assert track_default == FOOTAGE_DERIVED_DAYS
     assert attribute_default == FOOTAGE_DERIVED_DAYS
+    assert embedding_default == FOOTAGE_DERIVED_DAYS
+    assert embedding_count_default == FOOTAGE_DERIVED_DAYS
 
 
 def test_track_store_default_keeps_7_days_minus_1s_and_purges_plus_1s(tmp_path: Path) -> None:

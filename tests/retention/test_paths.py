@@ -19,6 +19,8 @@ import trace_search.retention.paths as retention_paths
 import trace_search.tracking.store as track_store
 from trace_search.audit.log import AUDIT_LOG_DIR, is_audit_path
 from trace_search.detection.types import DetClass
+from trace_search.reid.sqlite_vector_store import SqliteVectorStore
+from trace_search.reid.types import AppearanceEmbedding
 from trace_search.retention import retention_seconds
 from trace_search.retention.config import FOOTAGE_DERIVED_DAYS
 from trace_search.retention.registry import Purgeable, purgeables
@@ -100,12 +102,30 @@ def _write_attribute(
     )
 
 
+def _axis_vector(dim: int) -> tuple[float, ...]:
+    return (1.0,) + (0.0,) * (dim - 1)
+
+
+def _write_embedding(store: SqliteVectorStore, camera_id: str, track_id: int) -> None:
+    embedding = AppearanceEmbedding(
+        camera_id=camera_id,
+        track_id=track_id,
+        frame_number=0,
+        vector=_axis_vector(store.dim),
+        embedder_name="registry",
+        placeholder=True,
+    )
+    store.add(_RUN, "CODE_TEST", [embedding])
+
+
 def _write_all(stores: list[Purgeable], camera_id: str, track_id: int) -> None:
     for store in stores:
         if isinstance(store, track_store.TrackStore):
             _write_track(store, camera_id, track_id)
         elif isinstance(store, attribute_store.TrackAttributeStore):
             _write_attribute(store, camera_id, track_id)
+        elif isinstance(store, SqliteVectorStore):
+            _write_embedding(store, camera_id, track_id)
         else:
             raise AssertionError(type(store).__name__)
 
@@ -115,6 +135,8 @@ def _db_path(store: Purgeable) -> Path:
         return store.db_path
     if isinstance(store, attribute_store.TrackAttributeStore):
         return store.db_path
+    if isinstance(store, SqliteVectorStore):
+        return store.db_path
     raise AssertionError(type(store).__name__)
 
 
@@ -123,6 +145,8 @@ def _table_count(db_path: Path, table: str) -> int:
         sql = "SELECT COUNT(*) FROM track_observations"
     elif table == "track_attributes":
         sql = "SELECT COUNT(*) FROM track_attributes"
+    elif table == "appearance_embeddings":
+        sql = "SELECT COUNT(*) FROM appearance_embeddings"
     else:
         raise AssertionError(table)
     connection = sqlite3.connect(db_path)
