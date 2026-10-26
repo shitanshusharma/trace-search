@@ -6,6 +6,7 @@ Nothing is read from disk and nothing is written into the repo tree.
 
 from __future__ import annotations
 
+import inspect
 import math
 import socket
 from pathlib import Path
@@ -15,7 +16,6 @@ import numpy as np
 import pytest
 
 import trace_search.reid.nn as nn
-import trace_search.reid.nn.layers as layers_module
 from trace_search.reid.nn.layers import (
     BatchNorm2d,
     Conv2d,
@@ -646,14 +646,18 @@ def test_forward_rejects_bad_shapes() -> None:
         GlobalAvgPool().forward(np.zeros((2, 3), dtype=np.float64))
 
 
+def _layers_source() -> str:
+    return Path(inspect.getfile(Conv2d)).read_text(encoding="utf-8")
+
+
 def test_layers_module_has_no_backward_step_or_zero_grad() -> None:
-    source = Path(layers_module.__file__).read_text(encoding="utf-8")
+    source = _layers_source()
     for needle in (".backward(", ".step(", "zero_grad"):
         assert needle not in source
 
 
 def test_layer_module_does_not_import_a_deep_learning_package() -> None:
-    source = Path(layers_module.__file__).read_text(encoding="utf-8")
+    source = _layers_source()
     for name in ("torch", "onnx", "jax", "tensorflow"):
         assert f"import {name}" not in source
         assert f"from {name}" not in source
