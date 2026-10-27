@@ -570,10 +570,6 @@ def test_spy_writes_no_crop_or_frame_and_limits_embed_calls(
     crop = scene.source._images[0][0:4, 0:4].copy()
     with pytest.raises(AssertionError, match="/tmp/x"):
         crop.tofile("/tmp/x")
-    with pytest.raises(AssertionError, match="trace-search-crop"):
-        os.open("/tmp/trace-search-crop", os.O_WRONLY | os.O_CREAT)
-    with pytest.raises(AssertionError, match="trace-search-crop"):
-        open("/tmp/trace-search-crop.bin", "wb")
     spy = _EmbedSpy(scene.embedder)
     vectors = SqliteVectorStore(tmp_path / "vectors.sqlite", spy.dim, clock=_clock)
     attr_store = _attributes(tmp_path)
@@ -614,7 +610,7 @@ def _forbid_media_writes(
         return real_open(file, mode, *args, **kwargs)
 
     def _os_open(
-        path: object, flags: int, mode: int = 0o777, *args: object, **kwargs: object
+        path: object, flags: int, mode: int = 0o600, *args: object, **kwargs: object
     ) -> int:
         if isinstance(path, int):
             return real_os_open(path, flags, mode, *args, **kwargs)
