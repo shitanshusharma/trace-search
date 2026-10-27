@@ -51,15 +51,19 @@ class VectorStore(Protocol):
         vector: _Query,
         k: int,
         camera_ids: Collection[str] | None = None,
+        *,
+        run_id: str | None = None,
+        derived_from: str | None = None,
     ) -> list[tuple[AppearanceEmbedding, float]]:
         """Return up to ``k`` rows, cosine highest first.
 
         Equal scores are ordered by ``(camera_id, track_id, frame_number)``
-        ascending. ``camera_ids`` is applied before that ranking. ``None``
-        keeps every camera. A collection that matches no row returns ``[]``.
-        ``k`` must be a positive int. A non-finite query, a zero query, or a
-        query of the wrong length raises ``ValueError``. The length check
-        runs before an empty store or an empty camera match returns.
+        ascending. ``camera_ids``, ``run_id``, and ``derived_from`` are
+        applied before that ranking. ``None`` keeps every value in that
+        column. A filter that matches no row returns ``[]``. ``k`` must be
+        a positive int. A non-finite query, a zero query, or a query of the
+        wrong length raises ``ValueError``. The length check runs before an
+        empty store or an empty filter match returns.
         """
 
     def delete_where(
@@ -136,12 +140,17 @@ class InMemoryVectorStore:
         vector: _Query,
         k: int,
         camera_ids: Collection[str] | None = None,
+        *,
+        run_id: str | None = None,
+        derived_from: str | None = None,
     ) -> list[tuple[AppearanceEmbedding, float]]:
-        """Return up to ``k`` cosine hits after the camera filter."""
+        """Return up to ``k`` cosine hits after the camera, run, and origin filters."""
         query = _require_query(vector, self._dim)
         limit = _require_k(k)
         cameras = _require_camera_ids(camera_ids)
-        indexes = _candidate_indexes(self._rows, cameras)
+        origin = _optional_derived_from(derived_from)
+        run = _optional_text("run_id", run_id)
+        indexes = _candidate_indexes(self._rows, cameras, origin, run)
         if not indexes:
             return []
         filled = _filled_rows(self._matrix, self._count)
@@ -382,10 +391,15 @@ def _require_camera_id(value: object) -> str:
 def _candidate_indexes(
     rows: Sequence[_StoredRow],
     camera_ids: frozenset[str] | None,
+    derived_from: str | None = None,
+    run_id: str | None = None,
 ) -> tuple[int, ...]:
-    if camera_ids is None:
-        return tuple(range(len(rows)))
-    return tuple(index for index, row in enumerate(rows) if row.embedding.camera_id in camera_ids)
+    return tuple(
+        index
+        for index, row in enumerate(rows)
+        if _row_matches(row, derived_from, run_id)
+        and (camera_ids is None or row.embedding.camera_id in camera_ids)
+    )
 
 
 def _cosine_scores(

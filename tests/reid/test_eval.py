@@ -273,6 +273,35 @@ def test_same_camera_different_label_stays_in_the_ranking() -> None:
     _near(result.mean_ap, Fraction(1, 2))
 
 
+def test_masking_the_only_true_match_does_not_inflate_rank1() -> None:
+    """A masked-out query stays in the denominator. Dropping it would make Rank-1 1."""
+    hit = _axes()[0]
+    other = _axes()[1]
+    query = [
+        _item("cam-q", 1, 1, hit),
+        _item("cam-q", 2, 2, hit),
+        _item("cam-q", 3, 99, hit),
+    ]
+    gallery = [
+        _item("cam-g", 4, 1, hit),
+        _item("cam-g", 5, 2, hit),
+        _item("cam-g", 6, 7, other),
+    ]
+
+    def mask(query_item: EvalItem, gallery_item: EvalItem) -> bool:
+        return not (query_item.track_id == 2 and gallery_item.track_id == 5)
+
+    result = rank1_map(query, gallery, gallery_mask=mask)
+    assert result.num_query == 3
+    assert result.num_masked_out == 1
+    assert result.num_valid_query == 2
+    assert result.num_invalid_query == 1
+    assert result.rank1 == 0.5
+    assert result.mean_ap == 0.5
+    assert "num_masked_out" not in result.as_json()
+    assert tuple(result.as_json()) == _JSON_KEYS
+
+
 def test_query_with_no_gallery_label_is_left_out_of_cmc_and_map() -> None:
     match = _axes()[0]
     other = _axes()[1]

@@ -21,7 +21,21 @@ An attribute counts only when both tracks know it. ``UNKNOWN`` and ``None``
 are not known. Share is the number agreeing divided by the number known.
 With 0 known attributes, share is 0. Each camera pair is assigned one-to-one
 with the Hungarian method on ``-score``. Pairs under ``min_score`` are then
-dropped. Equal scores break on ``(camera_id, track_id)``.
+dropped. Equal scores break on ``(camera_id, track_id)``. The tie-break
+penalty is scaled by the grid so it stays non-zero on a large grid and
+under ``1e-4``.
+
+``MIN_SCORE`` of 0 keeps every mapped score, including 0. Pairs are dropped
+only when the score is strictly under the floor, and the map cannot be
+negative.
+
+A pair whose tracklets differ in ``run_id`` or ``det_class`` is skipped.
+The other pairs in the call are still linked. A person track is not linked
+to a handbag track.
+
+When ``vectors`` or ``attributes`` is a store, ``run_id`` and
+``derived_from`` are required. The read uses only that run and that
+``derived_from``. A mapping does not require them.
 
 ``topology_mask`` is the gallery mask for the AC-06 harness. A true result
 keeps the gallery item. These numbers are not evidence for AC-06, AC-07,
@@ -47,21 +61,18 @@ from trace_search.matching.tracklets import Tracklet, _require_id
 from trace_search.reid.eval import EvalItem
 from trace_search.reid.types import AppearanceEmbedding
 
-# Placeholder floor. Pairs strictly under this score are dropped after
-# assignment. The value was not tuned against any stock clip.
+# Placeholder floor. Pairs are dropped only when score < MIN_SCORE.
+# The mapped score is in [0, 1], so 0 keeps every mapped score, including 0.
+# The value was not tuned against any stock clip.
 MIN_SCORE = 0.0
 
 # Placeholder weight of the known-attribute share. The value was not tuned
 # against any stock clip.
 ATTR_WEIGHT = 1.0
 
-# Column term of the tie-break. A score gap of this size or more beats it.
+# Largest tie-break penalty. A score gap at least this large beats it.
 # Not a similarity threshold and not fitted to any clip.
-_TIE_BREAK_UNIT = 1e-9
-
-# Extra cost per row index when a column is left over. Smaller than any
-# score gap the assignment treats as real. Not fitted to any clip.
-_ROW_TIE_WEIGHT = 1e-8
+_TIE_BREAK_BUDGET = 1e-4
 
 # Above every feasible cost. Feasible costs sit in about [-1, 0].
 _BLOCKED = 2.0
@@ -96,8 +107,15 @@ class _VectorReader(Protocol):
         vector: Sequence[float],
         k: int,
         camera_ids: Sequence[str] | None = ...,
+        *,
+        run_id: str | None = ...,
+        derived_from: str | None = ...,
     ) -> Sequence[tuple[AppearanceEmbedding, float]]:
-        """Return up to ``k`` rows, cosine highest first."""
+        """Return up to ``k`` rows, cosine highest first.
+
+        ``run_id`` and ``derived_from`` limit the rows. ``None`` keeps
+        every value in that column.
+        """
 
 
 @dataclass(frozen=True)
@@ -141,6 +159,8 @@ def link_tracklets(
     *,
     min_score: float = MIN_SCORE,
     attr_weight: float = ATTR_WEIGHT,
+    run_id: str | None = None,
+    derived_from: str | None = None,
 ) -> list[Link]:
     """Link exits to entries across each directed edge.
 
@@ -148,13 +168,17 @@ def link_tracklets(
     vector, or a vector store with ``dim``, ``count``, and ``search``.
     ``attributes`` is a mapping of the same key to a record, or a
     ``TrackAttributeStore``. A track with no vector is left out.
-    ``min_score`` and ``attr_weight`` are keyword-only.
+    ``min_score`` and ``attr_weight`` are keyword-only. A store read also
+    requires ``run_id`` and ``derived_from``, and uses only those rows.
     """
     floor = _require_non_negative("min_score", min_score)
     weight = _require_non_negative("attr_weight", attr_weight)
+    scope_run, scope_origin = _call_scope(vectors, attributes, run_id, derived_from)
     indexed = _index_tracklets(tracklets)
-    vector_table = _vector_table(vectors)
-    attribute_table = _attribute_table(attributes, indexed)
+    if scope_run is not None:
+        indexed = _tracklets_in_run(indexed, scope_run)
+    vector_table = _vector_table(vectors, scope_run, scope_origin)
+    attribute_table = _attribute_table(attributes, indexed, scope_run, scope_origin)
     ready = _with_vectors(indexed, vector_table)
     grouped = _group_by_camera(ready)
     links = _links_across(grouped, topology, vector_table, attribute_table, floor, weight)
@@ -168,9 +192,9 @@ def topology_mask(
 ) -> Callable[[EvalItem, EvalItem], bool]:
     """Return a gallery mask. True keeps the pair when the topology allows it.
 
-    ``time_of`` of the query item is the exit time. ``time_of`` of the
-    gallery item is the entry time. A false result excludes that gallery
-    item for that query. The mask is not evidence for AC-06.
+    The caller's time_of maps a query item to its EXIT time and a gallery
+    item to its ENTRY time. A false result excludes that gallery item for
+    that query. The mask is not evidence for AC-06.
     """
 
     def _allow(query: EvalItem, gallery: EvalItem) -> bool:
@@ -213,21 +237,69 @@ def _index_tracklets(tracklets: Sequence[Tracklet]) -> dict[TrackKey, Tracklet]:
     return indexed
 
 
-def _vector_table(vectors: object) -> dict[TrackKey, tuple[float, ...]]:
+def _call_scope(
+    vectors: object,
+    attributes: object,
+    run_id: str | None,
+    derived_from: str | None,
+) -> tuple[str | None, str | None]:
+    """Require both scope fields when either argument is a store."""
+    run = _optional_scope_text("run_id", run_id)
+    origin = _optional_scope_text("derived_from", derived_from)
+    if _reads_store(vectors, attributes) and (run is None or origin is None):
+        raise ValueError("run_id and derived_from are required when reading a store")
+    return run, origin
+
+
+def _reads_store(vectors: object, attributes: object) -> bool:
+    if isinstance(attributes, TrackAttributeStore):
+        return True
+    if isinstance(vectors, Mapping):
+        return False
+    return _is_reader(vectors)
+
+
+def _optional_scope_text(label: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or value == "":
+        raise ValueError(f"{label} must be a non-empty string, got {value!r}")
+    return value
+
+
+def _tracklets_in_run(
+    indexed: Mapping[TrackKey, Tracklet],
+    run_id: str,
+) -> dict[TrackKey, Tracklet]:
+    return {key: item for key, item in indexed.items() if item.run_id == run_id}
+
+
+def _vector_table(
+    vectors: object,
+    run_id: str | None,
+    derived_from: str | None,
+) -> dict[TrackKey, tuple[float, ...]]:
     if isinstance(vectors, Mapping):
         return _vectors_from_mapping(vectors)
-    return _vectors_from_store(_as_reader(vectors))
+    reader = _as_reader(vectors)
+    if run_id is None or derived_from is None:
+        raise ValueError("run_id and derived_from are required when reading a store")
+    return _vectors_from_store(reader, run_id, derived_from)
 
 
 def _as_reader(vectors: object) -> _VectorReader:
+    if not _is_reader(vectors):
+        raise TypeError("vectors must be a mapping or a vector store")
+    return cast(_VectorReader, vectors)
+
+
+def _is_reader(vectors: object) -> bool:
     dim = getattr(vectors, "dim", None)
     search = getattr(vectors, "search", None)
     count = getattr(vectors, "count", None)
     if isinstance(dim, bool) or not isinstance(dim, int):
-        raise TypeError("vectors must be a mapping or a vector store")
-    if not callable(search) or not callable(count):
-        raise TypeError("vectors must be a mapping or a vector store")
-    return cast(_VectorReader, vectors)
+        return False
+    return callable(search) and callable(count)
 
 
 def _vectors_from_mapping(vectors: Mapping[object, object]) -> dict[TrackKey, tuple[float, ...]]:
@@ -237,16 +309,27 @@ def _vectors_from_mapping(vectors: Mapping[object, object]) -> dict[TrackKey, tu
     return table
 
 
-def _vectors_from_store(reader: _VectorReader) -> dict[TrackKey, tuple[float, ...]]:
-    """One vector per track: lowest frame, then the smaller vector tuple.
+def _vectors_from_store(
+    reader: _VectorReader,
+    run_id: str,
+    derived_from: str,
+) -> dict[TrackKey, tuple[float, ...]]:
+    """One vector per track inside ``run_id`` and ``derived_from``.
 
-    ``k`` must be positive, so an empty store is returned without a search.
+    Lowest frame wins, then the smaller vector tuple. ``k`` must be
+    positive, so an empty scoped store is returned without a search.
     """
-    total = reader.count()
+    total = reader.count(derived_from=derived_from, run_id=run_id)
     if total == 0:
         return {}
     chosen: dict[TrackKey, tuple[int, tuple[float, ...]]] = {}
-    for embedding, _cosine in reader.search(_axis_probe(reader.dim), total):
+    hits = reader.search(
+        _axis_probe(reader.dim),
+        total,
+        run_id=run_id,
+        derived_from=derived_from,
+    )
+    for embedding, _cosine in hits:
         _keep_earliest(chosen, embedding)
     return {key: vector for key, (_frame, vector) in chosen.items()}
 
@@ -260,7 +343,7 @@ def _keep_earliest(
     embedding: AppearanceEmbedding,
 ) -> None:
     key = (embedding.camera_id, embedding.track_id)
-    vector = tuple(float(component) for component in embedding.vector)
+    vector = _as_vector(tuple(embedding.vector))
     candidate = (embedding.frame_number, vector)
     current = chosen.get(key)
     if current is None or candidate < current:
@@ -270,9 +353,13 @@ def _keep_earliest(
 def _attribute_table(
     attributes: object,
     tracklets: Mapping[TrackKey, Tracklet],
+    run_id: str | None,
+    derived_from: str | None,
 ) -> dict[TrackKey, _AttrTriple]:
     if isinstance(attributes, TrackAttributeStore):
-        return _attributes_from_store(attributes, tracklets)
+        if run_id is None or derived_from is None:
+            raise ValueError("run_id and derived_from are required when reading a store")
+        return _attributes_from_store(attributes, tracklets, run_id, derived_from)
     if isinstance(attributes, Mapping):
         return _attributes_from_mapping(attributes)
     raise TypeError("attributes must be a mapping or a TrackAttributeStore")
@@ -281,14 +368,17 @@ def _attribute_table(
 def _attributes_from_store(
     store: TrackAttributeStore,
     tracklets: Mapping[TrackKey, Tracklet],
+    run_id: str,
+    derived_from: str,
 ) -> dict[TrackKey, _AttrTriple]:
-    """Last ``rowid`` wins. A track with no row stays unknown."""
+    """Last matching ``rowid`` wins. Other runs and origins are ignored."""
     found: dict[TrackKey, _AttrTriple] = {}
     for item in tracklets.values():
-        rows = store.read(item.camera_id, item.track_id, item.run_id)
-        if not rows:
+        rows = store.read(item.camera_id, item.track_id, run_id)
+        scoped = [row for row in rows if row.derived_from == derived_from]
+        if not scoped:
             continue
-        found[(item.camera_id, item.track_id)] = _triple(rows[-1])
+        found[(item.camera_id, item.track_id)] = _triple(scoped[-1])
     return found
 
 
@@ -420,6 +510,8 @@ def _pair_score(
     topology: CameraTopology,
     attr_weight: float,
 ) -> float | None:
+    if not _same_run_and_class(exit_item, entry_item):
+        return None
     if not topology.allows(
         exit_item.camera_id, exit_item.t_end, entry_item.camera_id, entry_item.t_start
     ):
@@ -431,6 +523,13 @@ def _pair_score(
     return _map_score(cosine, share, attr_weight)
 
 
+def _same_run_and_class(exit_item: Tracklet, entry_item: Tracklet) -> bool:
+    """Skip a cross-run pair and a pair of different ``det_class`` values."""
+    if exit_item.run_id != entry_item.run_id:
+        return False
+    return exit_item.det_class == entry_item.det_class
+
+
 def _map_score(cosine: float, share: float, attr_weight: float) -> float:
     """Map cosine and share into ``[0, 1]`` for ``build_route``."""
     bounded = min(1.0, max(-1.0, cosine))
@@ -440,24 +539,32 @@ def _map_score(cosine: float, share: float, attr_weight: float) -> float:
 def _cost_matrix(scores: Sequence[Sequence[float | None]]) -> npt.NDArray[np.float64]:
     """Hungarian cost is ``-score`` plus a tie-break, including blocked cells.
 
-    The product term prefers the identity permutation when the score sums
-    match. The row term prefers the smaller track id when a row is left
-    over. Blocked cells carry the same penalty so an open column stays with
-    the smaller id.
+    ``abs(row - column)`` prefers the identity permutation when the score
+    sums match. The row term prefers the smaller track id when a row is
+    left over. The step is ``budget / (span^2 + 1)``, so the penalty stays
+    under ``_TIE_BREAK_BUDGET`` and does not underflow on a large grid.
+    Blocked cells carry the same penalty.
     """
     row_count = len(scores)
     column_count = len(scores[0]) if row_count else 0
     cost = np.zeros((row_count, column_count), dtype=np.float64)
     for row, row_scores in enumerate(scores):
         for column, score in enumerate(row_scores):
-            penalty = _tie_penalty(row, column, column_count)
+            penalty = _tie_penalty(row, column, row_count, column_count)
             cost[row, column] = _cell_cost(score, penalty)
     return cast(npt.NDArray[np.float64], cost)
 
 
-def _tie_penalty(row: int, column: int, column_count: int) -> float:
-    column_term = (column + 1) / (column_count + 1)
-    return column_term * (_TIE_BREAK_UNIT ** (row + 1)) + _ROW_TIE_WEIGHT * row
+def _tie_penalty(row: int, column: int, row_count: int, column_count: int) -> float:
+    span = row_count if row_count > column_count else column_count
+    if span == 0:
+        return 0.0
+    step = _TIE_BREAK_BUDGET / (span * span + 1)
+    width = span + 1
+    gap = row - column
+    if gap < 0:
+        gap = -gap
+    return step * (gap * width + row * width + column)
 
 
 def _cell_cost(score: float | None, penalty: float) -> float:

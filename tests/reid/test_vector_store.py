@@ -500,6 +500,18 @@ def test_store_satisfies_vector_store() -> None:
     assert store.count() == 0
 
 
+def test_search_limits_run_and_derived_from() -> None:
+    north = _unit(0.0, 1.0, 0.0)
+    east = _unit(1.0, 0.0, 0.0)
+    store = InMemoryVectorStore(_DIM)
+    store.add("run-1", "SMOKE", [_embedding("cam-a", 1, 0, east)])
+    store.add("run-2", "CODE_TEST", [_embedding("cam-a", 1, 1, east)])
+    store.add("run-1", "CODE_TEST", [_embedding("cam-a", 1, 2, north)])
+    found = store.search(north, k=10, run_id="run-1", derived_from="CODE_TEST")
+    assert [(item.frame_number, item.vector) for item, _score in found] == [(2, north)]
+    assert len(store.search(north, k=10)) == 3
+
+
 def test_no_network_on_add_search_delete_and_count(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 

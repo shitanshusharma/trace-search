@@ -312,7 +312,7 @@ def test_evidence_is_false_on_every_branch() -> None:
         assert json.dumps(result).count('"evidence": false') == 1
 
 
-def test_gallery_mask_is_refused_until_t6() -> None:
+def test_gallery_mask_is_applied() -> None:
     """Eval with both arrays applies the mask. ``unit_test`` still refuses it."""
     query, gallery = _hand_built()
     calls: list[tuple[int, int]] = []

@@ -63,12 +63,20 @@ def test_socket_connect_is_refused() -> None:
         sock.close()
 
 
-def _tracklet(camera_id: str, track_id: int, t_start: float, t_end: float) -> Tracklet:
+def _tracklet(
+    camera_id: str,
+    track_id: int,
+    t_start: float,
+    t_end: float,
+    *,
+    run_id: str = _RUN,
+    det_class: DetClass = DetClass.PERSON,
+) -> Tracklet:
     return Tracklet(
         camera_id=camera_id,
         track_id=track_id,
-        det_class=DetClass.PERSON,
-        run_id=_RUN,
+        det_class=det_class,
+        run_id=run_id,
         t_start=t_start,
         t_end=t_end,
         n_obs=1,
@@ -645,19 +653,41 @@ def test_reads_vectors_and_attributes_from_the_stores(tmp_path: Path) -> None:
     _write_attr(attributes, "cam-a", 1, "red", "blue", True)
     _write_attr(attributes, "cam-a", 1, "green", "blue", True)
     _write_attr(attributes, "cam-b", 2, "green", "blue", True)
-    links = link_tracklets(tracklets, _window(), vectors, attributes)
+    links = link_tracklets(
+        tracklets,
+        _window(),
+        vectors,
+        attributes,
+        run_id=_RUN,
+        derived_from="CODE_TEST",
+    )
     assert _pairs(links) == {("cam-a", 1, "cam-b", 2)}
     assert links[0].score == 1.0
     empty = InMemoryVectorStore(2)
-    assert link_tracklets(tracklets, _window(), empty, attributes) == []
+    assert (
+        link_tracklets(
+            tracklets,
+            _window(),
+            empty,
+            attributes,
+            run_id=_RUN,
+            derived_from="CODE_TEST",
+        )
+        == []
+    )
 
 
 def test_module_docstring_states_the_score_limits() -> None:
-    text = sys.modules["trace_search.matching.linker"].__doc__ or ""
+    text = " ".join((sys.modules["trace_search.matching.linker"].__doc__ or "").split())
     assert "placeholder similarity has no accuracy meaning" in text
     assert "((cosine + 1) / 2 + attr_weight * share) / (1 + attr_weight)" in text
     assert "not evidence" in text
     assert "share is 0" in text
+    assert "keeps every mapped score, including 0" in text
+    assert "differ in ``run_id`` or ``det_class`` is skipped" in text
+    assert "not linked to a handbag track" in text
+    mask_text = " ".join((topology_mask.__doc__ or "").split())
+    assert "maps a query item to its EXIT time and a gallery item to its ENTRY time" in mask_text
     source = Path(link_tracklets.__code__.co_filename).read_text(encoding="utf-8")
     assert "describe_tracks" not in source
     lowered = source.lower()
@@ -683,8 +713,12 @@ def test_topology_mask_excludes_a_pair_from_the_gallery() -> None:
     masked = rank1_map(query, gallery, gallery_mask=mask)
     assert plain.rank1 == 1.0
     assert plain.num_valid_query == 1
+    assert plain.num_masked_out == 0
     assert masked.rank1 == 0.0
-    assert masked.num_valid_query == 0
+    assert masked.num_valid_query == 1
+    assert masked.num_invalid_query == 0
+    assert masked.num_masked_out == 1
+    assert masked.mean_ap == 0.0
     assert masked.num_gallery == 2
     result = run("FX-HOLD-001", query=query, gallery=gallery, gallery_mask=mask)
     diagnostics = result["diagnostics"]
@@ -743,12 +777,15 @@ def _write_attr(
     upper: str,
     lower: str,
     bag: bool,
+    *,
+    run_id: str = _RUN,
+    derived_from: str = "CODE_TEST",
 ) -> None:
     store.write(
         camera_id,
         track_id,
-        _RUN,
-        "CODE_TEST",
+        run_id,
+        derived_from,
         upper,
         lower,
         bag,
@@ -768,3 +805,142 @@ def test_an_exit_skips_the_entry_outside_the_window() -> None:
     attributes = {key: _agree() for key in vectors}
     links = link_tracklets(tracklets, _window(), vectors, attributes)
     assert _pairs(links) == {("cam-a", 1, "cam-b", 2)}
+
+
+def test_store_read_uses_only_the_requested_run_and_origin(tmp_path: Path) -> None:
+    """A second run and a SMOKE row with the same key must not enter a CODE_TEST link."""
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 0.0),
+        _tracklet("cam-b", 2, 15.0, 15.0),
+    )
+    vectors = InMemoryVectorStore(2)
+    vectors.add("run-1", "SMOKE", (_embedding("cam-a", 1, 0, _WEST),))
+    vectors.add("run-2", "CODE_TEST", (_embedding("cam-a", 1, 1, _EAST),))
+    vectors.add("run-1", "CODE_TEST", (_embedding("cam-a", 1, 5, _NORTH),))
+    vectors.add("run-2", "CODE_TEST", (_embedding("cam-b", 2, 0, _WEST),))
+    vectors.add("run-1", "SMOKE", (_embedding("cam-b", 2, 0, _EAST),))
+    vectors.add("run-1", "CODE_TEST", (_embedding("cam-b", 2, 5, _NORTH),))
+    attributes = TrackAttributeStore(tmp_path / "attrs.sqlite")
+    _write_attr(attributes, "cam-a", 1, "red", "blue", True)
+    _write_attr(attributes, "cam-a", 1, "green", "black", False, derived_from="SMOKE")
+    _write_attr(attributes, "cam-a", 1, "green", "black", False, run_id="run-2")
+    _write_attr(attributes, "cam-b", 2, "red", "blue", True)
+    links = link_tracklets(
+        tracklets,
+        _window(),
+        vectors,
+        attributes,
+        run_id=_RUN,
+        derived_from="CODE_TEST",
+    )
+    assert _pairs(links) == {("cam-a", 1, "cam-b", 2)}
+    assert links[0].score == 1.0
+
+
+def test_store_read_requires_run_and_derived_from() -> None:
+    vectors = InMemoryVectorStore(2)
+    with pytest.raises(ValueError, match="required when reading a store"):
+        link_tracklets((), _window(), vectors, {})
+
+
+def test_a_cross_run_pair_is_not_linked() -> None:
+    """The foreign entry is skipped. The same-run entry is still linked."""
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 0.0),
+        _tracklet("cam-b", 2, 15.0, 15.0, run_id="run-2"),
+        _tracklet("cam-b", 3, 15.0, 15.0),
+    )
+    vectors = {
+        ("cam-a", 1): _EAST,
+        ("cam-b", 2): _EAST,
+        ("cam-b", 3): _EAST,
+    }
+    attributes = {key: _agree() for key in vectors}
+    links = link_tracklets(tracklets, _window(), vectors, attributes)
+    assert _pairs(links) == {("cam-a", 1, "cam-b", 3)}
+
+
+def test_a_different_det_class_is_not_linked() -> None:
+    """Person and handbag are not linked. The other person entry still is."""
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 0.0),
+        _tracklet("cam-b", 2, 15.0, 15.0, det_class=DetClass.HANDBAG),
+        _tracklet("cam-b", 3, 15.0, 15.0),
+    )
+    vectors = {
+        ("cam-a", 1): _EAST,
+        ("cam-b", 2): _EAST,
+        ("cam-b", 3): _EAST,
+    }
+    attributes = {key: _agree() for key in vectors}
+    links = link_tracklets(tracklets, _window(), vectors, attributes)
+    assert _pairs(links) == {("cam-a", 1, "cam-b", 3)}
+
+
+def test_a_zero_length_store_vector_is_refused() -> None:
+    store = _FixedVectorStore(())
+    with pytest.raises(ValueError, match="vector must be non-empty"):
+        link_tracklets(
+            (_tracklet("cam-a", 1, 0.0, 0.0),),
+            _window(),
+            store,
+            {},
+            run_id=_RUN,
+            derived_from="CODE_TEST",
+        )
+
+
+def test_a_zero_store_vector_is_refused() -> None:
+    store = _FixedVectorStore((0.0, 0.0))
+    with pytest.raises(ValueError, match="vector must be non-zero"):
+        link_tracklets(
+            (_tracklet("cam-a", 1, 0.0, 0.0),),
+            _window(),
+            store,
+            {},
+            run_id=_RUN,
+            derived_from="CODE_TEST",
+        )
+
+
+def test_large_exact_tie_follows_track_id_order() -> None:
+    """200 by 200 equal scores pair the sorted track ids in order."""
+    count = 200
+    exits = tuple(_tracklet("cam-a", track_id, 0.0, 0.0) for track_id in range(count, 0, -1))
+    entries = tuple(_tracklet("cam-b", track_id, 15.0, 15.0) for track_id in range(count, 0, -1))
+    vectors = {("cam-a", track_id): _EAST for track_id in range(1, count + 1)}
+    vectors.update({("cam-b", track_id): _EAST for track_id in range(1, count + 1)})
+    links = link_tracklets((*exits, *entries), _window(), vectors, {})
+    assert len(links) == count
+    assert _pairs(links) == {
+        ("cam-a", track_id, "cam-b", track_id) for track_id in range(1, count + 1)
+    }
+
+
+class _FixedVectorStore:
+    """One embedding, including a vector a real store would refuse."""
+
+    def __init__(self, vector: tuple[float, ...]) -> None:
+        self.dim = 2
+        self._vector = vector
+
+    def count(self, derived_from: str | None = None, run_id: str | None = None) -> int:
+        return 1
+
+    def search(
+        self,
+        vector: object,
+        k: int,
+        camera_ids: object = None,
+        *,
+        run_id: str | None = None,
+        derived_from: str | None = None,
+    ) -> list[tuple[AppearanceEmbedding, float]]:
+        embedding = object.__new__(AppearanceEmbedding)
+        object.__setattr__(embedding, "camera_id", "cam-a")
+        object.__setattr__(embedding, "track_id", 1)
+        object.__setattr__(embedding, "frame_number", 0)
+        object.__setattr__(embedding, "vector", self._vector)
+        object.__setattr__(embedding, "embedder_name", "untrained-placeholder-v1")
+        object.__setattr__(embedding, "placeholder", True)
+        return [(embedding, 0.0)]
