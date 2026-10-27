@@ -26,6 +26,7 @@ MAIN_MANIFEST = Path("licenses/manifest.json")
 _SHA = "ab" * 32
 _PHASH10 = [f"{index:016x}" for index in range(10)]
 _DISALLOWED_TYPES = ("library", "model", "weight", "dataset", "tool", "generator")
+_GEN_NAME = "src/trace_search/fixtures/route_generator.py"
 
 
 def _generator(**overrides: object) -> dict[str, object]:
@@ -160,12 +161,20 @@ def _assert_separation_rejects(tmp_path: Path, row: dict[str, object], reason: s
     assert "PASSED" not in stdout
 
 
+def _license_use(name: str, entry_type: str, use: str) -> str:
+    return f"{name}: type '{entry_type}' cannot carry use '{use}'"
+
+
+def _separation_use(entry_type: str, use: str) -> str:
+    return f"FAIL-CLOSED: type '{entry_type}' cannot carry use '{use}'"
+
+
 def test_check_licenses_rejects_smoke_only_generator_with_10_phashes(tmp_path: Path) -> None:
     row = _generator(use="SMOKE_ONLY", phash=list(_PHASH10))
     _assert_license_rejects(
         tmp_path,
         row,
-        "type 'generator' cannot carry use 'SMOKE_ONLY'",
+        _license_use(_GEN_NAME, "generator", "SMOKE_ONLY"),
     )
 
 
@@ -174,7 +183,7 @@ def test_check_separation_rejects_smoke_only_generator_with_10_phashes(tmp_path:
     _assert_separation_rejects(
         tmp_path,
         row,
-        "type 'generator' cannot carry use 'SMOKE_ONLY'",
+        _separation_use("generator", "SMOKE_ONLY"),
     )
 
 
@@ -183,7 +192,7 @@ def test_check_licenses_rejects_smoke_only_generator_with_0_phashes(tmp_path: Pa
     _assert_license_rejects(
         tmp_path,
         _generator(use="SMOKE_ONLY"),
-        "type 'generator' cannot carry use 'SMOKE_ONLY'",
+        _license_use(_GEN_NAME, "generator", "SMOKE_ONLY"),
     )
 
 
@@ -192,7 +201,7 @@ def test_check_separation_rejects_smoke_only_generator_with_0_phashes(tmp_path: 
     _assert_separation_rejects(
         tmp_path,
         _generator(use="SMOKE_ONLY"),
-        "type 'generator' cannot carry use 'SMOKE_ONLY'",
+        _separation_use("generator", "SMOKE_ONLY"),
     )
 
 
@@ -201,7 +210,7 @@ def test_check_licenses_rejects_code_test_generator(tmp_path: Path) -> None:
     _assert_license_rejects(
         tmp_path,
         row,
-        "type 'generator' cannot carry use 'CODE_TEST'",
+        _license_use(_GEN_NAME, "generator", "CODE_TEST"),
     )
 
 
@@ -210,7 +219,7 @@ def test_check_separation_rejects_code_test_generator(tmp_path: Path) -> None:
     _assert_separation_rejects(
         tmp_path,
         row,
-        "type 'generator' cannot carry use 'CODE_TEST'",
+        _separation_use("generator", "CODE_TEST"),
     )
 
 
@@ -218,7 +227,7 @@ def test_check_licenses_rejects_phash_on_generator(tmp_path: Path) -> None:
     _assert_license_rejects(
         tmp_path,
         _generator(phash=list(_PHASH10)),
-        "type 'generator' cannot carry phash",
+        f"{_GEN_NAME}: type 'generator' cannot carry phash",
     )
 
 
@@ -226,7 +235,7 @@ def test_check_licenses_rejects_fixture_id_on_generator(tmp_path: Path) -> None:
     _assert_license_rejects(
         tmp_path,
         _generator(fixture_id="FX-SMOKE-001"),
-        "type 'generator' cannot carry fixture_id",
+        f"{_GEN_NAME}: type 'generator' cannot carry fixture_id",
     )
 
 
@@ -266,28 +275,50 @@ def test_row_check_rejects_smoke_only_generator_with_10_phashes() -> None:
     violations = check_licenses.check_manifest_licenses(
         make_manifest([_generator(use="SMOKE_ONLY", phash=list(_PHASH10))])
     )
-    assert "type 'generator' cannot carry use 'SMOKE_ONLY'" in "\n".join(violations)
+    assert violations == [
+        _license_use(_GEN_NAME, "generator", "SMOKE_ONLY"),
+        f"{_GEN_NAME}: type 'generator' cannot carry phash",
+    ]
 
 
 def test_row_check_rejects_smoke_only_generator_with_0_phashes() -> None:
     violations = check_licenses.check_manifest_licenses(
         make_manifest([_generator(use="SMOKE_ONLY")])
     )
-    assert "type 'generator' cannot carry use 'SMOKE_ONLY'" in "\n".join(violations)
+    assert violations == [_license_use(_GEN_NAME, "generator", "SMOKE_ONLY")]
 
 
 def test_row_check_rejects_phash_without_use_on_generator() -> None:
     violations = check_licenses.check_manifest_licenses(
         make_manifest([_generator(phash=list(_PHASH10))])
     )
-    assert "type 'generator' cannot carry phash" in "\n".join(violations)
+    assert violations == [f"{_GEN_NAME}: type 'generator' cannot carry phash"]
 
 
 def test_row_check_rejects_fixture_id_without_use_on_generator() -> None:
     violations = check_licenses.check_manifest_licenses(
         make_manifest([_generator(fixture_id="FX-SMOKE-001")])
     )
-    assert "type 'generator' cannot carry fixture_id" in "\n".join(violations)
+    assert violations == [f"{_GEN_NAME}: type 'generator' cannot carry fixture_id"]
+
+
+def test_row_check_reports_both_violating_rows() -> None:
+    rows = [
+        _generator(name="gen-a", use="SMOKE_ONLY"),
+        _generator(name="gen-b", use="CODE_TEST"),
+    ]
+    violations = check_licenses.check_manifest_licenses(make_manifest(rows))
+    assert violations == [
+        _license_use("gen-a", "generator", "SMOKE_ONLY"),
+        _license_use("gen-b", "generator", "CODE_TEST"),
+    ]
+
+
+def test_field_message_remains_when_the_license_is_banned() -> None:
+    row = _generator(name="gen-gpl", license="GPL-3.0", use="SMOKE_ONLY")
+    violations = check_licenses.check_manifest_licenses(make_manifest([row]))
+    assert _license_use("gen-gpl", "generator", "SMOKE_ONLY") in violations
+    assert any("banned license 'GPL-3.0'" in item for item in violations)
 
 
 @pytest.mark.parametrize("entry_type", _DISALLOWED_TYPES)
@@ -296,7 +327,7 @@ def test_check_licenses_rejects_smoke_only_on_other_types(tmp_path: Path, entry_
     _assert_license_rejects(
         tmp_path,
         row,
-        f"type '{entry_type}' cannot carry use 'SMOKE_ONLY'",
+        _license_use(f"planted-{entry_type}", entry_type, "SMOKE_ONLY"),
     )
 
 
@@ -308,23 +339,31 @@ def test_check_separation_rejects_smoke_only_on_other_types(
     _assert_separation_rejects(
         tmp_path,
         row,
-        f"type '{entry_type}' cannot carry use 'SMOKE_ONLY'",
+        _separation_use(entry_type, "SMOKE_ONLY"),
     )
 
 
 @pytest.mark.parametrize("entry_type", _DISALLOWED_TYPES)
-def test_schema_rejects_use_on_other_types(entry_type: str) -> None:
+@pytest.mark.parametrize("use", ("SMOKE_ONLY", "CODE_TEST"))
+def test_schema_rejects_use_on_other_types(entry_type: str, use: str) -> None:
     errors = check_licenses.validate_schema(
-        make_manifest([_typed(entry_type, use="SMOKE_ONLY", phash=list(_PHASH10))]),
+        make_manifest([_typed(entry_type, use=use)]),
         SCHEMA,
     )
-    assert any("SMOKE_ONLY" in error for error in errors), errors
+    assert any(use in error for error in errors), errors
 
 
 def test_forbidden_fixtures_names_the_row_type_for_a_smoke_generator() -> None:
-    reason = "type 'generator' cannot carry use 'SMOKE_ONLY'"
+    reason = _separation_use("generator", "SMOKE_ONLY")
     with pytest.raises(SeparationCheckError, match=reason):
         forbidden_fixtures([_generator(use="SMOKE_ONLY", phash=list(_PHASH10))])
+
+
+def test_separation_forbidden_tag_without_type_names_none() -> None:
+    row = _generator(use="SMOKE_ONLY", phash=list(_PHASH10))
+    del row["type"]
+    with pytest.raises(SeparationCheckError, match=_separation_use("None", "SMOKE_ONLY")):
+        forbidden_fixtures([row])
 
 
 def test_check_licenses_accepts_clip_with_use(tmp_path: Path) -> None:
