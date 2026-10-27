@@ -21,6 +21,8 @@ from trace_search.matching.linker import (
     ATTR_WEIGHT,
     MIN_SCORE,
     Link,
+    _assign,
+    _cost_matrix,
     link_tracklets,
     topology_mask,
 )
@@ -684,6 +686,9 @@ def test_module_docstring_states_the_score_limits() -> None:
     assert "not evidence" in text
     assert "share is 0" in text
     assert "keeps every mapped score, including 0" in text
+    assert "no tie-break penalty" in text
+    assert "1e-12" in text
+    assert "longer side of the grid" in text
     assert "differ in ``run_id`` or ``det_class`` is skipped" in text
     assert "not linked to a handbag track" in text
     mask_text = " ".join((topology_mask.__doc__ or "").split())
@@ -901,6 +906,50 @@ def test_a_zero_store_vector_is_refused() -> None:
             run_id=_RUN,
             derived_from="CODE_TEST",
         )
+
+
+def test_a_1e_5_total_gap_beats_identity_on_2x2_and_3x3() -> None:
+    """The higher total wins by 1e-5. Identity is the tie-break order, and it loses."""
+    two = [
+        [0.9, 0.9 + 5e-6],
+        [0.9 + 5e-6, 0.9],
+    ]
+    assert set(_assign(_cost_matrix(two))) == {(0, 1), (1, 0)}
+    base = 0.9
+    bumped = 0.9 + 5e-6
+    three = [
+        [base, base, bumped],
+        [base, base, base],
+        [bumped, base, base],
+    ]
+    assert set(_assign(_cost_matrix(three))) == {(0, 2), (1, 1), (2, 0)}
+
+
+def test_review_gaps_of_1e_4_and_1_2e_4_beat_identity() -> None:
+    """The re-review matrices: a 1e-4 total and a 1.2e-4 total beat the diagonal."""
+    two = [
+        [0.9, 0.90005],
+        [0.90005, 0.9],
+    ]
+    assert set(_assign(_cost_matrix(two))) == {(0, 1), (1, 0)}
+    base = 0.9
+    bumped = 0.90006
+    three = [
+        [base, base, bumped],
+        [base, base, base],
+        [bumped, base, base],
+    ]
+    assert set(_assign(_cost_matrix(three))) == {(0, 2), (1, 1), (2, 0)}
+
+
+def test_exact_score_tie_picks_sorted_track_order() -> None:
+    tied = [
+        [0.5, 0.5],
+        [0.5, 0.5],
+    ]
+    assert _assign(_cost_matrix(tied)) == [(0, 0), (1, 1)]
+    wide = [[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]]
+    assert _assign(_cost_matrix(wide)) == [(0, 0), (1, 1)]
 
 
 def test_large_exact_tie_follows_track_id_order() -> None:

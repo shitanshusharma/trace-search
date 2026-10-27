@@ -21,9 +21,14 @@ An attribute counts only when both tracks know it. ``UNKNOWN`` and ``None``
 are not known. Share is the number agreeing divided by the number known.
 With 0 known attributes, share is 0. Each camera pair is assigned one-to-one
 with the Hungarian method on ``-score``. Pairs under ``min_score`` are then
-dropped. Equal scores break on ``(camera_id, track_id)``. The tie-break
-penalty is scaled by the grid so it stays non-zero on a large grid and
-under ``1e-4``.
+dropped. Equal totals break on ``(camera_id, track_id)``. The Hungarian
+step uses ``-score`` with no tie-break penalty. Two totals are equal when
+``math.isclose`` says so with ``rel_tol`` 0 and ``abs_tol`` ``1e-12`` times
+the longer side of the grid. Exits are walked in ``(camera_id, track_id)``
+order, and the first entry in that order that still lets the remaining
+rows reach the optimal total is fixed. When every cell has the same score,
+that pairing is the diagonal of the sorted rows and columns, so a large
+tied grid does not re-solve.
 
 ``MIN_SCORE`` of 0 keeps every mapped score, including 0. Pairs are dropped
 only when the score is strictly under the floor, and the map cannot be
@@ -70,9 +75,10 @@ MIN_SCORE = 0.0
 # against any stock clip.
 ATTR_WEIGHT = 1.0
 
-# Largest tie-break penalty. A score gap at least this large beats it.
-# Not a similarity threshold and not fitted to any clip.
-_TIE_BREAK_BUDGET = 1e-4
+# Absolute tolerance per row of the longer grid side. Float64 sums of
+# values near 1 drift by a few ulps per add. 1e-12 per row sits above that
+# drift and below a 1e-5 score gap. Not a similarity threshold.
+_TOTAL_ABS_TOL_PER_ROW = 1e-12
 
 # Above every feasible cost. Feasible costs sit in about [-1, 0].
 _BLOCKED = 2.0
@@ -537,44 +543,185 @@ def _map_score(cosine: float, share: float, attr_weight: float) -> float:
 
 
 def _cost_matrix(scores: Sequence[Sequence[float | None]]) -> npt.NDArray[np.float64]:
-    """Hungarian cost is ``-score`` plus a tie-break, including blocked cells.
-
-    ``abs(row - column)`` prefers the identity permutation when the score
-    sums match. The row term prefers the smaller track id when a row is
-    left over. The step is ``budget / (span^2 + 1)``, so the penalty stays
-    under ``_TIE_BREAK_BUDGET`` and does not underflow on a large grid.
-    Blocked cells carry the same penalty.
-    """
+    """Hungarian cost is ``-score``. A missing pair is blocked. No tie penalty."""
     row_count = len(scores)
     column_count = len(scores[0]) if row_count else 0
     cost = np.zeros((row_count, column_count), dtype=np.float64)
     for row, row_scores in enumerate(scores):
         for column, score in enumerate(row_scores):
-            penalty = _tie_penalty(row, column, row_count, column_count)
-            cost[row, column] = _cell_cost(score, penalty)
+            cost[row, column] = _cell_cost(score)
     return cast(npt.NDArray[np.float64], cost)
 
 
-def _tie_penalty(row: int, column: int, row_count: int, column_count: int) -> float:
-    span = row_count if row_count > column_count else column_count
-    if span == 0:
-        return 0.0
-    step = _TIE_BREAK_BUDGET / (span * span + 1)
-    width = span + 1
-    gap = row - column
-    if gap < 0:
-        gap = -gap
-    return step * (gap * width + row * width + column)
-
-
-def _cell_cost(score: float | None, penalty: float) -> float:
+def _cell_cost(score: float | None) -> float:
     if score is None:
-        return _BLOCKED + penalty
-    return -score + penalty
+        return _BLOCKED
+    return -score
 
 
 def _assign(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
-    """Hungarian assignment. A matrix with no rows or columns assigns nothing.
+    """Optimal assignment, then the lexicographic tie on ``(camera_id, track_id)``.
+
+    Rows and columns are already in that order. A grid whose every cell has
+    the same score is paired on the diagonal, so a large exact tie does not
+    re-solve. Any other tie walks the rows and keeps a column only when the
+    remaining subproblem still reaches the optimal total.
+    """
+    if cost.shape[0] == 0 or cost.shape[1] == 0:
+        return []
+    if _uniform_scores(cost):
+        return _diagonal_pairs(cost)
+    return _lex_among_optimal(cost)
+
+
+def _uniform_scores(cost: npt.NDArray[np.float64]) -> bool:
+    """True when every cell is feasible and the costs are identical."""
+    if cost.size == 0:
+        return True
+    first = float(cost[0, 0])
+    if not math.isfinite(first) or first >= _BLOCKED:
+        return False
+    return bool(np.all(np.equal(cost, first)))
+
+
+def _diagonal_pairs(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
+    """Smallest rows with the smallest columns. The sorted order is the diagonal."""
+    width = min(int(cost.shape[0]), int(cost.shape[1]))
+    return [(index, index) for index in range(width)]
+
+
+def _lex_among_optimal(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
+    seed = _hungarian(cost)
+    optimal = _pair_sum(cost, seed)
+    return _walk_rows(cost, optimal)
+
+
+def _walk_rows(cost: npt.NDArray[np.float64], optimal: float) -> list[tuple[int, int]]:
+    open_rows = list(range(int(cost.shape[0])))
+    open_cols = list(range(int(cost.shape[1])))
+    fixed: list[tuple[int, int]] = []
+    side = max(int(cost.shape[0]), int(cost.shape[1]))
+    for row in range(int(cost.shape[0])):
+        open_rows = [item for item in open_rows if item != row]
+        column = _first_column(cost, row, open_rows, open_cols, fixed, optimal, side)
+        if column is None:
+            _require_still_optimal(cost, fixed, open_rows, open_cols, optimal, side)
+            continue
+        fixed.append((row, column))
+        open_cols = [item for item in open_cols if item != column]
+    return fixed
+
+
+def _first_column(
+    cost: npt.NDArray[np.float64],
+    row: int,
+    open_rows: Sequence[int],
+    open_cols: Sequence[int],
+    fixed: Sequence[tuple[int, int]],
+    optimal: float,
+    side: int,
+) -> int | None:
+    for column in open_cols:
+        rest = [item for item in open_cols if item != column]
+        trial = [*fixed, (row, column)]
+        if _reaches(cost, trial, open_rows, rest, optimal, side):
+            return column
+    return None
+
+
+def _require_still_optimal(
+    cost: npt.NDArray[np.float64],
+    fixed: Sequence[tuple[int, int]],
+    open_rows: Sequence[int],
+    open_cols: Sequence[int],
+    optimal: float,
+    side: int,
+) -> None:
+    if _reaches(cost, fixed, open_rows, open_cols, optimal, side):
+        return
+    raise ValueError("assignment lost the optimal score total")
+
+
+def _reaches(
+    cost: npt.NDArray[np.float64],
+    fixed: Sequence[tuple[int, int]],
+    open_rows: Sequence[int],
+    open_cols: Sequence[int],
+    optimal: float,
+    side: int,
+) -> bool:
+    if _too_costly(cost, fixed, open_rows, open_cols, optimal, side):
+        return False
+    total = _pair_sum(cost, fixed) + _sub_sum(cost, open_rows, open_cols)
+    return _totals_equal(total, optimal, side)
+
+
+def _too_costly(
+    cost: npt.NDArray[np.float64],
+    fixed: Sequence[tuple[int, int]],
+    open_rows: Sequence[int],
+    open_cols: Sequence[int],
+    optimal: float,
+    side: int,
+) -> bool:
+    """True when even the cheapest completion is above the optimal total."""
+    optimistic = _pair_sum(cost, fixed) + _row_min_bound(cost, open_rows, open_cols)
+    limit = _TOTAL_ABS_TOL_PER_ROW * max(side, 1)
+    return optimistic > optimal + limit
+
+
+def _row_min_bound(
+    cost: npt.NDArray[np.float64],
+    rows: Sequence[int],
+    cols: Sequence[int],
+) -> float:
+    """Sum of the best row costs, ignoring column clashes. A lower bound."""
+    if not rows or not cols:
+        return 0.0
+    best = [min(float(cost[row, column]) for column in cols) for row in rows]
+    best.sort()
+    take = min(len(rows), len(cols))
+    return sum(best[:take])
+
+
+def _sub_sum(
+    cost: npt.NDArray[np.float64],
+    rows: Sequence[int],
+    cols: Sequence[int],
+) -> float:
+    if not rows or not cols:
+        return 0.0
+    sub = _submatrix(cost, rows, cols)
+    if _uniform_scores(sub):
+        width = min(len(rows), len(cols))
+        return width * float(sub[0, 0])
+    return _pair_sum(sub, _hungarian(sub))
+
+
+def _submatrix(
+    cost: npt.NDArray[np.float64],
+    rows: Sequence[int],
+    cols: Sequence[int],
+) -> npt.NDArray[np.float64]:
+    picked = cost[np.ix_(list(rows), list(cols))]
+    return cast(npt.NDArray[np.float64], np.asarray(picked, dtype=np.float64))
+
+
+def _totals_equal(left: float, right: float, side: int) -> bool:
+    """Equal within ``1e-12`` times the longer grid side. Not a 1e-4 gap."""
+    limit = _TOTAL_ABS_TOL_PER_ROW * max(side, 1)
+    return math.isclose(left, right, rel_tol=0.0, abs_tol=limit)
+
+
+def _pair_sum(cost: npt.NDArray[np.float64], pairs: Sequence[tuple[int, int]]) -> float:
+    total = 0.0
+    for row, column in pairs:
+        total += float(cost[row, column])
+    return total
+
+
+def _hungarian(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
+    """One Hungarian solution. Ties are not broken here.
 
     The import is at module scope. ``importlib`` would hide it from the
     project-rules and semgrep fences. scipy 1.17.1 ships no ``py.typed``
