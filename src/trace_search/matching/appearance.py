@@ -23,6 +23,9 @@ frame still gets an attribute row and does not get a vector. This pass
 does not return a similarity score.
 
 A source that yields no frames raises before any row is deleted.
+A source that yields frames but never yields a planned sample frame
+raises before any row is deleted. An already-open source positioned
+past every planned sample leaves the camera's existing rows in place.
 Re-run policy: replace this camera before re-adding, not an in-store
 dedupe and not a purge of the whole run. ``VectorStore`` allows
 duplicate ``(camera_id, track_id, frame_number)`` keys. Before the new
@@ -138,8 +141,10 @@ def describe_tracks(
     the writes are not atomic.
 
     A source that yields no frames raises ``ValueError`` before that
-    delete. A person track whose boxes are all out of frame is stored
-    as attributes and gets no vector.
+    delete. A source that yields frames but never yields a planned
+    sample frame raises ``ValueError`` before that delete. A person
+    track whose boxes are all out of frame is stored as attributes
+    and gets no vector.
     """
     limit = _require_limit(samples_per_track)
     origin = _require_origin(derived_from)
@@ -152,9 +157,10 @@ def describe_tracks(
     planned = _plan(people, person_boxes, limit)
     present = _present_on_frame(people, person_boxes)
     bags_on_frame = _bags_on_frame(bags, bag_lookup)
-    parts, frames_read = _read_once(source, planned, present, bags_on_frame, extractor, embedder)
-    if frames_read == 0:
-        raise ValueError("source yielded no frames")
+    parts, frames_read, planned_read = _read_once(
+        source, planned, present, bags_on_frame, extractor, embedder
+    )
+    _require_planned_frame(frames_read, planned_read)
     pending = _pending(parts, camera_id, embedder)
     _replace_camera(attr_store, vectors, run_id, camera_id)
     _store_pending(pending, attr_store, vectors, camera_id, run_id, origin)
@@ -163,6 +169,14 @@ def describe_tracks(
         tracks_described=len(pending.attributes),
         embeddings_stored=len(pending.embeddings),
     )
+
+
+def _require_planned_frame(frames_read: int, planned_read: int) -> None:
+    """Fail closed before a delete when the read missed every planned sample."""
+    if frames_read == 0:
+        raise ValueError("source yielded no frames")
+    if planned_read == 0:
+        raise ValueError("no planned sample frame was read")
 
 
 def _require_limit(value: object) -> int:
@@ -290,17 +304,20 @@ def _read_once(
     bags_on_frame: Mapping[int, tuple[Box, ...]],
     extractor: AttributeExtractor,
     embedder: AppearanceEmbedder,
-) -> tuple[dict[int, _TrackParts], int]:
+) -> tuple[dict[int, _TrackParts], int, int]:
     parts: dict[int, _TrackParts] = {}
     frames_read = 0
+    planned_read = 0
     opened_here = _open_source(source)
     try:
         for frame in source.frames():
             frames_read += 1
+            if frame.frame_number in planned:
+                planned_read += 1
             _consume_frame(frame, planned, present, bags_on_frame, extractor, embedder, parts)
     finally:
         _close_source(source, opened_here)
-    return parts, frames_read
+    return parts, frames_read, planned_read
 
 
 def _open_source(source: VideoSource) -> bool:

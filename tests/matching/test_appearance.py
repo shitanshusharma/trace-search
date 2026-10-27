@@ -6,6 +6,7 @@ SQLite files sit under pytest's tmp_path, outside the repo.
 
 import math
 import os
+import re
 import socket
 import sqlite3
 from collections.abc import Sequence
@@ -553,6 +554,7 @@ def test_single_sample_uses_the_middle_frame(tmp_path: Path) -> None:
 
 def test_spy_writes_no_crop_or_frame_and_limits_embed_calls(
     tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scene = _build(
@@ -570,6 +572,18 @@ def test_spy_writes_no_crop_or_frame_and_limits_embed_calls(
     crop = scene.source._images[0][0:4, 0:4].copy()
     with pytest.raises(AssertionError, match="/tmp/x"):
         crop.tofile("/tmp/x")
+    outside = tmp_path_factory.mktemp("outside") / "x.bin"
+    outside_match = re.escape(os.fspath(outside))
+    with pytest.raises(AssertionError, match=outside_match):
+        _probe_os_open(outside)
+    with pytest.raises(AssertionError, match=outside_match):
+        _probe_builtin_open(outside)
+    png_path = tmp_path / "crop.png"
+    with pytest.raises(AssertionError, match=re.escape(os.fspath(png_path))):
+        _probe_builtin_open(png_path)
+    assert not outside.is_file()
+    assert not png_path.is_file()
+    opened.clear()  # the probes above are not part of the pass
     spy = _EmbedSpy(scene.embedder)
     vectors = SqliteVectorStore(tmp_path / "vectors.sqlite", spy.dim, clock=_clock)
     attr_store = _attributes(tmp_path)
@@ -637,6 +651,21 @@ class _RaisingToFile(np.ndarray):
     def tofile(self, fid: object, *args: object, **kwargs: object) -> None:
         del args, kwargs
         raise AssertionError(str(fid))
+
+
+def _probe_os_open(path: Path) -> None:
+    """Write-open then close. The spy must raise before a descriptor exists."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        return
+    finally:
+        os.close(descriptor)
+
+
+def _probe_builtin_open(path: Path) -> None:
+    """Write-open then close. The spy must raise before a file object exists."""
+    with open(path, "wb"):
+        return
 
 
 def _mode_writes(mode: str) -> bool:
@@ -1026,7 +1055,54 @@ def test_empty_source_raises_before_purge(tmp_path: Path, backend: str) -> None:
     assert attr_store.count(run_id=_RUN) == 2
 
 
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_source_past_every_planned_sample_raises_before_purge(tmp_path: Path, backend: str) -> None:
+    """An already-open source positioned after every planned sample must not delete."""
+    scene = _parade(tmp_path)
+    vectors = _backend(tmp_path, backend, scene.embedder.dim)
+    attr_store = _attributes(tmp_path)
+    _describe(scene, vectors, attr_store)
+    kept_rows = _attribute_identity(attr_store.db_path)
+    kept_vectors = _vector_identity(vectors, scene.embedder)
+    kept_attributes = _rows(attr_store)
+    late = ArraySource(_CAMERA, [_blank() for _ in range(11)])
+    late.open()
+    for _ in range(9):
+        assert late.read_frame() is not None
+    with pytest.raises(ValueError, match="planned sample"):
+        describe_tracks(
+            late,
+            scene.tracklets,
+            scene.bag_tracklets,
+            scene.store,
+            _RUN,
+            scene.extractor,
+            scene.embedder,
+            attr_store,
+            vectors,
+            _ORIGIN,
+        )
+    assert late.is_open()
+    assert _attribute_identity(attr_store.db_path) == kept_rows
+    assert _vector_identity(vectors, scene.embedder) == kept_vectors
+    assert _rows(attr_store) == kept_attributes
+    assert vectors.count(run_id=_RUN) == 2
+    assert attr_store.count(run_id=_RUN) == 2
+
+
+_ATTRIBUTE_IDENTITY = "SELECT rowid, camera_id, track_id FROM track_attributes"
 _VECTOR_IDENTITY = "SELECT rowid, camera_id, track_id, frame_number FROM appearance_embeddings"
+
+
+def _attribute_identity(db_path: Path) -> tuple[tuple[int, str, int], ...]:
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute(_ATTRIBUTE_IDENTITY).fetchall()
+    finally:
+        connection.close()
+    return tuple(
+        sorted((int(rowid), str(camera_id), int(track_id)) for rowid, camera_id, track_id in rows)
+    )
 
 
 def _vector_identity(
