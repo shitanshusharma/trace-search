@@ -953,11 +953,17 @@ def test_embedding_uses_the_lowest_sampled_frame_even_if_seen_later(tmp_path: Pa
 
 
 def test_out_of_frame_box_stores_attributes_without_a_vector(tmp_path: Path) -> None:
-    image = _blank()
+    """Every sampled box is outside the frame. The track is stored with no vector."""
+    images = [_blank(), _blank()]
     store = TrackStore(tmp_path / "tracks.sqlite", clock=_clock)
-    store.write(_RUN, _FIXTURE, _ORIGIN, [_observation(4, 0, _BOX_OUTSIDE)])
+    store.write(
+        _RUN,
+        _FIXTURE,
+        _ORIGIN,
+        [_observation(4, 0, _BOX_OUTSIDE), _observation(4, 1, _BOX_OUTSIDE)],
+    )
     scene = _Scene(
-        source=ArraySource(_CAMERA, [image]),
+        source=ArraySource(_CAMERA, images),
         tracklets=load_tracklets(store, _RUN, det_class=DetClass.PERSON),
         bag_tracklets=[],
         store=store,
@@ -966,15 +972,16 @@ def test_out_of_frame_box_stores_attributes_without_a_vector(tmp_path: Path) -> 
     )
     vectors = InMemoryVectorStore(scene.embedder.dim)
     attr_store = _attributes(tmp_path)
-    stats = _describe(scene, vectors, attr_store, samples_per_track=1)
+    stats = _describe(scene, vectors, attr_store, samples_per_track=2)
 
     assert stats.tracks_described == 1
     assert stats.embeddings_stored == 0
     assert vectors.count(run_id=_RUN) == 0
-    upper, lower, bag, *_rest = _rows(attr_store)[4]
+    upper, lower, bag, _upper_confidence, _lower_confidence, n_frames, *_rest = _rows(attr_store)[4]
     assert upper == Color.INVALID_BOX.value
     assert lower == Color.INVALID_BOX.value
     assert bag is False
+    assert n_frames == 2
 
 
 def test_already_open_source_is_not_restarted(tmp_path: Path) -> None:
@@ -985,12 +992,71 @@ def test_already_open_source_is_not_restarted(tmp_path: Path) -> None:
     assert len(consumed) == 9
     vectors = InMemoryVectorStore(scene.embedder.dim)
     attr_store = _attributes(tmp_path)
-    stats = _describe(scene, vectors, attr_store)
+    with pytest.raises(ValueError, match="no frames"):
+        _describe(scene, vectors, attr_store)
 
-    assert stats.frames_read == 0
-    assert stats.tracks_described == 0
     assert scene.source.is_open()
+    assert scene.source.reads == 11
     assert vectors.count() == 0
+    assert attr_store.count() == 0
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_empty_source_raises_before_purge(tmp_path: Path, backend: str) -> None:
+    scene = _parade(tmp_path)
+    vectors = _backend(tmp_path, backend, scene.embedder.dim)
+    attr_store = _attributes(tmp_path)
+    _describe(scene, vectors, attr_store)
+    kept_rows = _rowids(attr_store.db_path)
+    kept_vectors = _vector_identity(vectors, scene.embedder)
+    empty = ArraySource(_CAMERA, [])
+    with pytest.raises(ValueError, match="no frames"):
+        describe_tracks(
+            empty,
+            scene.tracklets,
+            scene.bag_tracklets,
+            scene.store,
+            _RUN,
+            scene.extractor,
+            scene.embedder,
+            attr_store,
+            vectors,
+            _ORIGIN,
+        )
+    assert not empty.is_open()
+    assert _rowids(attr_store.db_path) == kept_rows
+    assert _vector_identity(vectors, scene.embedder) == kept_vectors
+    assert vectors.count(run_id=_RUN) == 2
+    assert attr_store.count(run_id=_RUN) == 2
+
+
+_VECTOR_IDENTITY = "SELECT rowid, camera_id, track_id, frame_number FROM appearance_embeddings"
+
+
+def _vector_identity(
+    vectors: VectorStore,
+    embedder: UntrainedPlaceholderEmbedder,
+) -> tuple[tuple[object, ...], ...]:
+    """Row identity. A rewritten row has a new rowid or a new object."""
+    if isinstance(vectors, SqliteVectorStore):
+        connection = sqlite3.connect(vectors.db_path)
+        try:
+            rows = connection.execute(_VECTOR_IDENTITY).fetchall()
+        finally:
+            connection.close()
+        return tuple(
+            sorted(
+                (int(rowid), str(camera_id), int(track_id), int(frame))
+                for rowid, camera_id, track_id, frame in rows
+            )
+        )
+    probe = _probe(embedder)
+    return tuple(
+        sorted(
+            (item.camera_id, item.track_id, item.frame_number, id(item))
+            for item, _score in vectors.search(probe, k=10)
+        )
+    )
 
 
 def test_bad_arguments_do_not_purge_a_finished_run(tmp_path: Path) -> None:

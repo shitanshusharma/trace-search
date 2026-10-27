@@ -402,6 +402,14 @@ def test_delete_where_camera_keeps_the_other_camera_in_the_run(tmp_path: Path) -
     assert store.read("cam-1", run_id="run-2")[0].upper_color == "yellow"
 
 
+def test_delete_where_rejects_an_empty_camera_id(tmp_path: Path) -> None:
+    store = _store(tmp_path, _Clock(5.0))
+    _write(store, camera_id="cam-1", run_id="run-1")
+    with pytest.raises(ValueError, match="non-empty"):
+        store.delete_where(run_id="run-1", camera_id="")
+    assert store.count(run_id="run-1", camera_id="cam-1") == 1
+
+
 def test_delete_where_requires_a_filter(tmp_path: Path) -> None:
     store = _store(tmp_path, _Clock(5.0))
     _write(store)

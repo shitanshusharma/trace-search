@@ -18,8 +18,11 @@ vote of the sampled frames. A tie stores ``Color.UNKNOWN``.
 to that person. One L2-normalised mean of the sampled crop vectors is
 stored as an ``AppearanceEmbedding`` with ``placeholder`` true. The
 vector's ``frame_number`` is the lowest sampled frame on that track.
-Bag tracks get no vector. This pass does not return a similarity score.
+Bag tracks get no vector. A person track whose boxes are all out of
+frame still gets an attribute row and does not get a vector. This pass
+does not return a similarity score.
 
+A source that yields no frames raises before any row is deleted.
 Re-run policy: replace this camera before re-adding, not an in-store
 dedupe and not a purge of the whole run. ``VectorStore`` allows
 duplicate ``(camera_id, track_id, frame_number)`` keys. Before the new
@@ -27,7 +30,9 @@ rows are written, this function deletes attribute rows and appearance
 vectors whose ``run_id`` and ``camera_id`` are this call's, then adds
 the new batch. Rows for another camera in the same run are not read
 and not deleted. A second call for the same camera leaves one vector
-per key for that camera.
+per key for that camera. The delete and the writes that follow it are
+not atomic: a failure between them can leave this camera partly
+replaced.
 """
 
 from __future__ import annotations
@@ -129,7 +134,12 @@ def describe_tracks(
     appearance vectors for this ``run_id`` and ``source.camera_id`` are
     deleted, then the new batch is written. Another camera's rows in the
     same run stay where they are. ``VectorStore`` still allows duplicate
-    keys; this function does not dedupe inside the store.
+    keys; this function does not dedupe inside the store. The delete and
+    the writes are not atomic.
+
+    A source that yields no frames raises ``ValueError`` before that
+    delete. A person track whose boxes are all out of frame is stored
+    as attributes and gets no vector.
     """
     limit = _require_limit(samples_per_track)
     origin = _require_origin(derived_from)
@@ -143,6 +153,8 @@ def describe_tracks(
     present = _present_on_frame(people, person_boxes)
     bags_on_frame = _bags_on_frame(bags, bag_lookup)
     parts, frames_read = _read_once(source, planned, present, bags_on_frame, extractor, embedder)
+    if frames_read == 0:
+        raise ValueError("source yielded no frames")
     pending = _pending(parts, camera_id, embedder)
     _replace_camera(attr_store, vectors, run_id, camera_id)
     _store_pending(pending, attr_store, vectors, camera_id, run_id, origin)
@@ -481,7 +493,11 @@ def _replace_camera(
     run_id: str,
     camera_id: str,
 ) -> None:
-    """Delete this camera's previous rows for ``run_id``. Other cameras stay."""
+    """Delete this camera's previous rows for ``run_id``. Other cameras stay.
+
+    The following writes are separate calls. This delete and those writes
+    are not atomic.
+    """
     attr_store.delete_where(run_id=run_id, camera_id=camera_id)
     vectors.delete_where(run_id=run_id, camera_id=camera_id)
 

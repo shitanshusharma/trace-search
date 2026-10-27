@@ -797,6 +797,14 @@ def test_delete_where_camera_keeps_the_other_camera_in_the_run(tmp_path: Path) -
     assert [item.camera_id for item, _score in found] == ["cam-2"]
 
 
+def test_delete_where_rejects_an_empty_camera_id(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.add("run-1", "CODE_TEST", [_embedding("cam-1", 1, 1, _unit(1.0, 0.0, 0.0))])
+    with pytest.raises(ValueError, match="non-empty"):
+        store.delete_where(run_id="run-1", camera_id="")
+    assert store.count(run_id="run-1") == 1
+
+
 def test_delete_where_with_no_filter_raises(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.add("run-1", "CODE_TEST", [_embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))])
