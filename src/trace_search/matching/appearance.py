@@ -149,8 +149,11 @@ def describe_tracks(
     with no sampled person raises ``ValueError`` before that delete
     as well. The plan is empty, so a source that yields frames still
     has no planned sample frame, and that camera's existing rows stay.
-    A person track whose boxes are all out of frame is stored as
-    attributes and gets no vector.
+    An already-open source positioned past some but not all planned
+    samples still replaces this camera. Stored ``n_frames`` is the
+    number of planned samples actually read. A person track whose
+    boxes are all out of frame is stored as attributes and gets no
+    vector.
     """
     limit = _require_limit(samples_per_track)
     origin = _require_origin(derived_from)

@@ -569,11 +569,11 @@ def test_spy_writes_no_crop_or_frame_and_limits_embed_calls(
     opened: list[str] = []
     _forbid_media_writes(monkeypatch, opened, tmp_path)
     scene.source._images = [image.view(_RaisingToFile) for image in scene.source._images]
-    crop = scene.source._images[0][0:4, 0:4].copy()
-    with pytest.raises(AssertionError, match="/tmp/x"):
-        crop.tofile("/tmp/x")
     outside = tmp_path_factory.mktemp("outside") / "x.bin"
     outside_match = re.escape(os.fspath(outside))
+    crop = scene.source._images[0][0:4, 0:4].copy()
+    with pytest.raises(AssertionError, match=outside_match):
+        crop.tofile(os.fspath(outside))
     with pytest.raises(AssertionError, match=outside_match):
         _probe_os_open(outside)
     with pytest.raises(AssertionError, match=outside_match):
@@ -1119,6 +1119,48 @@ def test_camera_with_no_sampled_person_raises_before_purge(tmp_path: Path, backe
     assert _attribute_identity(attr_store.db_path) == kept_rows
     assert _vector_identity(vectors, scene.embedder) == kept_vectors
     assert _rows(attr_store) == kept_attributes
+    assert vectors.count(run_id=_RUN) == 2
+    assert attr_store.count(run_id=_RUN) == 2
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_source_past_some_planned_samples_stores_n_frames_read(
+    tmp_path: Path, backend: str
+) -> None:
+    """A partial read replaces the camera. n_frames counts samples actually read."""
+    scene = _parade(tmp_path)
+    vectors = _backend(tmp_path, backend, scene.embedder.dim)
+    attr_store = _attributes(tmp_path)
+    _describe(scene, vectors, attr_store)
+    assert {row[5] for row in _rows(attr_store).values()} == {_SAMPLES}
+    planned = {0, 2, 4, 6, 8}
+    late = ArraySource(_CAMERA, list(scene.source._images))
+    late.open()
+    skipped = late.read_frame()
+    assert skipped is not None
+    assert skipped.frame_number in planned
+    frame_count = late.get_frame_count()
+    assert frame_count is not None
+    remaining = set(range(skipped.frame_number + 1, frame_count))
+    assert planned - remaining
+    assert planned & remaining
+    expected = len(planned & remaining)
+    stats = describe_tracks(
+        late,
+        scene.tracklets,
+        scene.bag_tracklets,
+        scene.store,
+        _RUN,
+        scene.extractor,
+        scene.embedder,
+        attr_store,
+        vectors,
+        _ORIGIN,
+    )
+    assert late.is_open()
+    assert stats.tracks_described == 2
+    assert stats.embeddings_stored == 2
+    assert {row[5] for row in _rows(attr_store).values()} == {expected}
     assert vectors.count(run_id=_RUN) == 2
     assert attr_store.count(run_id=_RUN) == 2
 
