@@ -387,6 +387,29 @@ def test_delete_where_by_run_id_and_both_filters(tmp_path: Path) -> None:
     assert len(store.read("cam-b")) == 1
 
 
+def test_delete_where_camera_keeps_the_other_camera_in_the_run(tmp_path: Path) -> None:
+    store = _store(tmp_path, _Clock(5.0))
+    _write(store, camera_id="cam-1", track_id=1, run_id="run-1")
+    _write(store, camera_id="cam-2", track_id=1, run_id="run-1", upper_color="green")
+    _write(store, camera_id="cam-1", track_id=1, run_id="run-2", upper_color="yellow")
+    with pytest.raises(ValueError, match="derived_from or run_id"):
+        store.delete_where(camera_id="cam-1")
+    removed = store.delete_where(run_id="run-1", camera_id="cam-1")
+    assert removed == 1
+    assert store.count(run_id="run-1") == 1
+    assert store.count(run_id="run-2") == 1
+    assert store.read("cam-2", run_id="run-1")[0].upper_color == "green"
+    assert store.read("cam-1", run_id="run-2")[0].upper_color == "yellow"
+
+
+def test_delete_where_rejects_an_empty_camera_id(tmp_path: Path) -> None:
+    store = _store(tmp_path, _Clock(5.0))
+    _write(store, camera_id="cam-1", run_id="run-1")
+    with pytest.raises(ValueError, match="non-empty"):
+        store.delete_where(run_id="run-1", camera_id="")
+    assert store.count(run_id="run-1", camera_id="cam-1") == 1
+
+
 def test_delete_where_requires_a_filter(tmp_path: Path) -> None:
     store = _store(tmp_path, _Clock(5.0))
     _write(store)
