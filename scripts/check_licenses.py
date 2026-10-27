@@ -834,6 +834,28 @@ def is_license_allowed(
     return allowed
 
 
+# use, phash, and fixture_id belong only on these row types.
+FIXTURE_CARRYING_TYPES = frozenset(('clip', 'synthetic_clip', 'code_fixture'))
+
+
+def _disallowed_fixture_field_violations(entry: dict) -> list[str]:
+    """Reject use, phash, and fixture_id on any row that is not a fixture row."""
+    entry_type = entry.get('type', '')
+    if entry_type in FIXTURE_CARRYING_TYPES:
+        return []
+    name = entry.get('name') or 'unknown'
+    violations = []
+    if 'use' in entry:
+        violations.append(
+            f"{name}: type '{entry_type}' cannot carry use '{entry.get('use')}'"
+        )
+    if 'phash' in entry:
+        violations.append(f"{name}: type '{entry_type}' cannot carry phash")
+    if 'fixture_id' in entry:
+        violations.append(f"{name}: type '{entry_type}' cannot carry fixture_id")
+    return violations
+
+
 def check_manifest_licenses(
     manifest: dict,
     on_disk: dict[str, list[str]] | None = None,
@@ -845,6 +867,8 @@ def check_manifest_licenses(
         license_str = entry.get('license', '').strip()
         name = entry.get('name', 'unknown')
         entry_type = entry.get('type', '')
+
+        violations.extend(_disallowed_fixture_field_violations(entry))
 
         failure = _license_failure(license_str, name, entry, on_disk)
         if failure:
