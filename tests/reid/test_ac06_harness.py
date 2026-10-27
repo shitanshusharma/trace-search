@@ -39,6 +39,7 @@ _DIAGNOSTIC_KEYS = (
     "mAP",
     "num_query",
     "num_valid_query",
+    "num_masked_out",
     "num_gallery",
     "topology_time_limits",
 )
@@ -47,6 +48,7 @@ _NULL_DIAGNOSTIC_FIELDS = (
     "mAP",
     "num_query",
     "num_valid_query",
+    "num_masked_out",
     "num_gallery",
 )
 # Fullwidth FX and digits. NFKC folds these; Arabic-Indic digits stay.
@@ -93,6 +95,11 @@ def _exact(actual: object, expected: Fraction) -> None:
     assert Fraction(actual).limit_denominator(expected.denominator) == expected
 
 
+def _accept_pair(_query: EvalItem, _gallery: EvalItem) -> bool:
+    """Keep every gallery item. The arguments are the mask signature."""
+    return True
+
+
 def _success_payloads() -> list[dict[str, object]]:
     """Every branch that returns a payload. None of them may pass."""
     query, gallery = _hand_built()
@@ -101,6 +108,7 @@ def _success_payloads() -> list[dict[str, object]]:
         lambda: run("FX-HOLD-001"),
         lambda: run("FX-HOLD-001", query=query, gallery=gallery),
         lambda: run("FX-HOLD-001", query=query, gallery=gallery, mode="eval"),
+        lambda: run("FX-HOLD-001", query=query, gallery=gallery, gallery_mask=_accept_pair),
         lambda: run("FX-HOLD-001", query=query, gallery=gallery, mode="unit_test"),
         lambda: run("FX-SMOKE-SYN-001", query=query, gallery=gallery, mode="unit_test"),
         lambda: run("FX-CODE-001", query=query, gallery=gallery, mode="unit_test"),
@@ -254,6 +262,7 @@ def test_hold_hand_built_diagnostics_match_rank1_and_map() -> None:
     assert diagnostics["mAP"] == expected.mean_ap
     assert diagnostics["num_query"] == 3
     assert diagnostics["num_valid_query"] == 3
+    assert diagnostics["num_masked_out"] == 0
     assert diagnostics["num_gallery"] == 5
     _exact(diagnostics["rank1"], Fraction(2, 3))
     _exact(diagnostics["mAP"], Fraction(5, 6))
@@ -306,19 +315,37 @@ def test_evidence_is_false_on_every_branch() -> None:
         assert json.dumps(result).count('"evidence": false') == 1
 
 
-def test_gallery_mask_is_refused_until_t6() -> None:
+def test_gallery_mask_is_applied() -> None:
+    """Eval with both arrays applies the mask. ``unit_test`` still refuses it."""
     query, gallery = _hand_built()
-    calls: list[tuple[EvalItem, EvalItem]] = []
+    calls: list[tuple[int, int]] = []
 
     def mask(left: EvalItem, right: EvalItem) -> bool:
-        calls.append((left, right))
+        calls.append((left.track_id, right.track_id))
+        return not (left.track_id == 11 and right.track_id == 2)
+
+    result = run("FX-HOLD-001", query=query, gallery=gallery, gallery_mask=mask)
+    diagnostics = result["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    assert (11, 2) in calls
+    assert result["evidence"] is False
+    assert result["status"] == "DEFERRED"
+    assert result["ac06_score"] is None
+    assert diagnostics["rank1"] == 1.0
+    assert diagnostics["num_masked_out"] == 0
+    assert "not evidence" in str(diagnostics["note"])
+    assert diagnostics["topology_time_limits"] == "applied via gallery_mask; not evidence"
+    unit_calls: list[tuple[EvalItem, EvalItem]] = []
+
+    def unit_mask(left: EvalItem, right: EvalItem) -> bool:
+        unit_calls.append((left, right))
         return True
 
     with pytest.raises(ValueError, match="T6"):
-        run("FX-HOLD-001", query=query, gallery=gallery, gallery_mask=mask)
-    assert calls == []
+        run("FX-HOLD-001", query=query, gallery=gallery, gallery_mask=unit_mask, mode="unit_test")
+    assert unit_calls == []
     with pytest.raises(ValueError, match="T6"):
-        run("FX-HOLD-001", gallery_mask=mask, mode="unit_test")
+        run("FX-HOLD-001", gallery_mask=unit_mask, mode="unit_test")
 
 
 def test_gallery_mask_is_refused_in_eval_without_arrays() -> None:

@@ -2,8 +2,10 @@
 
 Gallery items with the same label and the same ``camera_id`` are junk
 and are excluded. A query with no remaining match is invalid: it counts
-in ``num_invalid_query`` and is left out of CMC and mAP. Ties keep
-gallery order. ``--embedder`` is ``placeholder`` (the default) or
+in ``num_invalid_query`` and is left out of CMC and mAP. A query whose
+only cross-camera match a gallery mask removes stays in the metric as a
+miss and counts in ``num_masked_out``, so Rank-1 is not inflated. Ties
+keep gallery order. ``--embedder`` is ``placeholder`` (the default) or
 ``osnet-lite``. ``osnet-lite`` is random init only. The JSON and the
 human-readable report carry that embedder's label. The JSON evidence
 flag is always false. These numbers are not an AC-06 result.
@@ -20,7 +22,7 @@ import argparse
 import json
 import math
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -91,8 +93,8 @@ class EvalItem:
 class ReidEvalResult:
     """Rank-1, mAP, and the counts behind them.
 
-    ``mean_ap`` is written as ``mAP`` in :meth:`as_json`. ``num_invalid_query``
-    is not part of that JSON object.
+    ``mean_ap`` is written as ``mAP`` in :meth:`as_json`. ``num_masked_out``
+    is part of that JSON object. ``num_invalid_query`` is not.
     """
 
     rank1: float
@@ -101,6 +103,7 @@ class ReidEvalResult:
     num_query: int
     num_valid_query: int
     num_invalid_query: int
+    num_masked_out: int
     num_gallery: int
 
     def as_json(self) -> dict[str, object]:
@@ -111,6 +114,7 @@ class ReidEvalResult:
             "cmc_top5": [float(value) for value in self.cmc_top5],
             "num_query": self.num_query,
             "num_valid_query": self.num_valid_query,
+            "num_masked_out": self.num_masked_out,
             "num_gallery": self.num_gallery,
             "evidence": _evidence_flag(),
             "note": _result_note(),
@@ -123,21 +127,39 @@ class _QueryScore:
     hits: tuple[bool, ...]
 
 
+@dataclass(frozen=True)
+class _QueryOutcome:
+    score: _QueryScore | None
+    masked_out: bool
+
+
+_GalleryMask = Callable[[EvalItem, EvalItem], bool]
+
+
 def rank1_map(
     query: Sequence[EvalItem],
     gallery: Sequence[EvalItem],
     distance: str = _DISTANCE,
+    *,
+    gallery_mask: _GalleryMask | None = None,
 ) -> ReidEvalResult:
     """Score ``query`` against ``gallery`` with the cross-camera protocol.
 
     ``distance`` must be ``cosine``. Same-label same-camera gallery items
-    are junk. A query with no match on another camera is invalid and is
-    left out of CMC and mAP. Equal distances keep gallery order.
+    are junk. ``gallery_mask`` runs after that junk filter. ``None`` keeps
+    the previous gallery. A false mask result drops that gallery item for
+    that query. ``num_gallery`` stays ``len(gallery)``. A query with no
+    match on another camera before the mask is invalid and is left out of
+    CMC and mAP. A query that had such a match, and loses all of them to
+    the mask, stays in CMC and mAP as a miss and increments
+    ``num_masked_out``. Equal distances keep gallery order. The JSON
+    evidence flag stays false.
     """
     _require_distance(distance)
-    scores = [_rank_query(item, gallery) for item in query]
-    valid = [score for score in scores if score is not None]
+    outcomes = [_rank_query(item, gallery, gallery_mask) for item in query]
+    valid = [item.score for item in outcomes if item.score is not None]
     invalid = len(query) - len(valid)
+    masked_out = sum(1 for item in outcomes if item.masked_out)
     cmc = _mean_cmc(valid)
     return ReidEvalResult(
         rank1=cmc[0],
@@ -146,6 +168,7 @@ def rank1_map(
         num_query=len(query),
         num_valid_query=len(valid),
         num_invalid_query=invalid,
+        num_masked_out=masked_out,
         num_gallery=len(gallery),
     )
 
@@ -392,12 +415,38 @@ def _require_distance(distance: str) -> None:
     raise ValueError(f"distance must be {_DISTANCE!r}, got {distance!r}")
 
 
-def _rank_query(query: EvalItem, gallery: Sequence[EvalItem]) -> _QueryScore | None:
-    kept = tuple(item for item in gallery if not _is_junk(query, item))
-    if not _has_match(query, kept):
-        return None
-    ordered = _order_by_distance(query, kept)
-    return _score_ordered(query, ordered)
+def _rank_query(
+    query: EvalItem,
+    gallery: Sequence[EvalItem],
+    gallery_mask: _GalleryMask | None = None,
+) -> _QueryOutcome:
+    before_mask = _without_junk(query, gallery)
+    kept = _apply_mask(query, before_mask, gallery_mask)
+    if _has_match(query, kept):
+        ordered = _order_by_distance(query, kept)
+        return _QueryOutcome(_score_ordered(query, ordered), False)
+    if _has_match(query, before_mask):
+        return _QueryOutcome(_masked_miss(), True)
+    return _QueryOutcome(None, False)
+
+
+def _without_junk(query: EvalItem, gallery: Sequence[EvalItem]) -> tuple[EvalItem, ...]:
+    return tuple(item for item in gallery if not _is_junk(query, item))
+
+
+def _apply_mask(
+    query: EvalItem,
+    gallery: Sequence[EvalItem],
+    gallery_mask: _GalleryMask | None,
+) -> tuple[EvalItem, ...]:
+    if gallery_mask is None:
+        return tuple(gallery)
+    return tuple(item for item in gallery if gallery_mask(query, item))
+
+
+def _masked_miss() -> _QueryScore:
+    """A miss with one rank. An empty hit list would break ``_hit_at``."""
+    return _QueryScore(ap=0.0, hits=(False,))
 
 
 def _is_junk(query: EvalItem, item: EvalItem) -> bool:

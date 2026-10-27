@@ -14,10 +14,11 @@ that window is kept. ``purge_on_open=False`` skips the open purge so a
 registry can still count expired rows. ``count_older_than`` uses the
 same cutoff and does not delete.
 
-Search applies the camera filter in SQL, decodes the matching blobs with
-one ``numpy`` read, and ranks them with ``vector_store._cosine_scores``
-and ``vector_store._rank``. ``derived_from`` must be a member of
-``ALLOWED_DERIVED_FROM`` on ``add``, ``delete_where``, and ``count``.
+Search applies the camera, run, and ``derived_from`` filters in SQL,
+decodes the matching blobs with one ``numpy`` read, and ranks them with
+``vector_store._cosine_scores`` and ``vector_store._rank``.
+``derived_from`` must be a member of ``ALLOWED_DERIVED_FROM`` on ``add``,
+``delete_where``, ``count``, and a search that sets it.
 ``add`` refuses a batch when a stored blob has a different width. Open
 does not check that width: purge and ``count_older_than`` do not read
 the vectors.
@@ -215,14 +216,23 @@ def _insert_row(
     )
 
 
+_SCOPE_SQL = "(? IS NULL OR derived_from = ?) AND (? IS NULL OR run_id = ?)"
+
+
 def _select_matching_sql(camera_count: int | None) -> str:
-    """Search SQL. The ``IN`` list is ``?`` placeholders, never camera ids."""
-    if camera_count is None:
-        return _LOAD_COLUMNS_SQL + _ORDER_BY_ROWID_SQL
+    """Search SQL. The ``IN`` list is ``?`` placeholders, never camera ids.
+
+    The first four bound values are ``derived_from`` twice and ``run_id``
+    twice. ``None`` matches every value in that column.
+    """
     if camera_count == 0:
-        return _LOAD_COLUMNS_SQL + " WHERE 0" + _ORDER_BY_ROWID_SQL
-    marks = ",".join("?" for _ in range(camera_count))
-    return _LOAD_COLUMNS_SQL + " WHERE camera_id IN (" + marks + ")" + _ORDER_BY_ROWID_SQL
+        camera_sql = " AND 0"
+    elif camera_count is None:
+        camera_sql = ""
+    else:
+        marks = ",".join("?" for _ in range(camera_count))
+        camera_sql = " AND camera_id IN (" + marks + ")"
+    return _LOAD_COLUMNS_SQL + " WHERE " + _SCOPE_SQL + camera_sql + _ORDER_BY_ROWID_SQL
 
 
 def _matrix_from_blobs(blobs: Sequence[bytes], dim: int) -> npt.NDArray[np.float32]:
@@ -300,16 +310,19 @@ def _hits_after_rank(
 def _load_search_rows(
     connection: sqlite3.Connection,
     cameras: frozenset[str] | None,
+    derived_from: str | None,
+    run_id: str | None,
     dim: int,
 ) -> tuple[tuple[_SearchKey, ...], npt.NDArray[np.float32]]:
-    """Load keys and one float32 matrix. The camera filter is the SQL ``WHERE``."""
+    """Load keys and one float32 matrix. Filters are the SQL ``WHERE``."""
+    scope: tuple[str | None, ...] = (derived_from, derived_from, run_id, run_id)
     if cameras is None:
         sql = _select_matching_sql(None)
-        params: tuple[str, ...] = ()
+        params: tuple[str | None, ...] = scope
     else:
         ordered = tuple(sorted(cameras))
         sql = _select_matching_sql(len(ordered))
-        params = ordered
+        params = scope + ordered
     keys: list[_SearchKey] = []
     blobs: list[bytes] = []
     for record in connection.execute(sql, params):
@@ -412,19 +425,24 @@ class SqliteVectorStore:
         vector: _Query,
         k: int,
         camera_ids: Collection[str] | None = None,
+        *,
+        run_id: str | None = None,
+        derived_from: str | None = None,
     ) -> list[tuple[AppearanceEmbedding, float]]:
-        """Return up to ``k`` cosine hits after the camera filter.
+        """Return up to ``k`` cosine hits after the camera, run, and origin filters.
 
         Expired rows are purged after the arguments are checked and before
-        any row is loaded. The camera filter is a parameterised SQL
-        predicate, applied before scoring.
+        any row is loaded. The filters are parameterised SQL predicates,
+        applied before scoring. ``None`` keeps every value in that column.
         """
         query = _require_query(vector, self._dim)
         limit = _require_k(k)
         cameras = _require_camera_ids(camera_ids)
+        origin = _optional_derived_from(derived_from)
+        run = _optional_text("run_id", run_id)
         self.purge_expired()
         keys, matrix = self._using(
-            lambda connection: _load_search_rows(connection, cameras, self._dim)
+            lambda connection: _load_search_rows(connection, cameras, origin, run, self._dim)
         )
         if not keys:
             return []
