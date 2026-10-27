@@ -302,6 +302,30 @@ def test_row_check_rejects_fixture_id_without_use_on_generator() -> None:
     assert violations == [f"{_GEN_NAME}: type 'generator' cannot carry fixture_id"]
 
 
+def test_row_check_reports_phash_and_fixture_id() -> None:
+    violations = check_licenses.check_manifest_licenses(
+        make_manifest([_generator(phash=list(_PHASH10), fixture_id="FX-SMOKE-001")])
+    )
+    assert violations == [
+        f"{_GEN_NAME}: type 'generator' cannot carry phash",
+        f"{_GEN_NAME}: type 'generator' cannot carry fixture_id",
+    ]
+
+
+def test_row_check_names_unknown_when_the_row_has_no_name() -> None:
+    row = _generator(use="SMOKE_ONLY")
+    del row["name"]
+    violations = check_licenses.check_manifest_licenses(make_manifest([row]))
+    assert violations == [_license_use("unknown", "generator", "SMOKE_ONLY")]
+
+
+def test_row_check_names_none_when_the_type_is_missing() -> None:
+    row = _generator(use="SMOKE_ONLY")
+    del row["type"]
+    violations = check_licenses.check_manifest_licenses(make_manifest([row]))
+    assert violations == [_license_use(_GEN_NAME, "None", "SMOKE_ONLY")]
+
+
 def test_row_check_reports_both_violating_rows() -> None:
     rows = [
         _generator(name="gen-a", use="SMOKE_ONLY"),
@@ -363,6 +387,22 @@ def test_separation_forbidden_tag_without_type_names_none() -> None:
     row = _generator(use="SMOKE_ONLY", phash=list(_PHASH10))
     del row["type"]
     with pytest.raises(SeparationCheckError, match=_separation_use("None", "SMOKE_ONLY")):
+        forbidden_fixtures([row])
+
+
+def test_row_check_rejects_a_non_string_type() -> None:
+    """A list is unhashable. Membership must not raise TypeError."""
+    row = _generator(use="SMOKE_ONLY")
+    row["type"] = ["generator"]
+    violations = check_licenses.check_manifest_licenses(make_manifest([row]))
+    assert _license_use(_GEN_NAME, "list", "SMOKE_ONLY") in violations
+
+
+def test_separation_rejects_a_non_string_type() -> None:
+    """A list is unhashable. The fence must name the type, not raise TypeError."""
+    row = _generator(use="SMOKE_ONLY", phash=list(_PHASH10))
+    row["type"] = ["generator"]
+    with pytest.raises(SeparationCheckError, match=_separation_use("list", "SMOKE_ONLY")):
         forbidden_fixtures([row])
 
 

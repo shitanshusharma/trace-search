@@ -190,16 +190,27 @@ def load_manifest_entries(manifest_path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _shown_row_type(entry_type: object) -> str:
+    """Label a row type for an error. Non-strings never raise."""
+    if isinstance(entry_type, str):
+        return entry_type
+    if entry_type is None:
+        return "None"
+    return type(entry_type).__name__
+
+
 def _reject_forbidden_tag_on_other_type(entry: dict[str, Any], use_tag: object) -> None:
     """Raise when a forbidden tag is on a row that is not a fixture row.
 
     clip, synthetic_clip, and code_fixture may carry the tag. Every other
     type, including generator, is an error even when the row has no pHash list.
+    A non-string type is named by its type, not raised as TypeError.
     """
     entry_type = entry.get("type")
-    if entry_type in FIXTURE_ROW_TYPES:
+    if isinstance(entry_type, str) and entry_type in FIXTURE_ROW_TYPES:
         return
-    raise SeparationCheckError(f"FAIL-CLOSED: type '{entry_type}' cannot carry use '{use_tag}'")
+    shown = _shown_row_type(entry_type)
+    raise SeparationCheckError(f"FAIL-CLOSED: type '{shown}' cannot carry use '{use_tag}'")
 
 
 def forbidden_fixtures(
