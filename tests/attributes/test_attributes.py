@@ -454,7 +454,7 @@ class TestAttributeQueryValidation:
     @pytest.mark.parametrize(
         "value", [1, 0, None, np.bool_(True)], ids=["1", "0", "None", "np.bool_"]
     )
-    def test_bag_on_track_int_raises_type_error(self, value: object):
+    def test_bag_on_track_non_bool_raises_type_error(self, value: object):
         """0, 1, None, and np.bool_ are not bools, even when they compare equal."""
         with pytest.raises(TypeError, match="bag_on_track"):
             AttributeQuery.matches(_person(bag=bool(value)), {"bag_on_track": value})
