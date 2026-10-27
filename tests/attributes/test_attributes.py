@@ -450,9 +450,11 @@ class TestAttributeQueryValidation:
         with pytest.raises(TypeError, match="bag_on_track"):
             AttributeQuery.matches(_person(), {"bag_on_track": "yes"})
 
-    @pytest.mark.parametrize("value", [1, 0])
-    def test_bag_on_track_int_raises_type_error(self, value: int):
-        """The integers 0 and 1 are not bools, even when they compare equal."""
+    @pytest.mark.parametrize(
+        "value", [1, 0, None, np.bool_(True)], ids=["1", "0", "None", "np.bool_"]
+    )
+    def test_bag_on_track_int_raises_type_error(self, value: object):
+        """0, 1, None, and np.bool_ are not bools, even when they compare equal."""
         with pytest.raises(TypeError, match="bag_on_track"):
             AttributeQuery.matches(_person(bag=bool(value)), {"bag_on_track": value})
 
@@ -471,11 +473,19 @@ class TestAttributeQueryValidation:
         with pytest.raises(ValueError, match=key):
             AttributeQuery.matches(_person(), {key: value})
 
-    @pytest.mark.parametrize("key", ["upper_color", "lower_color"])
-    def test_non_str_color_raises_type_error(self, key: str):
-        """A non-str colour is a TypeError. The enum lookup must not run."""
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("upper_color", 3),
+            ("lower_color", 3),
+            ("upper_color", None),
+            ("lower_color", None),
+        ],
+    )
+    def test_non_str_color_raises_type_error(self, key: str, value: object):
+        """A non-str colour, including None, is a TypeError."""
         with pytest.raises(TypeError, match=key):
-            AttributeQuery.matches(_person(), {key: 3})
+            AttributeQuery.matches(_person(), {key: value})
 
     def test_mauve_upper_raises_before_low_confidence_reject(self):
         """A bad upper colour raises even when confidence would already reject."""
@@ -496,15 +506,53 @@ class TestAttributeQueryValidation:
         with pytest.raises(TypeError, match="bag_on_track"):
             AttributeQuery.matches(_person(), {"upper_color": "blue", "bag_on_track": "yes"})
 
+    def test_bad_bag_raises_before_lower_mismatch_returns_false(self):
+        """A bad bag flag raises even when the lower colour would not match."""
+        with pytest.raises(TypeError, match="bag_on_track"):
+            AttributeQuery.matches(_person(), {"lower_color": "red", "bag_on_track": "yes"})
+
     def test_bad_lower_color_raises_before_upper_mismatch_returns_false(self):
         """A bad lower colour raises even when the upper colour would not match."""
         with pytest.raises(ValueError, match="lower_color"):
             AttributeQuery.matches(_person(), {"upper_color": "blue", "lower_color": "mauve"})
 
+    def test_bad_lower_raises_before_upper_confidence_reject(self):
+        """A bad lower colour raises even when upper confidence would reject."""
+        person = _person(upper_confidence=0.2)
+        with pytest.raises(ValueError, match="lower_color"):
+            AttributeQuery.matches(
+                person,
+                {"upper_color": "red", "lower_color": "mauve", "min_confidence": 1.0},
+            )
+
+    def test_bad_bag_raises_before_confidence_reject(self):
+        """A bad bag flag raises even when colour confidence would reject."""
+        person = _person(upper_confidence=0.2, lower_confidence=0.2)
+        with pytest.raises(TypeError, match="bag_on_track"):
+            AttributeQuery.matches(
+                person,
+                {
+                    "upper_color": "red",
+                    "lower_color": "blue",
+                    "bag_on_track": "yes",
+                    "min_confidence": 1.0,
+                },
+            )
+
     def test_min_confidence_str_raises_type_error(self):
         """A string threshold is a TypeError, including when no colour is queried."""
         with pytest.raises(TypeError, match="min_confidence"):
             AttributeQuery.matches(_person(), {"min_confidence": "0.5"})
+
+    @pytest.mark.parametrize(
+        "value",
+        [np.float32(0.5), np.int64(0), None],
+        ids=["np.float32", "np.int64", "None"],
+    )
+    def test_min_confidence_numpy_or_none_raises_type_error(self, value: object):
+        """numpy scalars that are not int or float, and None, are a TypeError."""
+        with pytest.raises(TypeError, match="min_confidence"):
+            AttributeQuery.matches(_person(), {"min_confidence": value})
 
     @pytest.mark.parametrize("value", [True, False])
     def test_min_confidence_bool_raises_type_error(self, value: bool):
@@ -535,6 +583,16 @@ class TestAttributeQueryValidation:
         with pytest.raises(TypeError, match="min_confidence"):
             AttributeQuery.matches(_person(), {"upper_color": "mauve", "min_confidence": "high"})
 
+    def test_upper_color_is_checked_before_lower_color(self):
+        """A bad upper colour wins over a bad lower colour of a different type."""
+        with pytest.raises(ValueError, match="upper_color"):
+            AttributeQuery.matches(_person(), {"upper_color": "mauve", "lower_color": 3})
+
+    def test_lower_color_is_checked_before_bag(self):
+        """A bad lower colour wins over a bad bag flag."""
+        with pytest.raises(ValueError, match="lower_color"):
+            AttributeQuery.matches(_person(), {"lower_color": "mauve", "bag_on_track": "yes"})
+
     def test_valid_query_regression(self):
         """Known-good queries keep the same accept and reject results."""
         person = _person(upper_confidence=0.5, lower_confidence=0.4)
@@ -561,6 +619,7 @@ class TestAttributeQueryValidation:
         assert AttributeQuery.matches(person, {"min_confidence": 1}) is True
         assert AttributeQuery.matches(person, {"min_confidence": 0.0}) is True
         assert AttributeQuery.matches(person, {"min_confidence": 1.0}) is True
+        assert AttributeQuery.matches(person, {"min_confidence": np.float64(0.4)}) is True
         assert AttributeQuery.matches(person, {"bag_on_track": True, "min_confidence": 1.0}) is True
         assert (
             AttributeQuery.matches(
