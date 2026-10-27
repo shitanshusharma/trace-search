@@ -411,9 +411,9 @@ def test_two_subprocesses_write_the_same_bytes(tmp_path: Path) -> None:
         ]
     )
 
-    def run(name: str) -> str:
+    def run(dirname: str) -> str:
         completed = subprocess.run(
-            [sys.executable, "-c", program, str(tmp_path / name)],
+            [sys.executable, "-c", program, str(tmp_path / dirname)],
             check=True,
             capture_output=True,
             text=True,
