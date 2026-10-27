@@ -19,16 +19,20 @@ They were not tuned against any stock clip.
 
 An attribute counts only when both tracks know it. ``UNKNOWN`` and ``None``
 are not known. Share is the number agreeing divided by the number known.
-With 0 known attributes, share is 0. Each camera pair is assigned one-to-one
-with the Hungarian method on ``-score``. Pairs under ``min_score`` are then
-dropped. Equal totals break on ``(camera_id, track_id)``. The Hungarian
-step uses ``-score`` with no tie-break penalty. Two totals are equal when
-``math.isclose`` says so with ``rel_tol`` 0 and ``abs_tol`` ``1e-12`` times
-the longer side of the grid. Exits are walked in ``(camera_id, track_id)``
-order, and the first entry in that order that still lets the remaining
-rows reach the optimal total is fixed. When every cell has the same score,
-that pairing is the diagonal of the sorted rows and columns, so a large
-tied grid does not re-solve.
+With 0 known attributes, share is 0. Each camera pair is assigned one-to-one.
+The Hungarian step uses ``-score`` with no tie-break penalty. A missing cell,
+a pair outside the window, and a score below ``min_score`` are infeasible
+and are never chosen. A row may stay unmatched. That unmatched row costs
+nothing, so the first solve is the optimal total of the valid links even
+when some cells are missing. Equal totals break on ``(camera_id, track_id)``.
+Two totals are equal when ``math.isclose`` says so with ``rel_tol`` 0 and
+``abs_tol`` ``1e-12`` times the longer side of the grid. When that optimum
+is unique, the tie walk does not run. Otherwise exits are walked in
+``(camera_id, track_id)`` order, and the first entry in that order that
+still reaches the optimal total is fixed. The walk uses the tight edges of
+the optimum, so it does not re-solve every row. When every feasible cell
+has the same score, that pairing is the diagonal of the sorted rows and
+columns, so a large tied grid does not re-solve.
 
 ``MIN_SCORE`` of 0 keeps every mapped score, including 0. Pairs are dropped
 only when the score is strictly under the floor, and the map cannot be
@@ -80,8 +84,13 @@ ATTR_WEIGHT = 1.0
 # drift and below a 1e-5 score gap. Not a similarity threshold.
 _TOTAL_ABS_TOL_PER_ROW = 1e-12
 
-# Above every feasible cost. Feasible costs sit in about [-1, 0].
+# Infeasible cost. Feasible costs sit in [-1, 0] and an unmatched row costs
+# 0, so a blocked cell is never chosen instead of leaving the row unmatched.
 _BLOCKED = 2.0
+
+# Reduced cost at or below this is a tight edge of the optimum. It sits
+# well below a 1e-5 score gap. Totals still use ``_TOTAL_ABS_TOL_PER_ROW``.
+_REDUCED_COST_TOL = 1e-12
 
 __all__ = (
     "ATTR_WEIGHT",
@@ -199,8 +208,9 @@ def topology_mask(
     """Return a gallery mask. True keeps the pair when the topology allows it.
 
     The caller's time_of maps a query item to its EXIT time and a gallery
-    item to its ENTRY time. A false result excludes that gallery item for
-    that query. The mask is not evidence for AC-06.
+    item to its ENTRY time. A same-camera pair is masked out because
+    ``allows`` needs a directed edge. A false result excludes that gallery
+    item for that query. The mask is not evidence for AC-06.
     """
 
     def _allow(query: EvalItem, gallery: EvalItem) -> bool:
@@ -322,7 +332,8 @@ def _vectors_from_store(
 ) -> dict[TrackKey, tuple[float, ...]]:
     """One vector per track inside ``run_id`` and ``derived_from``.
 
-    Lowest frame wins, then the smaller vector tuple. ``k`` must be
+    The lowest frame wins. Two rows for one track at that same frame are
+    refused, rather than picking a vector by tuple order. ``k`` must be
     positive, so an empty scoped store is returned without a search.
     """
     total = reader.count(derived_from=derived_from, run_id=run_id)
@@ -350,10 +361,14 @@ def _keep_earliest(
 ) -> None:
     key = (embedding.camera_id, embedding.track_id)
     vector = _as_vector(tuple(embedding.vector))
-    candidate = (embedding.frame_number, vector)
     current = chosen.get(key)
-    if current is None or candidate < current:
-        chosen[key] = candidate
+    if current is None or embedding.frame_number < current[0]:
+        chosen[key] = (embedding.frame_number, vector)
+        return
+    if embedding.frame_number == current[0]:
+        raise ValueError(
+            f"duplicate appearance for track {key!r} at frame {embedding.frame_number}"
+        )
 
 
 def _attribute_table(
@@ -486,7 +501,7 @@ def _links_for_edge(
     attr_weight: float,
 ) -> list[Link]:
     scores = _score_grid(exits, entries, vectors, attributes, topology, attr_weight)
-    chosen = _assign(_cost_matrix(scores))
+    chosen = _assign(_cost_matrix(scores, min_score=min_score))
     return _keep_assigned(exits, entries, scores, chosen, min_score)
 
 
@@ -542,182 +557,228 @@ def _map_score(cosine: float, share: float, attr_weight: float) -> float:
     return ((bounded + 1.0) / 2.0 + attr_weight * share) / (1.0 + attr_weight)
 
 
-def _cost_matrix(scores: Sequence[Sequence[float | None]]) -> npt.NDArray[np.float64]:
-    """Hungarian cost is ``-score``. A missing pair is blocked. No tie penalty."""
+def _cost_matrix(
+    scores: Sequence[Sequence[float | None]],
+    *,
+    min_score: float = 0.0,
+) -> npt.NDArray[np.float64]:
+    """Cost is ``-score`` for a valid link and 0 for leaving a row unmatched.
+
+    A missing cell or a score below ``min_score`` is blocked. Blocked is
+    worse than unmatched, so those cells are never chosen. One dummy column
+    per row is the unmatched choice. There is no tie-break penalty.
+    """
     row_count = len(scores)
     column_count = len(scores[0]) if row_count else 0
-    cost = np.zeros((row_count, column_count), dtype=np.float64)
+    width = column_count + row_count
+    cost = np.full((row_count, width), _BLOCKED, dtype=np.float64)
     for row, row_scores in enumerate(scores):
         for column, score in enumerate(row_scores):
-            cost[row, column] = _cell_cost(score)
+            cost[row, column] = _cell_cost(score, min_score)
+        cost[row, column_count + row] = 0.0
     return cast(npt.NDArray[np.float64], cost)
 
 
-def _cell_cost(score: float | None) -> float:
-    if score is None:
+def _cell_cost(score: float | None, min_score: float) -> float:
+    if score is None or score < min_score:
         return _BLOCKED
-    return -score
+    return -float(score)
 
 
 def _assign(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
-    """Optimal assignment, then the lexicographic tie on ``(camera_id, track_id)``.
+    """Optimal valid links, then the lexicographic tie on column order.
 
-    Rows and columns are already in that order. A grid whose every cell has
-    the same score is paired on the diagonal, so a large exact tie does not
-    re-solve. Any other tie walks the rows and keeps a column only when the
-    remaining subproblem still reaches the optimal total.
+    Columns before the dummy block are the real entries. Rows and those
+    columns are already in ``(camera_id, track_id)`` order. A uniform real
+    block is the diagonal, so a large exact tie does not re-solve. A unique
+    optimum keeps the Hungarian matching and skips the tie walk. Any other
+    tie is broken on the tight edges of that same optimum.
     """
-    if cost.shape[0] == 0 or cost.shape[1] == 0:
+    row_count = int(cost.shape[0])
+    width = int(cost.shape[1])
+    if row_count == 0 or width == 0:
         return []
-    if _uniform_scores(cost):
-        return _diagonal_pairs(cost)
-    return _lex_among_optimal(cost)
+    real = width - row_count
+    if real <= 0:
+        return []
+    if _uniform_real(cost, real):
+        return _diagonal_pairs(min(row_count, real))
+    return _lex_optimal(cost, real)
 
 
-def _uniform_scores(cost: npt.NDArray[np.float64]) -> bool:
-    """True when every cell is feasible and the costs are identical."""
-    if cost.size == 0:
-        return True
-    first = float(cost[0, 0])
+def _uniform_real(cost: npt.NDArray[np.float64], real: int) -> bool:
+    """True when every real cell is feasible and the costs are identical."""
+    block = cost[:, :real]
+    if block.size == 0:
+        return False
+    first = float(block[0, 0])
     if not math.isfinite(first) or first >= _BLOCKED:
         return False
-    return bool(np.all(np.equal(cost, first)))
+    return bool(np.all(np.equal(block, first)))
 
 
-def _diagonal_pairs(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
-    """Smallest rows with the smallest columns. The sorted order is the diagonal."""
-    width = min(int(cost.shape[0]), int(cost.shape[1]))
+def _diagonal_pairs(width: int) -> list[tuple[int, int]]:
+    """Smallest rows with the smallest columns."""
     return [(index, index) for index in range(width)]
 
 
-def _lex_among_optimal(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
-    seed = _hungarian(cost)
-    optimal = _pair_sum(cost, seed)
-    return _walk_rows(cost, optimal)
+def _lex_optimal(cost: npt.NDArray[np.float64], real: int) -> list[tuple[int, int]]:
+    columns = _matched_columns(cost)
+    slack = _reduced_slack(cost, columns)
+    if _one_tight_column(slack, columns):
+        return _real_pairs(columns, real)
+    chosen = _lex_tight(_tight_mask(slack, columns), columns)
+    _require_same_total(cost, columns, chosen)
+    return _real_pairs(chosen, real)
 
 
-def _walk_rows(cost: npt.NDArray[np.float64], optimal: float) -> list[tuple[int, int]]:
-    open_rows = list(range(int(cost.shape[0])))
-    open_cols = list(range(int(cost.shape[1])))
-    fixed: list[tuple[int, int]] = []
-    side = max(int(cost.shape[0]), int(cost.shape[1]))
-    for row in range(int(cost.shape[0])):
-        open_rows = [item for item in open_rows if item != row]
-        column = _first_column(cost, row, open_rows, open_cols, fixed, optimal, side)
-        if column is None:
-            _require_still_optimal(cost, fixed, open_rows, open_cols, optimal, side)
-            continue
-        fixed.append((row, column))
-        open_cols = [item for item in open_cols if item != column]
-    return fixed
+def _matched_columns(cost: npt.NDArray[np.float64]) -> list[int]:
+    columns = [-1] * int(cost.shape[0])
+    for row, column in _hungarian(cost):
+        columns[row] = column
+    if any(column < 0 for column in columns):
+        raise ValueError("assignment left a row without a column")
+    return columns
 
 
-def _first_column(
+def _reduced_slack(
     cost: npt.NDArray[np.float64],
-    row: int,
-    open_rows: Sequence[int],
-    open_cols: Sequence[int],
-    fixed: Sequence[tuple[int, int]],
-    optimal: float,
-    side: int,
-) -> int | None:
-    for column in open_cols:
-        rest = [item for item in open_cols if item != column]
-        trial = [*fixed, (row, column)]
-        if _reaches(cost, trial, open_rows, rest, optimal, side):
-            return column
-    return None
+    columns: Sequence[int],
+) -> npt.NDArray[np.float64]:
+    """Slack of an optimal dual. A tight edge has slack near 0."""
+    row_count = int(cost.shape[0])
+    width = int(cost.shape[1])
+    matched = np.empty(row_count, dtype=np.float64)
+    for row, column in enumerate(columns):
+        matched[row] = float(cost[row, column])
+    dual_v = np.zeros(width, dtype=np.float64)
+    index = np.asarray(list(columns), dtype=np.int64)
+    for _step in range(width):
+        base = dual_v[index] - matched
+        candidate = np.min(cost + base[:, None], axis=0)
+        updated = np.minimum(dual_v, candidate)
+        if bool(np.allclose(updated, dual_v, rtol=0.0, atol=_REDUCED_COST_TOL)):
+            dual_v = updated
+            break
+        dual_v = updated
+    dual_u = matched - dual_v[index]
+    slack = cost - dual_u[:, None] - dual_v[None, :]
+    if float(np.min(slack)) < -1e-8:
+        raise ValueError("assignment duals are not feasible")
+    return cast(npt.NDArray[np.float64], slack)
 
 
-def _require_still_optimal(
+def _one_tight_column(slack: npt.NDArray[np.float64], columns: Sequence[int]) -> bool:
+    """True when each row has one tight column, so the optimum is unique."""
+    counts = np.count_nonzero(_tight_mask(slack, columns), axis=1)
+    return bool(np.all(counts == 1))
+
+
+def _tight_mask(
+    slack: npt.NDArray[np.float64],
+    columns: Sequence[int],
+) -> npt.NDArray[np.bool_]:
+    tight = np.array(np.less_equal(slack, _REDUCED_COST_TOL), dtype=bool)
+    for row, column in enumerate(columns):
+        tight[row, column] = True
+    return cast(npt.NDArray[np.bool_], tight)
+
+
+def _real_pairs(columns: Sequence[int], real: int) -> list[tuple[int, int]]:
+    return [(row, column) for row, column in enumerate(columns) if 0 <= column < real]
+
+
+def _require_same_total(
     cost: npt.NDArray[np.float64],
-    fixed: Sequence[tuple[int, int]],
-    open_rows: Sequence[int],
-    open_cols: Sequence[int],
-    optimal: float,
-    side: int,
+    left: Sequence[int],
+    right: Sequence[int],
 ) -> None:
-    if _reaches(cost, fixed, open_rows, open_cols, optimal, side):
+    side = _score_side(cost)
+    if _totals_equal(_selection_sum(cost, left), _selection_sum(cost, right), side):
         return
     raise ValueError("assignment lost the optimal score total")
 
 
-def _reaches(
-    cost: npt.NDArray[np.float64],
-    fixed: Sequence[tuple[int, int]],
-    open_rows: Sequence[int],
-    open_cols: Sequence[int],
-    optimal: float,
-    side: int,
+def _score_side(cost: npt.NDArray[np.float64]) -> int:
+    """Longer side of the score grid, ignoring the unmatched dummy columns."""
+    rows = int(cost.shape[0])
+    real = int(cost.shape[1]) - rows
+    return max(rows, real, 1)
+
+
+def _selection_sum(cost: npt.NDArray[np.float64], columns: Sequence[int]) -> float:
+    total = 0.0
+    for row, column in enumerate(columns):
+        if column < 0:
+            continue
+        total += float(cost[row, column])
+    return total
+
+
+def _lex_tight(tight: npt.NDArray[np.bool_], columns: Sequence[int]) -> list[int]:
+    """Lexicographically smallest row-perfect matching on tight edges."""
+    width = int(tight.shape[1])
+    adjacency = _adjacency(tight)
+    owner = [-1] * width
+    chosen = list(columns)
+    for row, column in enumerate(chosen):
+        if column >= 0:
+            owner[column] = row
+    for row in range(len(chosen)):
+        _place_row(adjacency, owner, chosen, row, width)
+    return chosen
+
+
+def _adjacency(tight: npt.NDArray[np.bool_]) -> list[list[int]]:
+    adjacency: list[list[int]] = []
+    for row in range(int(tight.shape[0])):
+        found = np.flatnonzero(tight[row])
+        adjacency.append([int(item) for item in found])
+    return adjacency
+
+
+def _place_row(
+    adjacency: Sequence[Sequence[int]],
+    owner: list[int],
+    chosen: list[int],
+    row: int,
+    width: int,
+) -> None:
+    current = chosen[row]
+    if current >= 0:
+        owner[current] = -1
+        chosen[row] = -1
+    seen = [False] * width
+    if _dfs_tight(adjacency, owner, chosen, row, row, seen):
+        return
+    chosen[row] = -1
+
+
+def _dfs_tight(
+    adjacency: Sequence[Sequence[int]],
+    owner: list[int],
+    chosen: list[int],
+    row: int,
+    locked: int,
+    seen: list[bool],
 ) -> bool:
-    if _too_costly(cost, fixed, open_rows, open_cols, optimal, side):
-        return False
-    total = _pair_sum(cost, fixed) + _sub_sum(cost, open_rows, open_cols)
-    return _totals_equal(total, optimal, side)
-
-
-def _too_costly(
-    cost: npt.NDArray[np.float64],
-    fixed: Sequence[tuple[int, int]],
-    open_rows: Sequence[int],
-    open_cols: Sequence[int],
-    optimal: float,
-    side: int,
-) -> bool:
-    """True when even the cheapest completion is above the optimal total."""
-    optimistic = _pair_sum(cost, fixed) + _row_min_bound(cost, open_rows, open_cols)
-    limit = _TOTAL_ABS_TOL_PER_ROW * max(side, 1)
-    return optimistic > optimal + limit
-
-
-def _row_min_bound(
-    cost: npt.NDArray[np.float64],
-    rows: Sequence[int],
-    cols: Sequence[int],
-) -> float:
-    """Sum of the best row costs, ignoring column clashes. A lower bound."""
-    if not rows or not cols:
-        return 0.0
-    best = [min(float(cost[row, column]) for column in cols) for row in rows]
-    best.sort()
-    take = min(len(rows), len(cols))
-    return sum(best[:take])
-
-
-def _sub_sum(
-    cost: npt.NDArray[np.float64],
-    rows: Sequence[int],
-    cols: Sequence[int],
-) -> float:
-    if not rows or not cols:
-        return 0.0
-    sub = _submatrix(cost, rows, cols)
-    if _uniform_scores(sub):
-        width = min(len(rows), len(cols))
-        return width * float(sub[0, 0])
-    return _pair_sum(sub, _hungarian(sub))
-
-
-def _submatrix(
-    cost: npt.NDArray[np.float64],
-    rows: Sequence[int],
-    cols: Sequence[int],
-) -> npt.NDArray[np.float64]:
-    picked = cost[np.ix_(list(rows), list(cols))]
-    return cast(npt.NDArray[np.float64], np.asarray(picked, dtype=np.float64))
+    for column in adjacency[row]:
+        if seen[column]:
+            continue
+        seen[column] = True
+        previous = owner[column]
+        moved = previous >= locked and _dfs_tight(adjacency, owner, chosen, previous, locked, seen)
+        if previous == -1 or moved:
+            owner[column] = row
+            chosen[row] = column
+            return True
+    return False
 
 
 def _totals_equal(left: float, right: float, side: int) -> bool:
     """Equal within ``1e-12`` times the longer grid side. Not a 1e-4 gap."""
     limit = _TOTAL_ABS_TOL_PER_ROW * max(side, 1)
     return math.isclose(left, right, rel_tol=0.0, abs_tol=limit)
-
-
-def _pair_sum(cost: npt.NDArray[np.float64], pairs: Sequence[tuple[int, int]]) -> float:
-    total = 0.0
-    for row, column in pairs:
-        total += float(cost[row, column])
-    return total
 
 
 def _hungarian(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
@@ -765,16 +826,21 @@ def _link_between(exit_item: Tracklet, entry_item: Tracklet, score: float) -> Li
 
 
 def _cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
+    """Cosine after scaling each vector by ``math.hypot``.
+
+    Squaring a tiny or huge component underflows or overflows. The scale
+    keeps any finite non-zero vector in range.
+    """
     if len(left) != len(right):
         raise ValueError(f"vectors must have the same length, got {len(left)} and {len(right)}")
+    left_scale = math.hypot(*left)
+    right_scale = math.hypot(*right)
+    if left_scale == 0.0 or right_scale == 0.0:
+        raise ValueError("vector must be non-zero")
     dot = 0.0
-    left_sq = 0.0
-    right_sq = 0.0
     for first, second in zip(left, right, strict=True):
-        dot += first * second
-        left_sq += first * first
-        right_sq += second * second
-    return dot / math.sqrt(left_sq * right_sq)
+        dot += (first / left_scale) * (second / right_scale)
+    return dot
 
 
 def _share(left: _AttrTriple | None, right: _AttrTriple | None) -> float:
@@ -845,7 +911,7 @@ def _as_vector(value: object) -> tuple[float, ...]:
     numbers = tuple(_finite_component(item) for item in value)
     if len(numbers) == 0:
         raise ValueError("vector must be non-empty")
-    if _squared_length(numbers) == 0.0:
+    if math.hypot(*numbers) == 0.0:
         raise ValueError("vector must be non-zero")
     return numbers
 
@@ -857,13 +923,6 @@ def _finite_component(value: object) -> float:
     if not math.isfinite(number):
         raise ValueError(f"vector component must be finite, got {number}")
     return number
-
-
-def _squared_length(values: tuple[float, ...]) -> float:
-    total = 0.0
-    for value in values:
-        total += value * value
-    return total
 
 
 def _track_key(value: object) -> TrackKey:

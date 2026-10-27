@@ -75,6 +75,7 @@ class Diagnostics(TypedDict):
     mAP: float | None
     num_query: int | None
     num_valid_query: int | None
+    num_masked_out: int | None
     num_gallery: int | None
     topology_time_limits: str
 
@@ -241,6 +242,7 @@ def _measured(
         scored.mean_ap,
         scored.num_query,
         scored.num_valid_query,
+        scored.num_masked_out,
         scored.num_gallery,
         _topology_note(gallery_mask),
     )
@@ -253,7 +255,7 @@ def _topology_note(gallery_mask: GalleryMask | None) -> str:
 
 
 def _null_result(fixture_id: str) -> Ac06RunResult:
-    return _payload(fixture_id, None, None, None, None, None)
+    return _payload(fixture_id, None, None, None, None, None, None)
 
 
 def _payload(
@@ -262,6 +264,7 @@ def _payload(
     mean_ap: float | None,
     num_query: int | None,
     num_valid_query: int | None,
+    num_masked_out: int | None,
     num_gallery: int | None,
     topology_time_limits: str = _TOPOLOGY_NOTE,
 ) -> Ac06RunResult:
@@ -278,6 +281,7 @@ def _payload(
             mean_ap,
             num_query,
             num_valid_query,
+            num_masked_out,
             num_gallery,
             topology_time_limits,
         ),
@@ -313,6 +317,7 @@ def _diagnostics(
     mean_ap: float | None,
     num_query: int | None,
     num_valid_query: int | None,
+    num_masked_out: int | None,
     num_gallery: int | None,
     topology_time_limits: str,
 ) -> Diagnostics:
@@ -322,6 +327,7 @@ def _diagnostics(
         "mAP": mean_ap,
         "num_query": num_query,
         "num_valid_query": num_valid_query,
+        "num_masked_out": num_masked_out,
         "num_gallery": num_gallery,
         "topology_time_limits": topology_time_limits,
     }

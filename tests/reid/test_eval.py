@@ -45,6 +45,7 @@ _JSON_KEYS = (
     "cmc_top5",
     "num_query",
     "num_valid_query",
+    "num_masked_out",
     "num_gallery",
     "evidence",
     "note",
@@ -298,7 +299,7 @@ def test_masking_the_only_true_match_does_not_inflate_rank1() -> None:
     assert result.num_invalid_query == 1
     assert result.rank1 == 0.5
     assert result.mean_ap == 0.5
-    assert "num_masked_out" not in result.as_json()
+    assert result.as_json()["num_masked_out"] == 1
     assert tuple(result.as_json()) == _JSON_KEYS
 
 

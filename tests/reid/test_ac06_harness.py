@@ -39,6 +39,7 @@ _DIAGNOSTIC_KEYS = (
     "mAP",
     "num_query",
     "num_valid_query",
+    "num_masked_out",
     "num_gallery",
     "topology_time_limits",
 )
@@ -47,6 +48,7 @@ _NULL_DIAGNOSTIC_FIELDS = (
     "mAP",
     "num_query",
     "num_valid_query",
+    "num_masked_out",
     "num_gallery",
 )
 # Fullwidth FX and digits. NFKC folds these; Arabic-Indic digits stay.
@@ -260,6 +262,7 @@ def test_hold_hand_built_diagnostics_match_rank1_and_map() -> None:
     assert diagnostics["mAP"] == expected.mean_ap
     assert diagnostics["num_query"] == 3
     assert diagnostics["num_valid_query"] == 3
+    assert diagnostics["num_masked_out"] == 0
     assert diagnostics["num_gallery"] == 5
     _exact(diagnostics["rank1"], Fraction(2, 3))
     _exact(diagnostics["mAP"], Fraction(5, 6))
@@ -329,6 +332,7 @@ def test_gallery_mask_is_applied() -> None:
     assert result["status"] == "DEFERRED"
     assert result["ac06_score"] is None
     assert diagnostics["rank1"] == 1.0
+    assert diagnostics["num_masked_out"] == 0
     assert "not evidence" in str(diagnostics["note"])
     assert diagnostics["topology_time_limits"] == "applied via gallery_mask; not evidence"
     unit_calls: list[tuple[EvalItem, EvalItem]] = []

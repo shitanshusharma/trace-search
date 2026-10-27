@@ -5,8 +5,10 @@ No footage, no files written into the repo tree, and no network.
 
 from __future__ import annotations
 
+import random
 import socket
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
@@ -689,10 +691,13 @@ def test_module_docstring_states_the_score_limits() -> None:
     assert "no tie-break penalty" in text
     assert "1e-12" in text
     assert "longer side of the grid" in text
+    assert "the first solve is the optimal total" in text
     assert "differ in ``run_id`` or ``det_class`` is skipped" in text
     assert "not linked to a handbag track" in text
     mask_text = " ".join((topology_mask.__doc__ or "").split())
     assert "maps a query item to its EXIT time and a gallery item to its ENTRY time" in mask_text
+    assert "same-camera pair is masked out" in mask_text
+    assert "directed edge" in mask_text
     source = Path(link_tracklets.__code__.co_filename).read_text(encoding="utf-8")
     assert "describe_tracks" not in source
     lowered = source.lower()
@@ -714,6 +719,7 @@ def test_topology_mask_excludes_a_pair_from_the_gallery() -> None:
     gallery = [outside, inside_other]
     assert mask(query[0], outside) is False
     assert mask(query[0], inside_other) is True
+    assert mask(query[0], query[0]) is False
     plain = rank1_map(query, gallery)
     masked = rank1_map(query, gallery, gallery_mask=mask)
     assert plain.rank1 == 1.0
@@ -732,7 +738,9 @@ def test_topology_mask_excludes_a_pair_from_the_gallery() -> None:
     assert result["status"] == "DEFERRED"
     assert result["ac06_score"] is None
     assert diagnostics["rank1"] == 0.0
+    assert diagnostics["num_masked_out"] == 1
     assert diagnostics["num_gallery"] == 2
+    assert masked.as_json()["num_masked_out"] == 1
     assert "not evidence" in str(diagnostics["note"])
     assert "not evidence" in str(diagnostics["topology_time_limits"])
     early = EvalItem("cam-b", 4, 1, _EAST)
@@ -813,22 +821,23 @@ def test_an_exit_skips_the_entry_outside_the_window() -> None:
 
 
 def test_store_read_uses_only_the_requested_run_and_origin(tmp_path: Path) -> None:
-    """A second run and a SMOKE row with the same key must not enter a CODE_TEST link."""
+    """A leaked opposite vector on one side must not change the scoped link.
+
+    The SMOKE row and the foreign-run row are earlier than the CODE_TEST
+    vector and point west. The other side has only the scoped north vector.
+    An unscoped read keeps that west vector, and the score is no longer 1.
+    """
     tracklets = (
         _tracklet("cam-a", 1, 0.0, 0.0),
         _tracklet("cam-b", 2, 15.0, 15.0),
     )
     vectors = InMemoryVectorStore(2)
     vectors.add("run-1", "SMOKE", (_embedding("cam-a", 1, 0, _WEST),))
-    vectors.add("run-2", "CODE_TEST", (_embedding("cam-a", 1, 1, _EAST),))
+    vectors.add("run-2", "CODE_TEST", (_embedding("cam-a", 1, 1, _WEST),))
     vectors.add("run-1", "CODE_TEST", (_embedding("cam-a", 1, 5, _NORTH),))
-    vectors.add("run-2", "CODE_TEST", (_embedding("cam-b", 2, 0, _WEST),))
-    vectors.add("run-1", "SMOKE", (_embedding("cam-b", 2, 0, _EAST),))
-    vectors.add("run-1", "CODE_TEST", (_embedding("cam-b", 2, 5, _NORTH),))
+    vectors.add("run-1", "CODE_TEST", (_embedding("cam-b", 2, 4, _NORTH),))
     attributes = TrackAttributeStore(tmp_path / "attrs.sqlite")
     _write_attr(attributes, "cam-a", 1, "red", "blue", True)
-    _write_attr(attributes, "cam-a", 1, "green", "black", False, derived_from="SMOKE")
-    _write_attr(attributes, "cam-a", 1, "green", "black", False, run_id="run-2")
     _write_attr(attributes, "cam-b", 2, "red", "blue", True)
     links = link_tracklets(
         tracklets,
@@ -838,8 +847,15 @@ def test_store_read_uses_only_the_requested_run_and_origin(tmp_path: Path) -> No
         run_id=_RUN,
         derived_from="CODE_TEST",
     )
-    assert _pairs(links) == {("cam-a", 1, "cam-b", 2)}
-    assert links[0].score == 1.0
+    assert len(links) == 1
+    link = links[0]
+    assert (link.from_camera, link.from_track, link.to_camera, link.to_track) == (
+        "cam-a",
+        1,
+        "cam-b",
+        2,
+    )
+    assert link.score == 1.0
 
 
 def test_store_read_requires_run_and_derived_from() -> None:
@@ -964,6 +980,280 @@ def test_large_exact_tie_follows_track_id_order() -> None:
     assert _pairs(links) == {
         ("cam-a", track_id, "cam-b", track_id) for track_id in range(1, count + 1)
     }
+
+
+def test_an_out_of_window_cell_does_not_drop_the_best_link() -> None:
+    """The strong in-window pair wins at both floors. The weak fill does not."""
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 5.0),
+        _tracklet("cam-a", 2, 0.0, 0.0),
+        _tracklet("cam-b", 1, 15.0, 15.0),
+        _tracklet("cam-b", 2, 25.0, 25.0),
+    )
+    vectors = {
+        ("cam-a", 1): (1.0, 0.0),
+        ("cam-a", 2): (0.0, 1.0),
+        ("cam-b", 1): (1.0, 0.0),
+        ("cam-b", 2): (-0.4, 0.917),
+    }
+    expected = {("cam-a", 1, "cam-b", 1)}
+    for floor in (0.0, 0.4):
+        links = link_tracklets(
+            tracklets,
+            _window(),
+            vectors,
+            {},
+            attr_weight=0.0,
+            min_score=floor,
+        )
+        assert _pairs(links) == expected
+        assert len(links) == 1
+        assert links[0].score == 1.0
+
+
+def test_minimal_grid_keeps_the_higher_valid_cell() -> None:
+    """0.3 is under the floor, so the 0.9 cell wins and the 0.50001 cell loses."""
+    grid = [[0.9, 0.3], [0.50001, None]]
+    assert _assign(_cost_matrix(grid, min_score=0.4)) == [(0, 0)]
+
+
+def test_tiny_gap_on_the_public_path_beats_track_order() -> None:
+    """Hand-built vectors. The crossed total is about 1e-5 above track order."""
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 0.0),
+        _tracklet("cam-a", 2, 0.0, 0.0),
+        _tracklet("cam-b", 1, 15.0, 15.0),
+        _tracklet("cam-b", 2, 15.0, 15.0),
+    )
+    vectors = {
+        ("cam-a", 1): (0.7999999999999999, 0.5870499914126416, 0.12398511032546398),
+        ("cam-a", 2): (0.80001, 0.5870363637097642, 0.12398511032546398),
+        ("cam-b", 1): (1.0, 0.0, 0.0),
+        ("cam-b", 2): (0.3, 0.9539392014169457, 0.0),
+    }
+    links = link_tracklets(tracklets, _window(), vectors, {}, attr_weight=0.0)
+    assert [(link.from_track, link.to_track) for link in links] == [(1, 2), (2, 1)]
+    assert abs((links[0].score + links[1].score) - 1.80001) < 1e-8
+
+
+def test_assignment_matches_brute_force_partial_matchings() -> None:
+    """A few hundred small grids, including gaps and ties, match exhaustive search."""
+    rng = random.Random(20261027)
+    for _case in range(300):
+        row_count = rng.randint(1, 4)
+        column_count = rng.randint(1, 4)
+        grid: list[list[float | None]] = []
+        for _row in range(row_count):
+            row: list[float | None] = []
+            for _column in range(column_count):
+                if rng.random() < 0.2:
+                    row.append(None)
+                elif rng.random() < 0.3:
+                    row.append(rng.choice((0.0, 0.5, 1.0)))
+                else:
+                    row.append(rng.random())
+            grid.append(row)
+        floor = rng.choice((0.0, 0.0, 0.4))
+        assert _assign(_cost_matrix(grid, min_score=floor)) == _brute_assignment(grid, floor)
+
+
+def test_mostly_tied_grid_finishes_within_five_seconds() -> None:
+    """200 by 200 scores on three levels. The tie pass runs, and it stays fast."""
+    rng = random.Random(11)
+    scores = [[rng.choice((0.5, 0.51, 0.52)) for _column in range(200)] for _row in range(200)]
+    distinct = {value for row in scores for value in row}
+    assert len(distinct) > 1
+    started = time.perf_counter()
+    first = _assign(_cost_matrix(scores))
+    elapsed = time.perf_counter() - started
+    second = _assign(_cost_matrix(scores))
+    assert first == second
+    assert len(first) == 200
+    assert elapsed < 5.0
+
+
+def test_large_random_grid_stays_fast() -> None:
+    """A 200 by 200 grid of distinct scores is one solve and finishes quickly."""
+    rng = random.Random(3)
+    scores = [[rng.random() for _column in range(200)] for _row in range(200)]
+    started = time.perf_counter()
+    first = _assign(_cost_matrix(scores))
+    elapsed = time.perf_counter() - started
+    assert _assign(_cost_matrix(scores)) == first
+    assert elapsed < 5.0
+
+
+def test_tiny_and_huge_vectors_have_a_finite_cosine() -> None:
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 0.0),
+        _tracklet("cam-b", 2, 15.0, 15.0),
+    )
+    tiny = link_tracklets(
+        tracklets,
+        _window(),
+        {("cam-a", 1): (1e-160,), ("cam-b", 2): (1e-160,)},
+        {},
+        attr_weight=0.0,
+    )
+    huge = link_tracklets(
+        tracklets,
+        _window(),
+        {("cam-a", 1): (1e200, 1e200), ("cam-b", 2): (1e200, 1e200)},
+        {},
+        attr_weight=0.0,
+    )
+    opposite = link_tracklets(
+        tracklets,
+        _window(),
+        {("cam-a", 1): (1e200,), ("cam-b", 2): (-1e200,)},
+        {},
+        attr_weight=0.0,
+    )
+    assert tiny[0].score == pytest.approx(1.0)
+    assert huge[0].score == pytest.approx(1.0)
+    assert opposite[0].score == pytest.approx(0.0)
+
+
+def test_non_finite_vector_components_are_refused() -> None:
+    tracklets = _gap_tracklets(15.0)
+    with pytest.raises(TypeError, match="finite float"):
+        link_tracklets(
+            tracklets,
+            _window(),
+            {("cam-a", 1): (True,), ("cam-b", 2): (1.0,)},
+            {},
+        )
+    with pytest.raises(ValueError, match="finite"):
+        link_tracklets(
+            tracklets,
+            _window(),
+            {("cam-a", 1): (float("nan"),), ("cam-b", 2): (1.0,)},
+            {},
+        )
+    with pytest.raises(ValueError, match="finite"):
+        link_tracklets(
+            tracklets,
+            _window(),
+            {("cam-a", 1): (float("inf"),), ("cam-b", 2): (1.0,)},
+            {},
+        )
+
+
+def test_missing_attribute_keys_count_as_unknown() -> None:
+    class _Bare:
+        """A record with none of the attribute names."""
+
+    tracklets = _gap_tracklets(15.0)
+    links = link_tracklets(
+        tracklets,
+        _window(),
+        {("cam-a", 1): _EAST, ("cam-b", 2): _EAST},
+        {("cam-a", 1): {}, ("cam-b", 2): _Bare()},
+    )
+    assert len(links) == 1
+    assert links[0].score == 0.5
+
+
+def test_a_destination_with_no_tracks_adds_no_link() -> None:
+    topology = _topology(
+        (("cam-a", "cam-b", 10.0, 20.0), ("cam-a", "cam-c", 10.0, 20.0)),
+    )
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 0.0),
+        _tracklet("cam-b", 2, 15.0, 15.0),
+    )
+    links = link_tracklets(
+        tracklets,
+        topology,
+        {("cam-a", 1): _EAST, ("cam-b", 2): _EAST},
+        {},
+    )
+    assert _pairs(links) == {("cam-a", 1, "cam-b", 2)}
+
+
+def test_lowest_frame_wins_and_the_same_frame_is_refused(tmp_path: Path) -> None:
+    """The earlier frame wins even when its vector tuple sorts later."""
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 0.0),
+        _tracklet("cam-b", 2, 15.0, 15.0),
+    )
+    store = InMemoryVectorStore(2)
+    store.add(
+        _RUN,
+        "CODE_TEST",
+        (
+            _embedding("cam-a", 1, 0, _EAST),
+            _embedding("cam-a", 1, 3, (-0.6, 0.8)),
+            _embedding("cam-b", 2, 0, _EAST),
+        ),
+    )
+    attributes = TrackAttributeStore(tmp_path / "earliest.sqlite")
+    links = link_tracklets(
+        tracklets,
+        _window(),
+        store,
+        attributes,
+        run_id=_RUN,
+        derived_from="CODE_TEST",
+        attr_weight=0.0,
+    )
+    assert len(links) == 1
+    assert links[0].score == 1.0
+    duplicate = InMemoryVectorStore(2)
+    duplicate.add(
+        _RUN,
+        "CODE_TEST",
+        (
+            _embedding("cam-a", 1, 2, _EAST),
+            _embedding("cam-a", 1, 2, _NORTH),
+            _embedding("cam-b", 2, 0, _EAST),
+        ),
+    )
+    with pytest.raises(ValueError, match="duplicate appearance"):
+        link_tracklets(
+            tracklets,
+            _window(),
+            duplicate,
+            attributes,
+            run_id=_RUN,
+            derived_from="CODE_TEST",
+        )
+
+
+def _brute_assignment(
+    scores: Sequence[Sequence[float | None]],
+    min_score: float,
+) -> list[tuple[int, int]]:
+    """Every partial matching. Higher total wins, then the column tuple."""
+    row_count = len(scores)
+    column_count = len(scores[0]) if row_count else 0
+    sentinel = column_count
+    limit = 1e-12 * max(row_count, column_count, 1)
+    best_total = 0.0
+    best_choice: tuple[int, ...] | None = None
+
+    def walk(row: int, used: set[int], total: float, choice: tuple[int, ...]) -> None:
+        nonlocal best_total, best_choice
+        if row == row_count:
+            better_total = best_choice is None or total > best_total + limit
+            tied = best_choice is not None and total >= best_total - limit and choice < best_choice
+            if better_total or tied:
+                best_total = total
+                best_choice = choice
+            return
+        walk(row + 1, used, total, choice + (sentinel,))
+        for column in range(column_count):
+            if column in used:
+                continue
+            score = scores[row][column]
+            if score is None or score < min_score:
+                continue
+            walk(row + 1, used | {column}, total + float(score), choice + (column,))
+
+    walk(0, set(), 0.0, ())
+    if best_choice is None:
+        return []
+    return [(row, column) for row, column in enumerate(best_choice) if column != sentinel]
 
 
 class _FixedVectorStore:

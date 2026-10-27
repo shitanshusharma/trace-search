@@ -93,8 +93,8 @@ class EvalItem:
 class ReidEvalResult:
     """Rank-1, mAP, and the counts behind them.
 
-    ``mean_ap`` is written as ``mAP`` in :meth:`as_json`. ``num_invalid_query``
-    and ``num_masked_out`` are not part of that JSON object.
+    ``mean_ap`` is written as ``mAP`` in :meth:`as_json`. ``num_masked_out``
+    is part of that JSON object. ``num_invalid_query`` is not.
     """
 
     rank1: float
@@ -114,6 +114,7 @@ class ReidEvalResult:
             "cmc_top5": [float(value) for value in self.cmc_top5],
             "num_query": self.num_query,
             "num_valid_query": self.num_valid_query,
+            "num_masked_out": self.num_masked_out,
             "num_gallery": self.num_gallery,
             "evidence": _evidence_flag(),
             "note": _result_note(),
