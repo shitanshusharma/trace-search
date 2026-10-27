@@ -17,10 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 import pytest
 
 import scripts.check_licenses as check_licenses
+from trace_search.detection.scripted_figures import scripted_figures_detector
 from trace_search.fixtures import route_generator
+from trace_search.fixtures.content import perceptual_hashes
 from trace_search.fixtures.guards import (
     FixtureSeparationError,
     LoaderContext,
@@ -29,6 +32,7 @@ from trace_search.fixtures.guards import (
 from trace_search.fixtures.route_generator import RouteFixture, generate_route_fixture
 from trace_search.fixtures.separation import SeparationCheckError, check_separation
 from trace_search.ingest.camera_registry import CameraRegistry
+from trace_search.ingest.video_source import Frame
 from trace_search.matching.topology import CameraTopology
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -213,8 +217,6 @@ def test_sample_frame_uses_only_the_palette_and_exact_bands(small: RouteFixture)
     """Palette check is the pre-encode buffer. mp4v is not a pixel source."""
     truth = _load(small.truth_path)
     allowed = {tuple(truth["background_bgr"])}
-    allowed.add(tuple(truth["mark_upper_bgr"]))
-    allowed.add(tuple(truth["mark_lower_bgr"]))
     for figure in truth["figures"]:
         allowed.add(tuple(figure["upper_bgr"]))
         allowed.add(tuple(figure["lower_bgr"]))
@@ -242,7 +244,7 @@ def test_sample_frame_uses_only_the_palette_and_exact_bands(small: RouteFixture)
             colour = tuple(int(channel) for channel in pixel)
             if colour == background:
                 continue
-            boxes = list(truth["marks"])
+            boxes = []
             for figure in truth["figures"]:
                 boxes.extend(figure["boxes"])
             inside = False
@@ -550,11 +552,16 @@ def test_odd_seed_reverses_the_walk(tmp_path: Path) -> None:
     assert odd_x[0] > odd_x[-1]
 
 
-def test_odd_frame_height_keeps_an_even_mark(tmp_path: Path) -> None:
+def test_odd_frame_height_keeps_boxes_inside(tmp_path: Path) -> None:
     fixture = _small(tmp_path / "tall-odd", size=(64, 66))
-    mark = _load(fixture.truth_path)["marks"][0]
-    assert (mark["y2"] - mark["y1"]) % 2 == 0
-    assert mark["y2"] <= 66
+    truth = _load(fixture.truth_path)
+    assert truth["figures"]
+    for figure in truth["figures"]:
+        assert figure["boxes"]
+        for box in figure["boxes"]:
+            assert (box["y2"] - box["y1"]) % 2 == 0
+            assert box["y2"] <= 66
+            assert box["x2"] <= 64
 
 
 def test_a_one_camera_prefix_is_not_a_route(
@@ -576,6 +583,32 @@ def test_a_one_camera_prefix_is_not_a_route(
     monkeypatch.setattr(route_generator, "_schedule_path", schedule)
     with pytest.raises(RuntimeError, match="did not produce a route"):
         _small(tmp_path / "one-camera")
+
+
+def test_a_visit_with_no_frame_is_not_a_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(route_generator, "_frames_in_visit", lambda *_args, **_kwargs: ())
+    with pytest.raises(RuntimeError, match="did not produce a route"):
+        _small(tmp_path / "empty-visit")
+
+
+def test_fit_path_keeps_the_exit_inside_the_camera_window() -> None:
+    """Twelve cameras at 10 fps put the last dwell past the window without the clamp."""
+    count = 12
+    offsets = tuple(-2.0 + (5.0 / 11.0) * index for index in range(count))
+    visits = route_generator._fit_path(tuple(range(count // 2)), offsets, 1, 10)
+    for visit in visits:
+        assert visit.t_exit <= offsets[visit.camera_index] + 1.0
+
+
+def test_a_float_gap_under_half_a_second_is_not_a_route() -> None:
+    """12 cameras at 60 fps make ``prev + 0.5`` land just short of the window."""
+    count = 12
+    offsets = tuple(-2.0 + (5.0 / 11.0) * index for index in range(count))
+    planned = route_generator._schedule_path(tuple(range(count // 2)), offsets, 1, 60)
+    assert planned is None
 
 
 def test_a_zone_that_never_fits_raises(
@@ -673,3 +706,207 @@ def test_planted_smoke_only_generator_row_fails_closed(tmp_path: Path) -> None:
     path.write_text(json.dumps(planted), encoding="utf-8")
     with pytest.raises(SeparationCheckError, match="SMOKE_ONLY"):
         check_separation(path, repo_root=_REPO)
+
+
+def test_numpy_seed_is_rejected_before_any_file(tmp_path: Path) -> None:
+    out = tmp_path / "numpy-seed"
+    with pytest.raises(TypeError, match="seed"):
+        _small(out, seed=np.int64(1))
+    assert not out.exists()
+
+
+def test_range_errors_name_the_bounds(tmp_path: Path) -> None:
+    out = tmp_path / "bounds"
+    with pytest.raises(ValueError, match=r"^fps must be in 1\.\.60, got 0$"):
+        _small(out, fps=0)
+    assert not out.exists()
+    with pytest.raises(ValueError, match=r"^seconds must be in 1\.\.120, got 0$"):
+        _small(out, seconds=0)
+    assert not out.exists()
+
+
+def test_manifest_seed_string_includes_the_seed(small: RouteFixture) -> None:
+    entry = _load(small.manifest_path)["entries"][0]
+    assert entry["seed"] == (
+        '{"camera_index":0,"fps":10,"height":64,"n_cameras":4,'
+        '"n_figures":2,"seconds":1,"seed":0,"width":64}'
+    )
+
+
+def test_each_clip_keeps_its_own_phashes(small: RouteFixture) -> None:
+    manifest = _load(small.manifest_path)
+    seen: list[list[str]] = []
+    for entry, clip in zip(manifest["entries"], small.clip_paths):
+        digest = perceptual_hashes(clip)
+        assert entry["phash"] == digest
+        assert len(digest) == 10
+        assert len(set(digest)) == 10
+        seen.append(digest)
+    assert seen[0] != seen[1]
+
+
+def test_decoded_frame_uses_width_then_height(tmp_path: Path) -> None:
+    fixture = _small(tmp_path / "shape", size=(96, 64))
+    capture = cv2.VideoCapture(str(fixture.clip_paths[0]))
+    try:
+        ok, frame = capture.read()
+    finally:
+        capture.release()
+    assert ok
+    assert frame is not None
+    assert frame.shape[:2] == (64, 96)
+
+
+def _nearest_colour(
+    pixel: np.ndarray[Any, np.dtype[np.uint8]],
+    colours: list[tuple[int, int, int]],
+) -> tuple[int, int, int]:
+    best = colours[0]
+    best_distance: int | None = None
+    for colour in colours:
+        distance = 0
+        for channel, component in enumerate(colour):
+            delta = int(pixel[channel]) - component
+            distance += delta * delta
+        if best_distance is None or distance < best_distance:
+            best = colour
+            best_distance = distance
+    return best
+
+
+def _decoded_frames(path: Path) -> list[np.ndarray[Any, np.dtype[np.uint8]]]:
+    capture = cv2.VideoCapture(str(path))
+    frames: list[np.ndarray[Any, np.dtype[np.uint8]]] = []
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                break
+            frames.append(frame)
+    finally:
+        capture.release()
+    return frames
+
+
+def test_decoded_pixels_follow_the_truth_boxes(small: RouteFixture) -> None:
+    """mp4v shifts flat colours by a few levels, so the check is the nearest one.
+
+    A figure painted on the wrong camera leaves the truth box on the background
+    and puts figure colour where the truth has none.
+    """
+    truth = _load(small.truth_path)
+    background = tuple(int(channel) for channel in truth["background_bgr"])
+    palette = [background]
+    by_camera: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    for figure in truth["figures"]:
+        upper = tuple(int(channel) for channel in figure["upper_bgr"])
+        lower = tuple(int(channel) for channel in figure["lower_bgr"])
+        for colour in (upper, lower):
+            if colour not in palette:
+                palette.append(colour)
+        for box in figure["boxes"]:
+            recorded = dict(box)
+            recorded["upper"] = upper
+            recorded["lower"] = lower
+            by_camera.setdefault(box["camera_id"], {}).setdefault(box["frame_index"], []).append(
+                recorded
+            )
+    for clip in small.clip_paths:
+        frames = _decoded_frames(clip)
+        boxes_for_camera = by_camera.get(clip.stem, {})
+        for frame_index, image in enumerate(frames):
+            boxes = boxes_for_camera.get(frame_index, [])
+            height, width = image.shape[:2]
+            for y_index in range(height):
+                for x_index in range(width):
+                    pixel = image[y_index, x_index]
+                    owners = [
+                        box
+                        for box in boxes
+                        if box["x1"] <= x_index < box["x2"] and box["y1"] <= y_index < box["y2"]
+                    ]
+                    if owners:
+                        owner = owners[0]
+                        colours = [background, owner["upper"], owner["lower"]]
+                        nearest = _nearest_colour(pixel, colours)
+                        assert nearest != background
+                        continue
+                    assert _nearest_colour(pixel, palette) == background
+
+
+def _box_iou(
+    truth_box: tuple[float, float, float, float],
+    det_box: tuple[float, float, float, float],
+) -> float:
+    ax1, ay1, ax2, ay2 = truth_box
+    bx1, by1, bx2, by2 = det_box
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if intersection <= 0.0:
+        return 0.0
+    area = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - intersection
+    return intersection / area
+
+
+def _match_truth_boxes(fixture: RouteFixture) -> tuple[int, int]:
+    truth = _load(fixture.truth_path)
+    expected: dict[tuple[str, int], list[tuple[float, float, float, float]]] = {}
+    for figure in truth["figures"]:
+        for box in figure["boxes"]:
+            key = (box["camera_id"], box["frame_index"])
+            expected.setdefault(key, []).append((box["x1"], box["y1"], box["x2"], box["y2"]))
+    detector = scripted_figures_detector()
+    matched = 0
+    total = 0
+    fps = float(truth["fps"])
+    for clip in fixture.clip_paths:
+        camera_id = clip.stem
+        for frame_index, image in enumerate(_decoded_frames(clip)):
+            frame = Frame(
+                image=image,
+                timestamp_seconds=frame_index / fps,
+                frame_number=frame_index,
+                camera_id=camera_id,
+            )
+            detections = detector.detect(frame)
+            used: set[int] = set()
+            for truth_box in expected.get((camera_id, frame_index), []):
+                total += 1
+                for det_index, detection in enumerate(detections):
+                    if det_index in used:
+                        continue
+                    if _box_iou(truth_box, detection.box) >= 0.5:
+                        used.add(det_index)
+                        matched += 1
+                        break
+    return matched, total
+
+
+def test_scripted_figures_match_every_truth_box(tmp_path: Path) -> None:
+    """Decoded defaults, and one other seed and figure count. IoU is one to one."""
+    defaults = generate_route_fixture(tmp_path / "defaults")
+    other = generate_route_fixture(tmp_path / "other", seed=123, n_figures=8)
+    for fixture in (defaults, other):
+        matched, total = _match_truth_boxes(fixture)
+        assert total > 0
+        assert matched == total
+        manifest = _load(fixture.manifest_path)
+        for entry, clip in zip(manifest["entries"], fixture.clip_paths):
+            assert entry["phash"] == perceptual_hashes(clip)
+            assert len(set(entry["phash"])) == 10
+
+
+def test_figures_do_not_share_one_timetable(tmp_path: Path) -> None:
+    fixture = _small(tmp_path / "stagger", n_figures=4)
+    figures = _load(fixture.truth_path)["figures"]
+
+    def key(figure: dict[str, Any]) -> tuple[tuple[str, float, float], ...]:
+        return tuple(
+            (visit["camera_id"], round(visit["t_entry"], 5), round(visit["t_exit"], 5))
+            for visit in figure["visits"]
+        )
+
+    assert len({key(figure) for figure in figures}) == len(figures)

@@ -6,11 +6,10 @@ under ``out_dir``. Figures are upright rectangles with two flat colour
 bands. There is no head, no limbs, and no text. One figure copies another
 figure's colour pair and walks the other corridor, which has no transit edge.
 
-Each camera also draws one flat two-band rectangle in a reserved column on
-the right. Its vertical position is the frame index. The rectangle does not
-cover figure pixels. It is recorded under ``marks`` in ``truth.json``. The
-temp manifest stores 10 pHashes, and the schema requires those 10 values to
-be unique, so a camera with only a still background cannot be hashed as-is.
+Figures sit in separate horizontal lanes with a background gap between them,
+and they do not share one timetable. Each figure slides across its lane, so
+the 10 frames ``perceptual_hashes`` samples are not the same picture. The
+background stays a uniform dark colour. Nothing else is drawn.
 
 The same seed writes byte-identical files. mp4v on opencv-python-headless
 4.10.0.84 (Lavf59.27.100) already stores container creation and modification
@@ -29,6 +28,7 @@ outside this repository.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,7 +58,8 @@ _MAX_EDGE = 1920
 _MIN_FRAMES = 10
 _WINDOW_MIN = 0.5
 _WINDOW_MAX = 8.0
-_MARK_WIDTH = 16
+_FRAME_EPS = 1e-3
+_MAX_STEP = 4
 _BACKGROUND_BGR = (16, 16, 16)
 _SOURCE_URL = "https://github.com/shitanshusharma/trace-search"
 _CONTAINER_BOXES = frozenset({b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts"})
@@ -329,56 +330,470 @@ def _colours(
     return _COLOUR_PAIRS[(source + shift) % len(_COLOUR_PAIRS)]
 
 
-def _fig_size(width: int, height: int, n_figures: int) -> tuple[int, int]:
-    fig_h = min(32, height // n_figures)
-    if fig_h % 2 == 1:
-        fig_h -= 1
-    fig_w = min(16, width // 5)
-    return fig_w, fig_h
+def _sample_indices(n_frames: int) -> tuple[int, ...]:
+    """Frame indices ``perceptual_hashes`` reads. Truncation matches NumPy."""
+    count = min(10, n_frames)
+    chosen = np.linspace(0, n_frames - 1, count, dtype=int)
+    return tuple(int(index) for index in chosen)
 
 
-def _x_positions(count: int, width: int, fig_w: int, seed: int) -> tuple[int, ...]:
-    """Horizontal positions in the area left of the frame-index mark."""
-    usable = width - _MARK_WIDTH
-    start = seed % 5
-    end = usable - fig_w
+def _lane_layout(height: int, count: int) -> tuple[int, int, int]:
+    """Gap, even lane height, and a margin so a lane does not touch the frame edge."""
+    for margin in (8, 4, 2, 0):
+        inner = height - 2 * margin
+        if inner < count * 2:
+            continue
+        gap = 8
+        while gap >= 0:
+            usable = inner - gap * (count - 1)
+            fig_h = usable // count
+            if fig_h % 2 == 1:
+                fig_h -= 1
+            fits = fig_h >= 2 and fig_h * count + gap * (count - 1) <= inner
+            if fits:
+                return gap, fig_h, margin
+            gap -= 2
+    raise RuntimeError("validated frame height did not fit the figures")
+
+
+def _fig_width(width: int) -> int:
+    """Wide enough that a short slide still changes a sampled pHash."""
+    fig_w = max(16, width // 8)
+    if width - fig_w < 16:
+        fig_w = max(8, width - 16)
+    if fig_w % 2 == 1:
+        fig_w -= 1
+    return max(fig_w, 8)
+
+
+def _origin_y(height: int, count: int, fig_h: int, gap: int, margin: int) -> int:
+    used = count * fig_h + (count - 1) * gap
+    extra = height - 2 * margin - used
+    return margin + max(extra, 0) // 2
+
+
+def _max_x(width: int, fig_w: int) -> int:
+    """Right edge of the slide, four pixels in from the frame when it fits."""
+    margin = 4 if width - fig_w >= 12 else 0
+    return max(0, width - fig_w - margin)
+
+
+def _stepped_x(
+    frame_index: int,
+    n_frames: int,
+    max_x: int,
+    camera_index: int,
+    n_cameras: int,
+) -> int:
+    """Constant step of at most four pixels. Short clips use this path."""
+    step = min(_MAX_STEP, max(1, max_x // (n_frames - 1)))
+    span = step * (n_frames - 1)
+    spare = max(0, max_x - span)
+    phase = 0
+    if n_cameras > 1 and spare > 0:
+        phase = camera_index * spare // (n_cameras - 1)
+        phase -= phase % 2
+    return phase + step * frame_index
+
+
+def _held_x(
+    frame_index: int,
+    n_frames: int,
+    max_x: int,
+    camera_index: int,
+    n_cameras: int,
+) -> int:
+    """Hold a column for the sampled frame so mp4v is not mid-slide."""
+    samples = _sample_indices(n_frames)
+    phase_room = min(8 * max(n_cameras - 1, 0), max(0, max_x // 4))
+    span = max(0, max_x - phase_room)
+    phase = 0
+    if n_cameras > 1 and phase_room > 0:
+        phase = camera_index * phase_room // (n_cameras - 1)
+    active = 0
+    for slot, sample in enumerate(samples):
+        previous = samples[slot - 1] if slot else 0
+        lead = 0 if sample - previous <= 2 else 2
+        if frame_index >= sample - lead:
+            active = slot
+    slots = max(1, len(samples) - 1)
+    return phase + span * active // slots
+
+
+def _x_at(
+    frame_index: int,
+    n_frames: int,
+    width: int,
+    fig_w: int,
+    seed: int,
+    camera_index: int,
+    n_cameras: int,
+) -> int:
+    """An odd seed walks the other way. Each camera starts at a different column."""
+    limit = _max_x(width, fig_w)
+    if n_frames <= 1 or limit <= 0:
+        return 0
+    if _MAX_STEP * (n_frames - 1) <= limit:
+        along = _stepped_x(frame_index, n_frames, limit, camera_index, n_cameras)
+    else:
+        along = _held_x(frame_index, n_frames, limit, camera_index, n_cameras)
     if seed % 2 == 1:
-        start, end = end, start
-    if count <= 1:
-        return (start,)
-    span = end - start
-    return tuple(start + span * index // (count - 1) for index in range(count))
+        return limit - along
+    return along
 
 
-def _mark_pair(seed: int) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-    return _COLOUR_PAIRS[(seed + 3) % len(_COLOUR_PAIRS)]
+def _zone_slots(
+    zone: tuple[int, ...],
+    offsets: tuple[float, ...],
+    fps: int,
+    n_frames: int,
+) -> list[tuple[float, int]]:
+    slots: list[tuple[float, int]] = []
+    for camera in zone:
+        offset = offsets[camera]
+        for frame_index in _sample_indices(n_frames):
+            slots.append((frame_index / float(fps) + offset, camera))
+    slots.sort()
+    return slots
 
 
-def _mark_height(height: int) -> int:
-    block = height // 2
-    if block % 2 == 1:
-        block -= 1
-    return block
+def _cameras_between(origin: int, dest: int) -> tuple[int, ...]:
+    step = 1 if dest > origin else -1
+    return tuple(range(origin + step, dest, step))
 
 
-def _mark_box(frame_index: int, n_frames: int, width: int, height: int) -> _Box:
-    block = _mark_height(height)
-    travel = height - block
-    y1 = frame_index * travel // (n_frames - 1)
-    x1 = width - _MARK_WIDTH
-    return _Box(-1, frame_index, x1, y1, width, y1 + block)
+def _latest_bridge(
+    camera: int,
+    entry: float,
+    offsets: tuple[float, ...],
+    fps: int,
+    n_frames: int,
+    seconds: int,
+) -> tuple[float, float] | None:
+    """One frame on ``camera`` that finishes at least ``_WINDOW_MIN`` before ``entry``."""
+    offset = offsets[camera]
+    latest = entry - _WINDOW_MIN - _FRAME_EPS
+    instant: float | None = None
+    for frame_index in range(n_frames - 1, -1, -1):
+        candidate = frame_index / float(fps) + offset
+        if offset <= candidate <= latest:
+            instant = candidate
+            break
+    if instant is None:
+        return None
+    end = instant + _FRAME_EPS
+    if entry - end > _WINDOW_MAX:
+        end = entry - _WINDOW_MIN
+    high = offset + float(seconds)
+    if end > high or instant >= end:
+        return None
+    return instant, end
+
+
+def _exit_time(last_instant: float, high: float, next_start: float) -> float | None:
+    latest = min(high, next_start - _WINDOW_MIN)
+    earliest = next_start - _WINDOW_MAX
+    if latest <= last_instant:
+        return None
+    exit_at = max(earliest, last_instant + _FRAME_EPS)
+    if exit_at > latest:
+        return None
+    return exit_at
+
+
+def _last_instant(
+    camera: int,
+    start: float,
+    end: float,
+    offsets: tuple[float, ...],
+    fps: int,
+    n_frames: int,
+) -> float | None:
+    frames = _frames_in_visit(start, end, offsets[camera], fps, n_frames)
+    if not frames:
+        return None
+    return frames[-1] / float(fps) + offsets[camera]
+
+
+def _open_span(
+    spans: list[list[float]],
+    camera: int,
+    instant: float,
+    offsets: tuple[float, ...],
+    seconds: int,
+) -> bool:
+    low = offsets[camera]
+    high = low + float(seconds)
+    if instant < low or instant >= high:
+        return False
+    end = min(high, instant + _FRAME_EPS)
+    if instant >= end:
+        return False
+    spans.append([float(camera), instant, end])
+    return True
+
+
+def _extend_open_span(
+    spans: list[list[float]],
+    instant: float,
+    offsets: tuple[float, ...],
+    seconds: int,
+) -> bool:
+    camera = int(spans[-1][0])
+    start = spans[-1][1]
+    high = offsets[camera] + float(seconds)
+    if instant < start or instant >= high:
+        return False
+    new_end = min(high, instant + _FRAME_EPS)
+    if new_end > spans[-1][2]:
+        spans[-1][2] = new_end
+    return True
+
+
+def _append_transit(
+    spans: list[list[float]],
+    zone: tuple[int, ...],
+    camera: int,
+    instant: float,
+    offsets: tuple[float, ...],
+    fps: int,
+    n_frames: int,
+    seconds: int,
+) -> bool:
+    origin = int(spans[-1][0])
+    if origin not in zone or camera not in zone:
+        return False
+    mids = _cameras_between(origin, camera)
+    high = offsets[camera] + float(seconds)
+    end = min(high, instant + _FRAME_EPS)
+    if instant >= end:
+        return False
+    planned: list[tuple[int, float, float]] = [(camera, instant, end)]
+    for mid in reversed(mids):
+        bridge = _latest_bridge(mid, planned[-1][1], offsets, fps, n_frames, seconds)
+        if bridge is None:
+            return False
+        planned.append((mid, bridge[0], bridge[1]))
+    prev_cam = int(spans[-1][0])
+    prev_start = spans[-1][1]
+    prev_end = spans[-1][2]
+    last_instant = _last_instant(prev_cam, prev_start, prev_end, offsets, fps, n_frames)
+    if last_instant is None:
+        return False
+    exit_at = _exit_time(last_instant, offsets[prev_cam] + float(seconds), planned[-1][1])
+    if exit_at is None or not prev_start <= last_instant < exit_at:
+        return False
+    spans[-1][2] = exit_at
+    for mid_cam, start, stop in reversed(planned):
+        spans.append([float(mid_cam), start, stop])
+    return True
+
+
+def _cap_end(end: float, high: float, next_start: float | None) -> float:
+    limit = high
+    if next_start is not None:
+        limit = min(limit, next_start - _WINDOW_MIN)
+        if next_start - limit < _WINDOW_MIN:
+            limit = math.nextafter(limit, -math.inf)
+    if limit > end:
+        return limit
+    return end
+
+
+def _stretch_spans(
+    spans: list[list[float]],
+    offsets: tuple[float, ...],
+    seconds: int,
+) -> tuple[tuple[int, float, float], ...]:
+    stretched: list[tuple[int, float, float]] = []
+    for index, span in enumerate(spans):
+        camera = int(span[0])
+        start = span[1]
+        end = span[2]
+        high = offsets[camera] + float(seconds)
+        next_start = spans[index + 1][1] if index + 1 < len(spans) else None
+        stretched.append((camera, start, _cap_end(end, high, next_start)))
+    return tuple(stretched)
+
+
+def _spans_are_linked(spans: tuple[tuple[int, float, float], ...]) -> bool:
+    pairs = zip(spans, spans[1:])
+    for previous, following in pairs:
+        if abs(previous[0] - following[0]) != 1:
+            return False
+        gap = following[1] - previous[2]
+        if gap < _WINDOW_MIN - 1e-9 or gap > _WINDOW_MAX + 1e-9:
+            return False
+    return True
+
+
+def _visits_from_spans(
+    spans: tuple[tuple[int, float, float], ...],
+    offsets: tuple[float, ...],
+    fps: int,
+    n_frames: int,
+) -> tuple[_Visit, ...] | None:
+    if len(spans) < 2 or not _spans_are_linked(spans):
+        return None
+    visits: list[_Visit] = []
+    for camera, start, end in spans:
+        frames = _frames_in_visit(start, end, offsets[camera], fps, n_frames)
+        if not frames:
+            return None
+        if end > offsets[camera] + float(n_frames) / float(fps) + 1e-9:
+            return None
+        visits.append(_Visit(camera, start, end))
+    return tuple(visits)
+
+
+def _cover_zone(
+    zone: tuple[int, ...],
+    offsets: tuple[float, ...],
+    seconds: int,
+    fps: int,
+    n_frames: int,
+) -> tuple[_Visit, ...] | None:
+    """One walk that is present at every sampled frame of ``zone``.
+
+    Returns None when the transit windows cannot hold that walk. Callers then
+    use a shorter route. An empty sample frame hashes like every other empty
+    frame, so this walk is what keeps the 10 pHashes distinct.
+    """
+    spans: list[list[float]] = []
+    for instant, camera in _zone_slots(zone, offsets, fps, n_frames):
+        if not spans:
+            opened = _open_span(spans, camera, instant, offsets, seconds)
+            if not opened:
+                return None
+            continue
+        if int(spans[-1][0]) == camera:
+            extended = _extend_open_span(spans, instant, offsets, seconds)
+            if not extended:
+                return None
+            continue
+        moved = _append_transit(spans, zone, camera, instant, offsets, fps, n_frames, seconds)
+        if not moved:
+            return None
+    if not spans:
+        return None
+    return _visits_from_spans(_stretch_spans(spans, offsets, seconds), offsets, fps, n_frames)
+
+
+def _pair_zone(zone: tuple[int, ...], index: int) -> tuple[int, ...]:
+    if len(zone) < 3:
+        return zone
+    start = index % (len(zone) - 1)
+    return zone[start : start + 2]
+
+
+def _shift_visits(
+    visits: tuple[_Visit, ...],
+    delay: float,
+    offsets: tuple[float, ...],
+    seconds: int,
+    fps: int,
+    n_frames: int,
+) -> tuple[_Visit, ...] | None:
+    if delay == 0:
+        return visits
+    shifted: list[_Visit] = []
+    for visit in visits:
+        start = visit.t_entry + delay
+        end = visit.t_exit + delay
+        low = offsets[visit.camera_index]
+        high = low + float(seconds)
+        if end > high:
+            start -= end - high
+            end = high
+        if start < low:
+            return None
+        frames = _frames_in_visit(start, end, low, fps, n_frames)
+        if not frames:
+            return None
+        shifted.append(_Visit(visit.camera_index, start, end))
+    for previous, following in zip(shifted, shifted[1:]):
+        gap = following.t_entry - previous.t_exit
+        if gap < _WINDOW_MIN or gap > _WINDOW_MAX:
+            return None
+    return tuple(shifted)
+
+
+def _route_key(visits: tuple[_Visit, ...]) -> tuple[tuple[int, float, float], ...]:
+    return tuple(
+        (visit.camera_index, round(visit.t_entry, 6), round(visit.t_exit, 6)) for visit in visits
+    )
+
+
+def _delayed_until_distinct(
+    base: tuple[_Visit, ...],
+    offsets: tuple[float, ...],
+    seconds: int,
+    fps: int,
+    n_frames: int,
+    index: int,
+    taken: set[tuple[tuple[int, float, float], ...]],
+) -> tuple[_Visit, ...]:
+    step = 1.0 / float(fps)
+    attempt = index
+    while attempt < index + 8:
+        shifted = _shift_visits(base, attempt * step, offsets, seconds, fps, n_frames)
+        attempt += 1
+        if shifted is None:
+            continue
+        key = _route_key(shifted)
+        if key in taken:
+            continue
+        return shifted
+    return base
+
+
+def _fallback_route(
+    zone: tuple[int, ...],
+    offsets: tuple[float, ...],
+    seconds: int,
+    fps: int,
+    n_frames: int,
+    index: int,
+    taken: set[tuple[tuple[int, float, float], ...]],
+) -> tuple[_Visit, ...]:
+    try:
+        base = _fit_path(_pair_zone(zone, index), offsets, seconds, fps)
+    except RuntimeError:
+        base = _fit_path(zone, offsets, seconds, fps)
+    return _delayed_until_distinct(base, offsets, seconds, fps, n_frames, index, taken)
+
+
+def _routes_for_zone(
+    zone: tuple[int, ...],
+    offsets: tuple[float, ...],
+    seconds: int,
+    fps: int,
+    n_frames: int,
+    count: int,
+) -> tuple[tuple[_Visit, ...], ...]:
+    # A zone that cannot host a two-camera walk is refused here, before files.
+    _fit_path(zone, offsets, seconds, fps)
+    covered = _cover_zone(zone, offsets, seconds, fps, n_frames)
+    taken: set[tuple[tuple[int, float, float], ...]] = set()
+    routes: list[tuple[_Visit, ...]] = []
+    for index in range(count):
+        if index == 0 and covered is not None:
+            route = covered
+        else:
+            route = _fallback_route(zone, offsets, seconds, fps, n_frames, index, taken)
+        taken.add(_route_key(route))
+        routes.append(route)
+    return tuple(routes)
 
 
 def _boxes_for(
     visits: tuple[_Visit, ...],
     args: _Args,
     offsets: tuple[float, ...],
-    figure_index: int,
+    y1: int,
     fig_w: int,
     fig_h: int,
 ) -> tuple[_Box, ...]:
-    y1 = figure_index * fig_h
-    y2 = y1 + fig_h
     boxes: list[_Box] = []
     for visit in visits:
         frames = _frames_in_visit(
@@ -388,8 +803,16 @@ def _boxes_for(
             args.fps,
             args.n_frames,
         )
-        xs = _x_positions(len(frames), args.width, fig_w, args.seed)
-        for frame_index, x1 in zip(frames, xs):
+        for frame_index in frames:
+            x1 = _x_at(
+                frame_index,
+                args.n_frames,
+                args.width,
+                fig_w,
+                args.seed,
+                visit.camera_index,
+                args.n_cameras,
+            )
             boxes.append(
                 _Box(
                     visit.camera_index,
@@ -397,7 +820,7 @@ def _boxes_for(
                     x1,
                     y1,
                     x1 + fig_w,
-                    y2,
+                    y1 + fig_h,
                 )
             )
     return tuple(boxes)
@@ -409,6 +832,7 @@ def _build_figure(
     visits: tuple[_Visit, ...],
     args: _Args,
     offsets: tuple[float, ...],
+    y1: int,
     fig_w: int,
     fig_h: int,
 ) -> _Figure:
@@ -419,24 +843,32 @@ def _build_figure(
         lower_bgr=lower,
         distractor=index == route_count,
         visits=visits,
-        boxes=_boxes_for(visits, args, offsets, index, fig_w, fig_h),
+        boxes=_boxes_for(visits, args, offsets, y1, fig_w, fig_h),
     )
 
 
 def _build_plan(args: _Args) -> _Plan:
     offsets = _clock_offsets(args.n_cameras)
     left_zone, right_zone = _zones(args.n_cameras)
-    left = _fit_path(left_zone, offsets, args.seconds, args.fps)
-    right = _fit_path(right_zone, offsets, args.seconds, args.fps)
-    fig_w, fig_h = _fig_size(args.width, args.height, args.n_figures)
+    left_count = args.n_figures // 2
+    right_count = args.n_figures - left_count
+    gap, fig_h, margin = _lane_layout(args.height, args.n_figures)
+    fig_w = _fig_width(args.width)
+    origin = _origin_y(args.height, args.n_figures, fig_h, gap, margin)
+    left = _routes_for_zone(left_zone, offsets, args.seconds, args.fps, args.n_frames, left_count)
+    right = _routes_for_zone(
+        right_zone, offsets, args.seconds, args.fps, args.n_frames, right_count
+    )
+    routes = left + right
     route_count = args.n_figures - 1
     figures = tuple(
         _build_figure(
             index,
             route_count,
-            right if index == route_count else left,
+            routes[index],
             args,
             offsets,
+            origin + index * (fig_h + gap),
             fig_w,
             fig_h,
         )
@@ -483,12 +915,6 @@ def _index_boxes(
     return {key: tuple(value) for key, value in grouped.items()}
 
 
-def _paint_mark(frame: npt.NDArray[np.uint8], plan: _Plan, frame_index: int) -> None:
-    box = _mark_box(frame_index, plan.args.n_frames, plan.args.width, plan.args.height)
-    upper, lower = _mark_pair(plan.args.seed)
-    _paint(frame, box, upper, lower)
-
-
 def _render_frame(
     plan: _Plan,
     camera_index: int,
@@ -500,7 +926,6 @@ def _render_frame(
         _BACKGROUND_BGR,
         dtype=np.uint8,
     )
-    _paint_mark(frame, plan, frame_index)
     for box, figure in indexed.get((camera_index, frame_index), ()):
         _paint(frame, box, figure.upper_bgr, figure.lower_bgr)
     return frame
@@ -577,24 +1002,6 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(text + "\n", encoding="utf-8")
 
 
-def _mark_records(plan: _Plan) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for camera_index in range(plan.args.n_cameras):
-        for frame_index in range(plan.args.n_frames):
-            box = _mark_box(frame_index, plan.args.n_frames, plan.args.width, plan.args.height)
-            records.append(
-                {
-                    "camera_id": _camera_id(camera_index),
-                    "frame_index": frame_index,
-                    "x1": box.x1,
-                    "x2": box.x2,
-                    "y1": box.y1,
-                    "y2": box.y2,
-                }
-            )
-    return records
-
-
 def _truth_payload(plan: _Plan) -> dict[str, Any]:
     figures: list[dict[str, Any]] = []
     for figure in plan.figures:
@@ -627,15 +1034,11 @@ def _truth_payload(plan: _Plan) -> dict[str, Any]:
                 ],
             }
         )
-    upper, lower = _mark_pair(plan.args.seed)
     return {
         "background_bgr": list(_BACKGROUND_BGR),
         "figures": figures,
         "fps": plan.args.fps,
         "height": plan.args.height,
-        "mark_lower_bgr": list(lower),
-        "mark_upper_bgr": list(upper),
-        "marks": _mark_records(plan),
         "seconds": plan.args.seconds,
         "seed": plan.args.seed,
         "width": plan.args.width,
@@ -725,11 +1128,6 @@ def _palette(plan: _Plan) -> tuple[tuple[int, int, int], ...]:
             colours.append(figure.upper_bgr)
         if figure.lower_bgr not in colours:
             colours.append(figure.lower_bgr)
-    upper, lower = _mark_pair(plan.args.seed)
-    if upper not in colours:
-        colours.append(upper)
-    if lower not in colours:
-        colours.append(lower)
     return tuple(colours)
 
 
