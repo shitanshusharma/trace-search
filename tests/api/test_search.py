@@ -88,6 +88,7 @@ class _TrackSpy:
         self.inner = inner
         self.touches = 0
         self.db_hits = 0
+        self.reads: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     @property
     def db_path(self) -> Path:
@@ -96,6 +97,7 @@ class _TrackSpy:
 
     def read(self, *args: object, **kwargs: object) -> list[TrackObservation]:
         self.touches += 1
+        self.reads.append((args, kwargs))
         return self.inner.read(*args, **kwargs)
 
     def camera_ids(self, *args: object, **kwargs: object) -> tuple[str, ...]:
@@ -1631,14 +1633,26 @@ def test_by_track_searches_vectors_from_the_run_origin(tmp_path: Path) -> None:
 
 
 def test_by_track_refuses_a_mixed_origin_run_before_embed(tmp_path: Path) -> None:
-    """Click-to-search raises before embed and before audit when the run has two origins."""
+    """Click-to-search raises before the box read when the run has two origins."""
     world = _open_world(tmp_path, _AXIS)
     _add(world, camera_id="cam-a", track_id=1, t_start=1.0, vector=_AXIS, derived_from="CODE_TEST")
     _add(world, camera_id="cam-a", track_id=2, t_start=2.0, derived_from="SMOKE")
     with pytest.raises(ValueError, match="more than one derived_from"):
         _call(world, "by_track")
+    assert world.track_spy.reads == []
     assert world.audit.count() == 0
     assert world.embedder.calls == 0
+
+
+def test_by_track_unknown_run_raises_before_the_box_read(tmp_path: Path) -> None:
+    """Another run's observation does not answer. The error is unknown, before any box read."""
+    world = _open_world(tmp_path, _AXIS)
+    _add(world, camera_id="cam-a", track_id=1, t_start=1.0, vector=_AXIS, run_id="run-1")
+    with pytest.raises(ValueError, match="unknown"):
+        _call(world, "by_track", run_id="run-9")
+    assert world.track_spy.reads == []
+    assert world.embedder.calls == 0
+    assert world.audit.count() == 0
 
 
 def test_backpack_track_is_searched(tmp_path: Path) -> None:
@@ -1958,6 +1972,7 @@ def test_canonical_json_escapes_non_ascii(tmp_path: Path) -> None:
 
 
 def test_operator_case_and_purpose_are_not_stripped(tmp_path: Path) -> None:
+    """Operator, case id, and purpose are stored with their surrounding spaces."""
     world = _open_world(tmp_path)
     _add(world, camera_id="cam-a", track_id=1, t_start=1.0)
     _attrs(world, operator=" ada", case_id=" CASE-1 ", purpose=" find ")
@@ -1965,6 +1980,16 @@ def test_operator_case_and_purpose_are_not_stripped(tmp_path: Path) -> None:
     assert entry.operator_username == " ada"
     assert entry.case_id == " CASE-1 "
     assert entry.purpose == " find "
+
+
+def test_padded_run_id_is_not_stripped(tmp_path: Path) -> None:
+    """' run-1' is not the stored run. Every method raises before an audit write."""
+    world = _open_world(tmp_path, _AXIS)
+    _add(world, camera_id="cam-a", track_id=1, t_start=1.0, vector=_AXIS, run_id="run-1")
+    for method in _METHODS:
+        with pytest.raises(ValueError, match="unknown"):
+            _call(world, method, run_id=" run-1")
+        assert world.audit.count() == 0
 
 
 def _refuse(label: str):
