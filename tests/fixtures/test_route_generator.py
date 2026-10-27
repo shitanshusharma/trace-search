@@ -614,6 +614,9 @@ def test_container_time_forms_are_cleared(tmp_path: Path) -> None:
 
     short = (100).to_bytes(4, "big") + b"mvhd" + b"\x66" * 4
     assert _stamp_file(tmp_path / "short.mp4", short) == short
+    # Declared size runs past the buffer. The walk stops, so the stamp stays.
+    oversize = (40).to_bytes(4, "big") + b"mvhd" + bytes([0, 0, 0, 0]) + b"\x11" * 8
+    assert _stamp_file(tmp_path / "oversize.mp4", oversize) == oversize
     # One byte short of a version-0 stamp. A longer write would grow the file.
     short_version_0 = (19).to_bytes(4, "big") + b"mvhd" + bytes([0, 0, 0, 0]) + b"\x11" * 7
     assert _stamp_file(tmp_path / "short-v0.mp4", short_version_0) == short_version_0
