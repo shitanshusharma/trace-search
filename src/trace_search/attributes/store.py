@@ -478,26 +478,20 @@ def _delete_matching(
     connection: sqlite3.Connection,
     derived_from: str | None,
     run_id: str | None,
+    camera_id: str | None,
 ) -> int:
-    if derived_from is not None and run_id is not None:
-        cursor = connection.execute(
-            "DELETE FROM track_attributes WHERE derived_from = ? AND run_id = ?",
-            (derived_from, run_id),
-        )
-        return int(cursor.rowcount)
-    if derived_from is not None:
-        cursor = connection.execute(
-            "DELETE FROM track_attributes WHERE derived_from = ?",
-            (derived_from,),
-        )
-        return int(cursor.rowcount)
-    if run_id is not None:
-        cursor = connection.execute(
-            "DELETE FROM track_attributes WHERE run_id = ?",
-            (run_id,),
-        )
-        return int(cursor.rowcount)
-    raise ValueError("delete_where requires derived_from or run_id")
+    if derived_from is None and run_id is None:
+        raise ValueError("delete_where requires derived_from or run_id")
+    cursor = connection.execute(
+        """
+        DELETE FROM track_attributes
+        WHERE (? IS NULL OR derived_from = ?)
+          AND (? IS NULL OR run_id = ?)
+          AND (? IS NULL OR camera_id = ?)
+        """,
+        (derived_from, derived_from, run_id, run_id, camera_id, camera_id),
+    )
+    return int(cursor.rowcount)
 
 
 class TrackAttributeStore:
@@ -672,18 +666,23 @@ class TrackAttributeStore:
         *,
         derived_from: str | None = None,
         run_id: str | None = None,
+        camera_id: str | None = None,
     ) -> int:
         """Delete rows matching the given filters and return how many went.
 
         At least one of ``derived_from`` and ``run_id`` is required. When
-        both are set, a row must match both. This does not apply the shipped
-        footage window (7 days). A ``CODE_TEST`` row stays when the filter is ``SMOKE``.
+        both are set, a row must match both. ``camera_id`` narrows the
+        match to that camera. ``None`` keeps every camera. A camera id by
+        itself does not satisfy the required filter. This does not apply
+        the shipped footage window (7 days). A ``CODE_TEST`` row stays
+        when the filter is ``SMOKE``.
         """
         origin = _optional_text_id("derived_from", derived_from)
         run = _optional_text_id("run_id", run_id)
+        camera = _optional_text_id("camera_id", camera_id)
 
         def _query(connection: sqlite3.Connection) -> int:
-            return _delete_matching(connection, origin, run)
+            return _delete_matching(connection, origin, run, camera)
 
         return self._using(_query)
 

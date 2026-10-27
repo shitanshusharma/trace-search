@@ -781,6 +781,22 @@ def test_count_rejects_derived_from_outside_the_set(tmp_path: Path, label: str) 
     assert store.count() == 1
 
 
+def test_delete_where_camera_keeps_the_other_camera_in_the_run(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    first = _embedding("cam-1", 1, 1, _unit(1.0, 0.0, 0.0))
+    second = _embedding("cam-2", 1, 1, _unit(0.0, 1.0, 0.0))
+    other_run = _embedding("cam-1", 1, 1, _unit(0.0, 0.0, 1.0))
+    store.add("run-1", "CODE_TEST", [first, second])
+    store.add("run-2", "CODE_TEST", [other_run])
+    with pytest.raises(ValueError, match="derived_from or run_id"):
+        store.delete_where(camera_id="cam-1")
+    assert store.delete_where(run_id="run-1", camera_id="cam-1") == 1
+    assert store.count(run_id="run-1") == 1
+    assert store.count(run_id="run-2") == 1
+    found = store.search(_unit(0.0, 1.0, 0.0), k=1, camera_ids=["cam-2"])
+    assert [item.camera_id for item, _score in found] == ["cam-2"]
+
+
 def test_delete_where_with_no_filter_raises(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.add("run-1", "CODE_TEST", [_embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))])

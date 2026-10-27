@@ -7,9 +7,10 @@ A single frame uses the middle index (``count // 2``). Duplicate frame
 numbers on a tracklet are collapsed, keeping the first occurrence.
 
 Each chosen frame is passed to ``AttributeExtractor.extract_frame`` with
-that frame's person boxes and bag boxes. The person crop is passed to
-``AppearanceEmbedder.embed`` and then dropped. Crops and frames stay
-inside that read and are never written.
+every person box and every bag box on that frame. Only the sampled
+tracks are kept. The person crop is passed to ``AppearanceEmbedder.embed``
+and then dropped. Crops and frames stay inside that read and are never
+written.
 
 Per person track, the stored upper and lower colours are the majority
 vote of the sampled frames. A tie stores ``Color.UNKNOWN``.
@@ -19,13 +20,14 @@ stored as an ``AppearanceEmbedding`` with ``placeholder`` true. The
 vector's ``frame_number`` is the lowest sampled frame on that track.
 Bag tracks get no vector. This pass does not return a similarity score.
 
-Re-run policy: purge by ``run_id`` before re-adding, not an in-store
-dedupe. ``VectorStore`` allows duplicate
-``(camera_id, track_id, frame_number)`` keys. Before the new rows are
-written, this function deletes every attribute row and every appearance
-vector stored for ``run_id``, then adds the new batch. A second call
-with the same input leaves one vector per key. The purge covers the
-whole ``run_id``, including rows from another camera.
+Re-run policy: replace this camera before re-adding, not an in-store
+dedupe and not a purge of the whole run. ``VectorStore`` allows
+duplicate ``(camera_id, track_id, frame_number)`` keys. Before the new
+rows are written, this function deletes attribute rows and appearance
+vectors whose ``run_id`` and ``camera_id`` are this call's, then adds
+the new batch. Rows for another camera in the same run are not read
+and not deleted. A second call for the same camera leaves one vector
+per key for that camera.
 """
 
 from __future__ import annotations
@@ -123,12 +125,11 @@ def describe_tracks(
     Tracklets for another camera are ignored. ``bag_tracklets`` supply the
     bag boxes. Person tracks are the only rows written.
 
-    Re-runs purge by ``run_id`` before re-adding. Existing attribute rows
-    and appearance vectors for ``run_id`` are deleted, then the new batch
-    is written. ``VectorStore`` still allows duplicate keys; this function
-    does not dedupe inside the store. The purge covers the whole run, so a
-    caller that describes one camera at a time should not share ``run_id``
-    with another camera's vectors.
+    Re-runs replace this camera before re-adding. Attribute rows and
+    appearance vectors for this ``run_id`` and ``source.camera_id`` are
+    deleted, then the new batch is written. Another camera's rows in the
+    same run stay where they are. ``VectorStore`` still allows duplicate
+    keys; this function does not dedupe inside the store.
     """
     limit = _require_limit(samples_per_track)
     origin = _require_origin(derived_from)
@@ -139,10 +140,11 @@ def describe_tracks(
     person_boxes = _boxes_for(observations, _track_ids(people))
     bag_lookup = _boxes_for(observations, _track_ids(bags))
     planned = _plan(people, person_boxes, limit)
+    present = _present_on_frame(people, person_boxes)
     bags_on_frame = _bags_on_frame(bags, bag_lookup)
-    parts, frames_read = _read_once(source, planned, bags_on_frame, extractor, embedder)
+    parts, frames_read = _read_once(source, planned, present, bags_on_frame, extractor, embedder)
     pending = _pending(parts, camera_id, embedder)
-    _purge_run(attr_store, vectors, run_id)
+    _replace_camera(attr_store, vectors, run_id, camera_id)
     _store_pending(pending, attr_store, vectors, camera_id, run_id, origin)
     return AppearanceStats(
         frames_read=frames_read,
@@ -236,6 +238,25 @@ def _indexes(count: int, limit: int) -> tuple[int, ...]:
     return tuple((offset * last) // steps for offset in range(take))
 
 
+def _present_on_frame(
+    tracklets: Sequence[Tracklet],
+    boxes: Mapping[tuple[int, int], Box],
+) -> dict[int, tuple[_Sample, ...]]:
+    """Every person box on each frame, including tracks that are not sampled."""
+    grouped: dict[int, list[_Sample]] = {}
+    for tracklet in tracklets:
+        for frame_number in dict.fromkeys(tracklet.frames):
+            box = boxes.get((tracklet.track_id, frame_number))
+            if box is None:
+                continue
+            grouped.setdefault(frame_number, []).append(
+                _Sample(tracklet.track_id, frame_number, box)
+            )
+    return {
+        frame_number: tuple(sorted(items, key=_by_track)) for frame_number, items in grouped.items()
+    }
+
+
 def _bags_on_frame(
     tracklets: Sequence[Tracklet],
     boxes: Mapping[tuple[int, int], Box],
@@ -253,6 +274,7 @@ def _bags_on_frame(
 def _read_once(
     source: VideoSource,
     planned: Mapping[int, tuple[_Sample, ...]],
+    present: Mapping[int, tuple[_Sample, ...]],
     bags_on_frame: Mapping[int, tuple[Box, ...]],
     extractor: AttributeExtractor,
     embedder: AppearanceEmbedder,
@@ -263,7 +285,7 @@ def _read_once(
     try:
         for frame in source.frames():
             frames_read += 1
-            _consume_frame(frame, planned, bags_on_frame, extractor, embedder, parts)
+            _consume_frame(frame, planned, present, bags_on_frame, extractor, embedder, parts)
     finally:
         _close_source(source, opened_here)
     return parts, frames_read
@@ -284,20 +306,26 @@ def _close_source(source: VideoSource, opened_here: bool) -> None:
 def _consume_frame(
     frame: Frame,
     planned: Mapping[int, tuple[_Sample, ...]],
+    present: Mapping[int, tuple[_Sample, ...]],
     bags_on_frame: Mapping[int, tuple[Box, ...]],
     extractor: AttributeExtractor,
     embedder: AppearanceEmbedder,
     parts: dict[int, _TrackParts],
 ) -> None:
+    """Assign bags across every person on the frame, then keep sampled tracks."""
     chosen = planned.get(frame.frame_number)
     if not chosen:
         return
     image = cast(npt.NDArray[np.uint8], frame.image)
-    boxes = [item.box for item in chosen]
+    everyone = present.get(frame.frame_number, ())
+    boxes = [item.box for item in everyone]
     bag_boxes = list(bags_on_frame.get(frame.frame_number, ()))
     extracted = extractor.extract_frame(image, boxes, bag_boxes)
-    for item, attributes in zip(chosen, extracted, strict=True):
-        _record(parts, item, attributes, image, embedder)
+    by_track = {
+        item.track_id: attributes for item, attributes in zip(everyone, extracted, strict=True)
+    }
+    for item in chosen:
+        _record(parts, item, by_track[item.track_id], image, embedder)
 
 
 def _record(
@@ -447,10 +475,15 @@ def _unit_vector(rows: Sequence[npt.NDArray[np.float64]]) -> tuple[float, ...]:
     return tuple(float(item) for item in flat)
 
 
-def _purge_run(attr_store: TrackAttributeStore, vectors: VectorStore, run_id: str) -> None:
-    """Delete this run's previous attribute rows and appearance vectors."""
-    attr_store.delete_where(run_id=run_id)
-    vectors.delete_where(run_id=run_id)
+def _replace_camera(
+    attr_store: TrackAttributeStore,
+    vectors: VectorStore,
+    run_id: str,
+    camera_id: str,
+) -> None:
+    """Delete this camera's previous rows for ``run_id``. Other cameras stay."""
+    attr_store.delete_where(run_id=run_id, camera_id=camera_id)
+    vectors.delete_where(run_id=run_id, camera_id=camera_id)
 
 
 def _store_pending(

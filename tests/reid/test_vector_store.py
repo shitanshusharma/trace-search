@@ -231,6 +231,25 @@ def test_bad_batch_does_not_change_the_store() -> None:
     assert [item.camera_id for item, _score in found] == [kept.camera_id]
 
 
+def test_delete_where_camera_keeps_the_other_camera_in_the_run() -> None:
+    store = InMemoryVectorStore(_DIM)
+    first = _embedding("cam-1", 1, 1, _unit(1.0, 0.0, 0.0))
+    second = _embedding("cam-2", 1, 1, _unit(0.0, 1.0, 0.0))
+    other_run = _embedding("cam-1", 1, 1, _unit(0.0, 0.0, 1.0))
+    store.add("run-1", "CODE_TEST", [first, second])
+    store.add("run-2", "CODE_TEST", [other_run])
+    with pytest.raises(ValueError, match="derived_from or run_id"):
+        store.delete_where(camera_id="cam-1")
+    with pytest.raises(ValueError, match="non-empty"):
+        store.delete_where(run_id="run-1", camera_id="")
+    assert store.delete_where(run_id="run-1", camera_id="cam-1") == 1
+    assert store.count(run_id="run-1") == 1
+    assert store.count(run_id="run-2") == 1
+    found = store.search(_unit(0.0, 1.0, 0.0), k=1)
+    assert found[0][0].camera_id == "cam-2"
+    assert found[0][0] is second
+
+
 def test_delete_where_with_no_filter_raises() -> None:
     store, _row, _query = _axis_store()
     before = store.count()

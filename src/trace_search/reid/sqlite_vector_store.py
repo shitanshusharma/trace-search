@@ -127,6 +127,7 @@ _DELETE_SQL = """
 DELETE FROM appearance_embeddings
 WHERE (? IS NULL OR derived_from = ?)
   AND (? IS NULL OR run_id = ?)
+  AND (? IS NULL OR camera_id = ?)
 """
 
 _PURGE_SQL = "DELETE FROM appearance_embeddings WHERE created_at < ?"
@@ -435,14 +436,23 @@ class SqliteVectorStore:
         self,
         derived_from: str | None = None,
         run_id: str | None = None,
+        camera_id: str | None = None,
     ) -> int:
-        """Delete matching rows. Both arguments omitted raises ``ValueError``."""
+        """Delete matching rows. ``derived_from`` and ``run_id`` both omitted raises.
+
+        ``camera_id`` keeps the delete inside that camera. It does not
+        replace the required ``derived_from`` or ``run_id`` filter.
+        """
         origin = _optional_derived_from(derived_from)
         run = _optional_text("run_id", run_id)
+        camera = _optional_text("camera_id", camera_id)
         _require_delete_target(origin, run)
 
         def _query(connection: sqlite3.Connection) -> int:
-            cursor = connection.execute(_DELETE_SQL, (origin, origin, run, run))
+            cursor = connection.execute(
+                _DELETE_SQL,
+                (origin, origin, run, run, camera, camera),
+            )
             return int(cursor.rowcount)
 
         return self._using(_query)

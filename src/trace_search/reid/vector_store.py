@@ -66,13 +66,17 @@ class VectorStore(Protocol):
         self,
         derived_from: str | None = None,
         run_id: str | None = None,
+        camera_id: str | None = None,
     ) -> int:
         """Delete matching rows and return how many were deleted.
 
         At least one of ``derived_from`` and ``run_id`` is required. When
-        both are set, a row must match both. Calling this with neither
-        raises ``ValueError`` and deletes nothing. A ``derived_from``
-        outside ``ALLOWED_DERIVED_FROM`` raises ``ValueError``.
+        both are set, a row must match both. ``camera_id`` narrows the
+        match to that camera. ``None`` keeps every camera. A camera id by
+        itself does not satisfy the required filter. Calling this with
+        neither ``derived_from`` nor ``run_id`` raises ``ValueError`` and
+        deletes nothing. A ``derived_from`` outside
+        ``ALLOWED_DERIVED_FROM`` raises ``ValueError``.
         """
 
     def count(
@@ -148,13 +152,17 @@ class InMemoryVectorStore:
         self,
         derived_from: str | None = None,
         run_id: str | None = None,
+        camera_id: str | None = None,
     ) -> int:
-        """Delete matching rows. Both arguments omitted raises ``ValueError``."""
+        """Delete matching rows. ``derived_from`` and ``run_id`` both omitted raises."""
         origin = _optional_derived_from(derived_from)
         run = _optional_text("run_id", run_id)
+        camera = _optional_text("camera_id", camera_id)
         _require_delete_target(origin, run)
         kept = tuple(
-            index for index, row in enumerate(self._rows) if not _row_matches(row, origin, run)
+            index
+            for index, row in enumerate(self._rows)
+            if not _row_matches(row, origin, run, camera)
         )
         removed = self._count - len(kept)
         if removed == 0:
@@ -245,10 +253,17 @@ def _require_delete_target(derived_from: str | None, run_id: str | None) -> None
         raise ValueError("delete_where requires derived_from or run_id")
 
 
-def _row_matches(row: _StoredRow, derived_from: str | None, run_id: str | None) -> bool:
+def _row_matches(
+    row: _StoredRow,
+    derived_from: str | None,
+    run_id: str | None,
+    camera_id: str | None = None,
+) -> bool:
     if derived_from is not None and row.derived_from != derived_from:
         return False
     if run_id is not None and row.run_id != run_id:
+        return False
+    if camera_id is not None and row.embedding.camera_id != camera_id:
         return False
     return True
 

@@ -5,7 +5,9 @@ SQLite files sit under pytest's tmp_path, outside the repo.
 """
 
 import math
+import os
 import socket
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,27 +110,40 @@ class ArraySource(VideoSource):
 
 
 class _EmbedSpy:
-    """Counts embed calls per crop shape. It does not keep the crops."""
+    """Counts embed calls per track. It does not keep the crops."""
 
     placeholder = True
 
     def __init__(self, inner: UntrainedPlaceholderEmbedder) -> None:
         self._inner = inner
         self.dim = inner.dim
-        self.calls_by_shape: dict[tuple[int, int], int] = {}
-        self.crops_by_shape: dict[tuple[int, int], int] = {}
+        self.calls_by_track: dict[int, int] = {}
+        self.crops_by_track: dict[int, int] = {}
 
     @property
     def name(self) -> str:
         return self._inner.name
 
     def embed(self, crops: Sequence[npt.NDArray[np.uint8]]) -> npt.NDArray[np.float32]:
-        shapes = [(int(crop.shape[0]), int(crop.shape[1])) for crop in crops]
-        for shape in set(shapes):
-            self.calls_by_shape[shape] = self.calls_by_shape.get(shape, 0) + 1
-        for shape in shapes:
-            self.crops_by_shape[shape] = self.crops_by_shape.get(shape, 0) + 1
+        seen: set[int] = set()
+        for crop in crops:
+            track_id = _track_id_from_crop(crop)
+            self.crops_by_track[track_id] = self.crops_by_track.get(track_id, 0) + 1
+            if track_id not in seen:
+                self.calls_by_track[track_id] = self.calls_by_track.get(track_id, 0) + 1
+                seen.add(track_id)
         return self._inner.embed(crops)
+
+
+def _track_id_from_crop(crop: npt.NDArray[np.uint8]) -> int:
+    """The painted upper colour is the track id. Shape is not."""
+    row = int(crop.shape[0] * 0.4)
+    pixel = tuple(int(channel) for channel in crop[row, int(crop.shape[1]) // 2])
+    if pixel == _RED:
+        return 1
+    if pixel == _GREEN:
+        return 2
+    raise AssertionError(pixel)
 
 
 @dataclass
@@ -204,9 +219,10 @@ def _observation(
     frame_number: int,
     box: tuple[float, float, float, float],
     det_class: DetClass = DetClass.PERSON,
+    camera_id: str = _CAMERA,
 ) -> TrackObservation:
     return TrackObservation(
-        camera_id=_CAMERA,
+        camera_id=camera_id,
         track_id=track_id,
         det_class=det_class,
         frame_number=frame_number,
@@ -359,11 +375,14 @@ def test_socket_connect_is_refused() -> None:
 
 
 def test_scripted_handbag_sits_beside_the_person() -> None:
-    """The bag extends past the person and still clears the containment bar."""
-    assigned = AttributeExtractor.assign_bags([_BOX_RED, _BOX_WITH_BAG], [_BOX_BAG])
-    assert assigned == [False, True]
-    ratio = AttributeExtractor._containment_ratio(_BOX_WITH_BAG, _BOX_BAG)
-    assert ratio > 0.5
+    """The bag extends past the person and is assigned through the public extractor."""
+    frame = np.zeros((_HEIGHT, _WIDTH, 3), dtype=np.uint8)
+    extracted = AttributeExtractor().extract_frame(
+        frame,
+        [_BOX_RED, _BOX_WITH_BAG],
+        [_BOX_BAG],
+    )
+    assert [item.bag_on_track for item in extracted] == [False, True]
 
 
 def test_red_over_blue_and_handbag_on_three_of_five_sampled_frames(tmp_path: Path) -> None:
@@ -389,6 +408,42 @@ def test_red_over_blue_and_handbag_on_three_of_five_sampled_frames(tmp_path: Pat
     assert rows[2][5] == _SAMPLES
     assert rows[1][6] == _ORIGIN
     assert rows[1][7] == _NOW
+
+
+def test_bag_inside_unsampled_person_stays_with_that_person(tmp_path: Path) -> None:
+    """A owns the only sample on the shared frame. The bag sits inside B.
+
+    A is on frames 0-4, so one sample is frame 2. B is on frames 0-6, so
+    one sample is frame 3. The bag is on both of those frames, fully inside
+    B and three quarters inside A.
+    """
+    scene = _build(
+        tmp_path,
+        7,
+        (
+            _PersonPaint(1, _BOX_PARTIAL, _RED, _BLUE, tuple(range(5))),
+            _PersonPaint(2, _BOX_OWNER, _GREEN, _YELLOW, tuple(range(7))),
+        ),
+        (_BagPaint(7, _BOX_SHARED_BAG, (2, 3), DetClass.HANDBAG),),
+    )
+    vectors = InMemoryVectorStore(scene.embedder.dim)
+    attr_store = _attributes(tmp_path)
+    _describe(scene, vectors, attr_store, samples_per_track=1)
+    rows = _rows(attr_store)
+    assert rows[1][2] is False
+    assert rows[2][2] is True
+    assert rows[1][5] == 1
+    assert rows[2][5] == 1
+    frames = {
+        item.track_id: item.frame_number
+        for item, _score in vectors.search(_probe(scene.embedder), k=2)
+    }
+    assert frames == {1: 2, 2: 3}
+
+
+_BOX_PARTIAL = (70.0, 100.0, 130.0, 180.0)
+_BOX_OWNER = (100.0, 100.0, 180.0, 180.0)
+_BOX_SHARED_BAG = (100.0, 100.0, 140.0, 140.0)
 
 
 def test_bag_only_on_unsampled_frames_stays_off(tmp_path: Path) -> None:
@@ -430,6 +485,29 @@ def test_person_tracks_get_one_unit_placeholder_vector_and_bag_tracks_get_none(
         assert embedding.frame_number == 0
         assert _norm(embedding.vector) == pytest.approx(1.0, abs=1e-5)
         assert embedding.track_id not in {7, 8}
+
+
+def test_mean_of_different_samples_is_normalised(tmp_path: Path) -> None:
+    """Two different unit rows. Their mean has norm below 1. The store keeps the unit mean."""
+    scene = _one_person(tmp_path, [(_RED, _BLUE), (_GREEN, _YELLOW)])
+    rows = ((1.0, 0.0), (0.0, 1.0))
+    vectors = InMemoryVectorStore(2)
+    attr_store = _attributes(tmp_path)
+    _describe(
+        scene,
+        vectors,
+        attr_store,
+        embedder=_SignedEmbedder(rows),
+        samples_per_track=2,
+    )
+    mean = np.mean(np.asarray(rows, dtype=np.float64), axis=0)
+    raw_norm = float(np.linalg.norm(mean))
+    assert raw_norm < 1.0
+    expected = mean / raw_norm
+    hits = vectors.search(np.asarray(expected, dtype=np.float32), k=1)
+    stored = hits[0][0].vector
+    assert _norm(stored) == pytest.approx(1.0, abs=1e-5)
+    assert np.asarray(stored, dtype=np.float64) == pytest.approx(expected, abs=1e-5)
 
 
 def test_tied_colours_are_unknown(tmp_path: Path) -> None:
@@ -487,18 +565,26 @@ def test_spy_writes_no_crop_or_frame_and_limits_embed_calls(
         (),
     )
     opened: list[str] = []
-    _forbid_media_writes(monkeypatch, opened)
+    _forbid_media_writes(monkeypatch, opened, tmp_path)
+    scene.source._images = [image.view(_RaisingToFile) for image in scene.source._images]
+    crop = scene.source._images[0][0:4, 0:4].copy()
+    with pytest.raises(AssertionError, match="/tmp/x"):
+        crop.tofile("/tmp/x")
+    with pytest.raises(AssertionError, match="trace-search-crop"):
+        os.open("/tmp/trace-search-crop", os.O_WRONLY | os.O_CREAT)
+    with pytest.raises(AssertionError, match="trace-search-crop"):
+        open("/tmp/trace-search-crop.bin", "wb")
     spy = _EmbedSpy(scene.embedder)
     vectors = SqliteVectorStore(tmp_path / "vectors.sqlite", spy.dim, clock=_clock)
     attr_store = _attributes(tmp_path)
     _describe(scene, vectors, attr_store, embedder=spy)
 
-    assert spy.calls_by_shape[(_BOX_TALL_SHAPE)] == _SAMPLES
-    assert spy.crops_by_shape[_BOX_TALL_SHAPE] == _SAMPLES
-    assert spy.calls_by_shape[_BOX_SHORT_SHAPE] == 3
-    assert spy.crops_by_shape[_BOX_SHORT_SHAPE] == 3
-    assert all(count <= _SAMPLES for count in spy.calls_by_shape.values())
-    assert all(count <= _SAMPLES for count in spy.crops_by_shape.values())
+    assert spy.calls_by_track[1] == _SAMPLES
+    assert spy.crops_by_track[1] == _SAMPLES
+    assert spy.calls_by_track[2] == 3
+    assert spy.crops_by_track[2] == 3
+    assert all(count <= _SAMPLES for count in spy.calls_by_track.values())
+    assert all(count <= _SAMPLES for count in spy.crops_by_track.values())
     files = [path for path in tmp_path.rglob("*") if path.is_file()]
     assert {path.suffix for path in files} == {".sqlite"}
     assert {path.name for path in files} == {
@@ -509,29 +595,72 @@ def test_spy_writes_no_crop_or_frame_and_limits_embed_calls(
     assert not any(Path(path).suffix.lower() in _MEDIA_SUFFIXES for path in opened)
 
 
-_BOX_TALL_SHAPE = (200, 50)
-_BOX_SHORT_SHAPE = (80, 30)
-
-
-def _forbid_media_writes(monkeypatch: pytest.MonkeyPatch, opened: list[str]) -> None:
+def _forbid_media_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    opened: list[str],
+    root: Path,
+) -> None:
+    """Refuse crop writes, including writes that never touch ``root``."""
     real_open = open
+    real_os_open = os.open
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 
     def _open(file: object, mode: str = "r", *args: object, **kwargs: object) -> object:
-        path = str(file)
+        if isinstance(file, int):
+            return real_open(file, mode, *args, **kwargs)
+        path = os.fsdecode(file) if isinstance(file, bytes) else os.fspath(file)
         opened.append(path)
-        if Path(path).suffix.lower() in _MEDIA_SUFFIXES:
-            raise AssertionError(path)
+        _refuse_blocked_write(path, root, writing=_mode_writes(mode))
         return real_open(file, mode, *args, **kwargs)
+
+    def _os_open(
+        path: object, flags: int, mode: int = 0o777, *args: object, **kwargs: object
+    ) -> int:
+        if isinstance(path, int):
+            return real_os_open(path, flags, mode, *args, **kwargs)
+        text = os.fsdecode(path) if isinstance(path, bytes) else os.fspath(path)
+        opened.append(text)
+        _refuse_blocked_write(text, root, writing=bool(flags & write_flags))
+        return real_os_open(path, flags, mode, *args, **kwargs)
 
     def _refuse(path: object, *_args: object, **_kwargs: object) -> None:
         opened.append(str(path))
         raise AssertionError(str(path))
 
     monkeypatch.setattr("builtins.open", _open)
+    monkeypatch.setattr(os, "open", _os_open)
     monkeypatch.setattr(cv2, "imwrite", _refuse)
     monkeypatch.setattr(np, "save", _refuse)
     monkeypatch.setattr(np, "savez", _refuse)
     monkeypatch.setattr(np, "savez_compressed", _refuse)
+
+
+class _RaisingToFile(np.ndarray):
+    """``ndarray.tofile`` is a C slot and cannot be replaced on the base type."""
+
+    def tofile(self, fid: object, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError(str(fid))
+
+
+def _mode_writes(mode: str) -> bool:
+    return any(mark in mode for mark in ("w", "a", "x", "+"))
+
+
+def _refuse_blocked_write(path: str, root: Path, *, writing: bool) -> None:
+    candidate = Path(path)
+    if candidate.suffix.lower() in _MEDIA_SUFFIXES:
+        raise AssertionError(path)
+    if writing and not _is_under(candidate, root):
+        raise AssertionError(path)
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def test_same_input_is_identical_across_two_runs(tmp_path: Path) -> None:
@@ -582,6 +711,170 @@ def test_rerun_keeps_one_vector_per_key(tmp_path: Path, backend: str) -> None:
     for embedding, _score in hits:
         assert embedding.placeholder is True
         assert _norm(embedding.vector) == pytest.approx(1.0, abs=1e-5)
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_second_camera_in_the_same_run_keeps_both(tmp_path: Path, backend: str) -> None:
+    source_a, source_b, tracklets, store, extractor, embedder = _pair(tmp_path)
+    vectors = _backend(tmp_path, backend, embedder.dim)
+    attr_store = _attributes(tmp_path)
+    _describe_camera(source_a, tracklets, store, extractor, embedder, vectors, attr_store)
+    _describe_camera(source_b, tracklets, store, extractor, embedder, vectors, attr_store)
+
+    assert vectors.count(run_id=_RUN) == 2
+    assert attr_store.count(run_id=_RUN) == 2
+    assert _colours(attr_store, _CAM_A) == (Color.RED.value, Color.BLUE.value, False)
+    assert _colours(attr_store, _CAM_B) == (Color.GREEN.value, Color.YELLOW.value, False)
+    keys = _camera_keys(vectors, _probe(embedder))
+    assert keys == {(_CAM_A, 1, 0), (_CAM_B, 1, 0)}
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_rerun_replaces_only_that_camera(tmp_path: Path, backend: str) -> None:
+    source_a, source_b, tracklets, store, extractor, embedder = _pair(tmp_path)
+    vectors = _backend(tmp_path, backend, embedder.dim)
+    attr_store = _attributes(tmp_path)
+    _describe_camera(source_a, tracklets, store, extractor, embedder, vectors, attr_store)
+    _describe_camera(source_b, tracklets, store, extractor, embedder, vectors, attr_store)
+    kept_attributes = _rowids(attr_store.db_path)[_CAM_B]
+    kept_vector = _cam_b_vector(vectors, embedder)
+    _describe_camera(source_a, tracklets, store, extractor, embedder, vectors, attr_store)
+
+    assert vectors.count(run_id=_RUN) == 2
+    assert attr_store.count(camera_id=_CAM_A, run_id=_RUN) == 1
+    assert attr_store.count(camera_id=_CAM_B, run_id=_RUN) == 1
+    assert _rowids(attr_store.db_path)[_CAM_B] == kept_attributes
+    assert _same_cam_b(vectors, embedder, kept_vector)
+    assert _colours(attr_store, _CAM_B) == (Color.GREEN.value, Color.YELLOW.value, False)
+    keys = _camera_keys(vectors, _probe(embedder))
+    assert len(keys) == len(set(keys)) == 2
+    assert (_CAM_B, 1, 0) in keys
+    assert (_CAM_A, 1, 0) in keys
+
+
+_CAM_A = "cam-1"
+_CAM_B = "cam-2"
+
+
+def _backend(tmp_path: Path, backend: str, dim: int) -> VectorStore:
+    if backend == "memory":
+        return InMemoryVectorStore(dim)
+    return SqliteVectorStore(tmp_path / "vectors.sqlite", dim, clock=_clock)
+
+
+def _describe_camera(
+    source: ArraySource,
+    tracklets: Sequence[Tracklet],
+    store: TrackStore,
+    extractor: AttributeExtractor,
+    embedder: AppearanceEmbedder,
+    vectors: VectorStore,
+    attr_store: TrackAttributeStore,
+) -> AppearanceStats:
+    return describe_tracks(
+        source,
+        tracklets,
+        [],
+        store,
+        _RUN,
+        extractor,
+        embedder,
+        attr_store,
+        vectors,
+        _ORIGIN,
+        3,
+    )
+
+
+def _pair(
+    tmp_path: Path,
+) -> tuple[
+    ArraySource,
+    ArraySource,
+    list[Tracklet],
+    TrackStore,
+    AttributeExtractor,
+    UntrainedPlaceholderEmbedder,
+]:
+    observations: list[TrackObservation] = []
+    images_a: list[npt.NDArray[np.uint8]] = []
+    images_b: list[npt.NDArray[np.uint8]] = []
+    for frame_number in range(3):
+        image_a = _blank()
+        _paint(image_a, _BOX_RED, _RED, _BLUE)
+        images_a.append(image_a)
+        observations.append(_observation(1, frame_number, _BOX_RED, camera_id=_CAM_A))
+        image_b = _blank()
+        _paint(image_b, _BOX_WITH_BAG, _GREEN, _YELLOW)
+        images_b.append(image_b)
+        observations.append(_observation(1, frame_number, _BOX_WITH_BAG, camera_id=_CAM_B))
+    store = TrackStore(tmp_path / "tracks.sqlite", clock=_clock)
+    store.write(_RUN, _FIXTURE, _ORIGIN, observations)
+    return (
+        ArraySource(_CAM_A, images_a),
+        ArraySource(_CAM_B, images_b),
+        load_tracklets(store, _RUN, det_class=DetClass.PERSON),
+        store,
+        AttributeExtractor(),
+        _embedder(),
+    )
+
+
+def _colours(
+    attr_store: TrackAttributeStore,
+    camera_id: str,
+) -> tuple[str, str, bool]:
+    found = attr_store.read(camera_id, run_id=_RUN)
+    assert len(found) == 1
+    record = found[0]
+    return (record.upper_color, record.lower_color, record.bag_on_track)
+
+
+def _camera_keys(vectors: VectorStore, probe: npt.NDArray[np.float32]) -> set[_Key]:
+    return {
+        (item.camera_id, item.track_id, item.frame_number)
+        for item, _score in vectors.search(probe, k=10)
+    }
+
+
+_ATTRIBUTE_ROWS = "SELECT rowid, camera_id FROM track_attributes"
+_VECTOR_ROWS = "SELECT rowid, camera_id FROM appearance_embeddings"
+
+
+def _rowids(db_path: Path) -> dict[str, int]:
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute(_ATTRIBUTE_ROWS).fetchall()
+    finally:
+        connection.close()
+    return {str(camera_id): int(rowid) for rowid, camera_id in rows}
+
+
+def _vector_rowids(db_path: Path) -> dict[str, int]:
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute(_VECTOR_ROWS).fetchall()
+    finally:
+        connection.close()
+    return {str(camera_id): int(rowid) for rowid, camera_id in rows}
+
+
+def _cam_b_vector(vectors: VectorStore, embedder: UntrainedPlaceholderEmbedder) -> object:
+    if isinstance(vectors, SqliteVectorStore):
+        return _vector_rowids(vectors.db_path)[_CAM_B]
+    found = {item.camera_id: item for item, _score in vectors.search(_probe(embedder), k=10)}
+    return found[_CAM_B]
+
+
+def _same_cam_b(
+    vectors: VectorStore,
+    embedder: UntrainedPlaceholderEmbedder,
+    kept: object,
+) -> bool:
+    current = _cam_b_vector(vectors, embedder)
+    if isinstance(vectors, SqliteVectorStore):
+        return current == kept
+    return current is kept
 
 
 def test_cross_store_results_match_by_key_and_score(tmp_path: Path) -> None:
