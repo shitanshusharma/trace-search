@@ -161,8 +161,8 @@ def _assert_separation_rejects(tmp_path: Path, row: dict[str, object], reason: s
     assert "PASSED" not in stdout
 
 
-def _license_use(name: str, entry_type: str, use: str) -> str:
-    return f"{name}: type '{entry_type}' cannot carry use '{use}'"
+def _license_use(row_name: str, entry_type: str, use: str) -> str:
+    return f"{row_name}: type '{entry_type}' cannot carry use '{use}'"
 
 
 def _separation_use(entry_type: str, use: str) -> str:
