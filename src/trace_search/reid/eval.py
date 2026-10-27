@@ -20,7 +20,7 @@ import argparse
 import json
 import math
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -123,19 +123,27 @@ class _QueryScore:
     hits: tuple[bool, ...]
 
 
+_GalleryMask = Callable[[EvalItem, EvalItem], bool]
+
+
 def rank1_map(
     query: Sequence[EvalItem],
     gallery: Sequence[EvalItem],
     distance: str = _DISTANCE,
+    *,
+    gallery_mask: _GalleryMask | None = None,
 ) -> ReidEvalResult:
     """Score ``query`` against ``gallery`` with the cross-camera protocol.
 
     ``distance`` must be ``cosine``. Same-label same-camera gallery items
-    are junk. A query with no match on another camera is invalid and is
-    left out of CMC and mAP. Equal distances keep gallery order.
+    are junk. ``gallery_mask`` runs after that junk filter. ``None`` keeps
+    the previous gallery. A false mask result drops that gallery item for
+    that query. ``num_gallery`` stays ``len(gallery)``. A query with no
+    match on another camera is invalid and is left out of CMC and mAP.
+    Equal distances keep gallery order. The JSON evidence flag stays false.
     """
     _require_distance(distance)
-    scores = [_rank_query(item, gallery) for item in query]
+    scores = [_rank_query(item, gallery, gallery_mask) for item in query]
     valid = [score for score in scores if score is not None]
     invalid = len(query) - len(valid)
     cmc = _mean_cmc(valid)
@@ -392,12 +400,29 @@ def _require_distance(distance: str) -> None:
     raise ValueError(f"distance must be {_DISTANCE!r}, got {distance!r}")
 
 
-def _rank_query(query: EvalItem, gallery: Sequence[EvalItem]) -> _QueryScore | None:
-    kept = tuple(item for item in gallery if not _is_junk(query, item))
+def _rank_query(
+    query: EvalItem,
+    gallery: Sequence[EvalItem],
+    gallery_mask: _GalleryMask | None = None,
+) -> _QueryScore | None:
+    kept = tuple(item for item in gallery if _gallery_item_kept(query, item, gallery_mask))
     if not _has_match(query, kept):
         return None
     ordered = _order_by_distance(query, kept)
     return _score_ordered(query, ordered)
+
+
+def _gallery_item_kept(
+    query: EvalItem,
+    item: EvalItem,
+    gallery_mask: _GalleryMask | None,
+) -> bool:
+    """Junk is excluded. A false mask excludes the item. True keeps it."""
+    if _is_junk(query, item):
+        return False
+    if gallery_mask is None:
+        return True
+    return gallery_mask(query, item)
 
 
 def _is_junk(query: EvalItem, item: EvalItem) -> bool:

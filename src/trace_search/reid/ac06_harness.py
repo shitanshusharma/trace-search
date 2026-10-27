@@ -14,10 +14,11 @@ not fold. ``unit_test`` skips that gate and returns null diagnostic
 numbers for every id.
 
 ``gallery_mask`` is the hook T6 uses for topology and transit-time
-limits. This harness refuses a non-None mask: ``rank1_map`` has no mask
-argument, so applying one here would not be that protocol. T5 passes
-``None``. The payload says the limits were not applied. This module
-does not read a fixture file or a label file.
+limits. ``unit_test``, and an eval call that is missing an array, refuse
+a non-None mask. An eval call that measures both arrays passes the mask
+to ``rank1_map``. A true result keeps that gallery item. When a mask is
+applied, ``topology_time_limits`` says it was applied and is not evidence.
+This module does not read a fixture file or a label file.
 """
 
 from __future__ import annotations
@@ -42,9 +43,10 @@ _DIAGNOSTICS_NOTE = (
     "Not an AC-06 result. AC-06 is DEFERRED in Cut 01; these numbers are not evidence."
 )
 _TOPOLOGY_NOTE = "not applied (T6 supplies gallery_mask)"
+_TOPOLOGY_APPLIED = "applied via gallery_mask; not evidence"
 _MASK_REFUSAL = (
-    "gallery_mask is not applied in Cut 01; T6 supplies gallery_mask. "
-    "rank1_map has no mask argument, so a non-None mask is refused."
+    "gallery_mask is not applied on this path; T6 supplies gallery_mask "
+    "only when eval measures both arrays."
 )
 
 GalleryMask = Callable[[EvalItem, EvalItem], bool]
@@ -104,16 +106,18 @@ def run(
     when arrays were supplied. In ``eval``, a blocked prefix or an id
     that is not ``FX-HOLD`` plus three ASCII digits raises
     ``FixtureSeparationError`` and keeps the original id. Omitted arrays
-    are not measured. A non-None ``gallery_mask`` raises ``ValueError``.
-    Callers build query and gallery from load_reid_samples(EVALUATION).
+    are not measured. ``unit_test`` raises ``ValueError`` for a non-None
+    ``gallery_mask``. Eval with a missing array does the same. Eval that
+    measures both arrays passes the mask through and still reports that
+    the numbers are not evidence.
     """
     original = _require_fixture_id(fixture_id)
     checked = _require_mode(mode)
-    _refuse_mask(gallery_mask)
     if checked == _UNIT_TEST_MODE:
+        _refuse_mask(gallery_mask)
         return _null_result(original)
     _refuse_blocked(original)
-    return _eval_hold(original, query, gallery)
+    return _eval_hold(original, query, gallery, gallery_mask)
 
 
 def _require_fixture_id(fixture_id: object) -> str:
@@ -151,13 +155,16 @@ def _eval_hold(
     original: str,
     query: Sequence[EvalItem] | None,
     gallery: Sequence[EvalItem] | None,
+    gallery_mask: GalleryMask | None,
 ) -> Ac06RunResult:
     if _missing_arrays(query, gallery):
+        _refuse_mask(gallery_mask)
         return _null_result(original)
     return _measured(
         original,
         cast(Sequence[EvalItem], query),
         cast(Sequence[EvalItem], gallery),
+        gallery_mask,
     )
 
 
@@ -225,8 +232,9 @@ def _measured(
     fixture_id: str,
     query: Sequence[EvalItem],
     gallery: Sequence[EvalItem],
+    gallery_mask: GalleryMask | None,
 ) -> Ac06RunResult:
-    scored = rank1_map(query, gallery)
+    scored = rank1_map(query, gallery, gallery_mask=gallery_mask)
     return _payload(
         fixture_id,
         scored.rank1,
@@ -234,7 +242,14 @@ def _measured(
         scored.num_query,
         scored.num_valid_query,
         scored.num_gallery,
+        _topology_note(gallery_mask),
     )
+
+
+def _topology_note(gallery_mask: GalleryMask | None) -> str:
+    if gallery_mask is None:
+        return _TOPOLOGY_NOTE
+    return _TOPOLOGY_APPLIED
 
 
 def _null_result(fixture_id: str) -> Ac06RunResult:
@@ -248,6 +263,7 @@ def _payload(
     num_query: int | None,
     num_valid_query: int | None,
     num_gallery: int | None,
+    topology_time_limits: str = _TOPOLOGY_NOTE,
 ) -> Ac06RunResult:
     return {
         "criterion": "AC-06",
@@ -263,6 +279,7 @@ def _payload(
             num_query,
             num_valid_query,
             num_gallery,
+            topology_time_limits,
         ),
     }
 
@@ -297,6 +314,7 @@ def _diagnostics(
     num_query: int | None,
     num_valid_query: int | None,
     num_gallery: int | None,
+    topology_time_limits: str,
 ) -> Diagnostics:
     return {
         "note": _DIAGNOSTICS_NOTE,
@@ -305,5 +323,5 @@ def _diagnostics(
         "num_query": num_query,
         "num_valid_query": num_valid_query,
         "num_gallery": num_gallery,
-        "topology_time_limits": _TOPOLOGY_NOTE,
+        "topology_time_limits": topology_time_limits,
     }
