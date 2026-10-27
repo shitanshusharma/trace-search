@@ -26,6 +26,9 @@ A source that yields no frames raises before any row is deleted.
 A source that yields frames but never yields a planned sample frame
 raises before any row is deleted. An already-open source positioned
 past every planned sample leaves the camera's existing rows in place.
+A camera with no sampled person raises the same way: the plan is
+empty, so the read has no planned sample frame, and that camera's
+existing rows are not cleared.
 Re-run policy: replace this camera before re-adding, not an in-store
 dedupe and not a purge of the whole run. ``VectorStore`` allows
 duplicate ``(camera_id, track_id, frame_number)`` keys. Before the new
@@ -142,9 +145,12 @@ def describe_tracks(
 
     A source that yields no frames raises ``ValueError`` before that
     delete. A source that yields frames but never yields a planned
-    sample frame raises ``ValueError`` before that delete. A person
-    track whose boxes are all out of frame is stored as attributes
-    and gets no vector.
+    sample frame raises ``ValueError`` before that delete. A camera
+    with no sampled person raises ``ValueError`` before that delete
+    as well. The plan is empty, so a source that yields frames still
+    has no planned sample frame, and that camera's existing rows stay.
+    A person track whose boxes are all out of frame is stored as
+    attributes and gets no vector.
     """
     limit = _require_limit(samples_per_track)
     origin = _require_origin(derived_from)
@@ -172,7 +178,11 @@ def describe_tracks(
 
 
 def _require_planned_frame(frames_read: int, planned_read: int) -> None:
-    """Fail closed before a delete when the read missed every planned sample."""
+    """Fail closed before a delete when the read missed every planned sample.
+
+    An empty plan leaves ``planned_read`` at 0. A camera with no sampled
+    person raises here, and its existing rows are not cleared.
+    """
     if frames_read == 0:
         raise ValueError("source yielded no frames")
     if planned_read == 0:

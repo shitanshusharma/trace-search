@@ -1090,6 +1090,39 @@ def test_source_past_every_planned_sample_raises_before_purge(tmp_path: Path, ba
     assert attr_store.count(run_id=_RUN) == 2
 
 
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_camera_with_no_sampled_person_raises_before_purge(tmp_path: Path, backend: str) -> None:
+    """No sampled person raises before delete. Existing rows and rowids stay."""
+    scene = _parade(tmp_path)
+    vectors = _backend(tmp_path, backend, scene.embedder.dim)
+    attr_store = _attributes(tmp_path)
+    _describe(scene, vectors, attr_store)
+    kept_rows = _attribute_identity(attr_store.db_path)
+    kept_vectors = _vector_identity(vectors, scene.embedder)
+    kept_attributes = _rows(attr_store)
+    source = ArraySource(_CAMERA, [_blank(), _blank(), _blank()])
+    unsampled = _manual(_CAMERA, 99, (0, 1, 2))
+    with pytest.raises(ValueError, match="planned sample"):
+        describe_tracks(
+            source,
+            [unsampled],
+            scene.bag_tracklets,
+            scene.store,
+            _RUN,
+            scene.extractor,
+            scene.embedder,
+            attr_store,
+            vectors,
+            _ORIGIN,
+        )
+    assert not source.is_open()
+    assert _attribute_identity(attr_store.db_path) == kept_rows
+    assert _vector_identity(vectors, scene.embedder) == kept_vectors
+    assert _rows(attr_store) == kept_attributes
+    assert vectors.count(run_id=_RUN) == 2
+    assert attr_store.count(run_id=_RUN) == 2
+
+
 _ATTRIBUTE_IDENTITY = "SELECT rowid, camera_id, track_id FROM track_attributes"
 _VECTOR_IDENTITY = "SELECT rowid, camera_id, track_id, frame_number FROM appearance_embeddings"
 
