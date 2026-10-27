@@ -49,7 +49,7 @@ def _generator_rows(manifest: dict[str, object]) -> list[dict[str, object]]:
 
 
 def _generator_row() -> dict[str, object]:
-    rows = _generator_rows(_manifest())
+    rows = [row for row in _generator_rows(_manifest()) if row.get("name") == _GENERATOR_NAME]
     assert len(rows) == 1
     return rows[0]
 
@@ -61,7 +61,11 @@ def _with_generator_row(row: dict[str, object]) -> dict[str, object]:
     replaced = False
     updated: list[object] = []
     for entry in entries:
-        if isinstance(entry, dict) and entry.get("type") == "generator":
+        if (
+            isinstance(entry, dict)
+            and entry.get("type") == "generator"
+            and entry.get("name") == _GENERATOR_NAME
+        ):
             updated.append(row)
             replaced = True
         else:

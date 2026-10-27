@@ -1120,6 +1120,17 @@
       "generator_license": "MIT",
       "seed": "0",
       "notes": "In-memory flat-colour block patterns for the evaluation command only. Nothing is written to disk. The DEV tag lives only on the in-memory samples. Shitanshu confirmed DEV on 24 Oct 2026 at 1:06 PM IST. This row has no use and no fixture_id. For an in-repo generator row, version is the base commit the file was written against. It is not a content pin and it is not updated when the file bytes change. The sha256 field pins the file bytes."
+    },
+    {
+      "name": "src/trace_search/fixtures/route_generator.py",
+      "version": "8af465e2e3ab3e3f9159bfd993cd0082bec62430",
+      "type": "generator",
+      "license": "MIT",
+      "source_url": "https://github.com/shitanshusharma/trace-search",
+      "sha256": "8a3f95e0a131a8c8d9a9cf449a2c157ed16d545434378a8235c410002a8e596d",
+      "generator_license": "MIT",
+      "seed": "0..2147483647",
+      "notes": "Flat two-band rectangles for seeded route fixtures. Outputs are temp files, never committed. Seed range is 0..2147483647. Licence MIT. D-T6-1 (a), Shitanshu, 24 Oct 2026. This row has no use and no fixture_id. For an in-repo generator row, version is the base commit the file was written against. It is not a content pin and it is not updated when the file bytes change. The sha256 field pins the file bytes."
     }
   ]
 }
