@@ -5,10 +5,10 @@ Extracts upper-clothing color, lower-clothing color, and bag presence
 from person bounding boxes. No trained weights, no sensitive attributes.
 """
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import cast
 
 import numpy as np
 import numpy.typing as npt
@@ -530,46 +530,152 @@ class AttributeExtractor:
         return dominant_color, float(confidence)
 
 
+@dataclass(frozen=True)
+class _ParsedAttributeQuery:
+    """Known fields from one attribute query, after validation."""
+
+    min_confidence: float
+    upper_color: Color | None
+    lower_color: Color | None
+    bag_on_track: bool | None
+
+
+def _require_query_min_confidence(value: object) -> float:
+    """A finite int or float in ``[0, 1]``. A bool is refused. Do not clamp."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"min_confidence must be an int or float, got {value!r}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"min_confidence must be finite, got {value!r}")
+    if number < 0.0 or number > 1.0:
+        raise ValueError(f"min_confidence must be in [0, 1], got {value!r}")
+    return number
+
+
+def _min_confidence_from_query(query: Mapping[str, object]) -> float:
+    """The query threshold, or 0.0 when the key is absent."""
+    if "min_confidence" not in query:
+        return 0.0
+    return _require_query_min_confidence(query["min_confidence"])
+
+
+def _require_query_color(label: str, value: object) -> Color:
+    """A ``str`` ``Color`` value. Other types are a TypeError."""
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a str, got {value!r}")
+    try:
+        return Color(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be a Color value, got {value!r}") from exc
+
+
+def _optional_query_color(query: Mapping[str, object], key: str) -> Color | None:
+    """The colour for ``key``, or None when the key is absent."""
+    if key not in query:
+        return None
+    return _require_query_color(key, query[key])
+
+
+def _optional_query_bag(query: Mapping[str, object]) -> bool | None:
+    """The bag flag, or None when the key is absent. Only a bool is accepted."""
+    if "bag_on_track" not in query:
+        return None
+    value = query["bag_on_track"]
+    if not isinstance(value, bool):
+        raise TypeError(f"bag_on_track must be a bool, got {value!r}")
+    return value
+
+
+def _parse_attribute_query(query: Mapping[str, object]) -> _ParsedAttributeQuery:
+    """Validate every present known field before matching can return False.
+
+    Unknown keys are ignored. The first invalid field raises, in this order:
+    ``min_confidence``, ``upper_color``, ``lower_color``, ``bag_on_track``.
+    """
+    return _ParsedAttributeQuery(
+        min_confidence=_min_confidence_from_query(query),
+        upper_color=_optional_query_color(query, "upper_color"),
+        lower_color=_optional_query_color(query, "lower_color"),
+        bag_on_track=_optional_query_bag(query),
+    )
+
+
+def _confidence_matches(attrs: PersonAttributes, parsed: _ParsedAttributeQuery) -> bool:
+    """True when each present colour meets the threshold. Equal confidence passes."""
+    minimum = parsed.min_confidence
+    if parsed.upper_color is not None and attrs.upper_confidence < minimum:
+        return False
+    if parsed.lower_color is not None and attrs.lower_confidence < minimum:
+        return False
+    return True
+
+
+def _colors_match(attrs: PersonAttributes, parsed: _ParsedAttributeQuery) -> bool:
+    """True when each present colour equals the track colour."""
+    if parsed.upper_color is not None and attrs.upper_clothing_color != parsed.upper_color:
+        return False
+    if parsed.lower_color is not None and attrs.lower_clothing_color != parsed.lower_color:
+        return False
+    return True
+
+
+def _bag_matches(attrs: PersonAttributes, parsed: _ParsedAttributeQuery) -> bool:
+    """True when the bag flag is absent or equal."""
+    if parsed.bag_on_track is None:
+        return True
+    return attrs.bag_on_track == parsed.bag_on_track
+
+
 class AttributeQuery:
     """Helper for attribute-based search queries on anonymous tracks."""
 
     @staticmethod
     def matches(attrs: PersonAttributes, query: Mapping[str, object]) -> bool:
-        """
-        Check if attributes match a query.
+        """Check if attributes match a query.
 
         Query format:
             {
-                "upper_color": "red",  # optional
-                "lower_color": "blue",  # optional
-                "bag_on_track": True,  # optional
-                "min_confidence": 0.5,  # optional, applies to both colors
+                "upper_color": "red",  # optional str Color value
+                "lower_color": "blue",  # optional str Color value
+                "bag_on_track": True,  # optional bool
+                "min_confidence": 0.5,  # optional int or float in [0, 1]
             }
 
+        Unknown keys are ignored. Every present known field is validated
+        before any condition can return False. When more than one field is
+        invalid, the first error is raised in this order: ``min_confidence``,
+        ``upper_color``, ``lower_color``, ``bag_on_track``.
+
+        ``min_confidence`` defaults to 0.0 when the key is absent. It applies
+        only when the matching colour key is present. The comparison is strict
+        less-than, so a colour confidence equal to the threshold still matches.
+        A present value must be an int or a float. ``bool`` is refused, because
+        it is a subclass of ``int``. ``NaN``, positive or negative infinity, and
+        any number outside the closed range [0, 1] raise ``ValueError``. The
+        number is not clamped.
+
+        ``upper_color`` and ``lower_color`` must be a ``str``. A ``Color``
+        member is a ``str`` and is accepted. Any other type raises
+        ``TypeError``. Text that is not a ``Color`` value raises
+        ``ValueError``. Case and surrounding spaces are not rewritten.
+
+        ``bag_on_track`` must be a bool. The integers 0 and 1 raise
+        ``TypeError``.
+
         Returns:
-            True if all specified query conditions match
+            True if every specified query condition matches.
+
+        Raises:
+            TypeError: A present field has the wrong type. ``min_confidence``
+                must be an int or float and must not be a bool. Colours must
+                be ``str``. ``bag_on_track`` must be a bool.
+            ValueError: A present field has the right type and a bad value.
+                ``min_confidence`` is ``NaN``, infinite, or outside [0, 1].
+                A colour string is not a ``Color`` value.
         """
-        min_conf = cast(float, query.get("min_confidence", 0.0))
-
-        # Check confidence threshold
-        if "upper_color" in query and attrs.upper_confidence < min_conf:
+        parsed = _parse_attribute_query(query)
+        if not _confidence_matches(attrs, parsed):
             return False
-        if "lower_color" in query and attrs.lower_confidence < min_conf:
+        if not _colors_match(attrs, parsed):
             return False
-
-        # Check upper color
-        if "upper_color" in query:
-            if attrs.upper_clothing_color != Color(cast(str, query["upper_color"])):
-                return False
-
-        # Check lower color
-        if "lower_color" in query:
-            if attrs.lower_clothing_color != Color(cast(str, query["lower_color"])):
-                return False
-
-        # Check bag
-        if "bag_on_track" in query:
-            if attrs.bag_on_track != cast(bool, query["bag_on_track"]):
-                return False
-
-        return True
+        return _bag_matches(attrs, parsed)
