@@ -646,6 +646,29 @@ def test_box_outside_frame_writes_no_audit(
     assert world.vector_spy.searches == []
 
 
+@pytest.mark.parametrize(
+    "box",
+    (
+        (5.0, 0.0, 8.0, 2.0),
+        (0.0, 5.0, 2.0, 8.0),
+    ),
+)
+def test_box_wholly_right_or_below_the_frame_does_not_overlap(
+    tmp_path: Path, box: tuple[float, float, float, float]
+) -> None:
+    """A box wholly right of a 4 by 4 frame, or wholly below it, raises before embed.
+
+    The message is the overlap error. An empty slice is not the backstop.
+    """
+    world = _open_world(tmp_path)
+    _add(world, camera_id="cam-a", track_id=1, t_start=1.0, vector=_AXIS, box=box)
+    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="does not overlap"):
+        _call(world, "by_track", frame=frame)
+    assert world.audit.count() == 0
+    assert world.embedder.calls == 0
+
+
 def test_attribute_query_returns_overlap_inside_cameras(tmp_path: Path) -> None:
     """Matching tracks only. Edges touch the window. A covering track is inside."""
     world = _open_world(tmp_path)
@@ -1544,6 +1567,80 @@ def test_mixed_origins_on_one_run_raise_before_audit(tmp_path: Path) -> None:
     assert world.vector_spy.searches == []
 
 
+def test_origin_count_is_scoped_to_the_requested_run(tmp_path: Path) -> None:
+    """A SITE run returns its own track while a CODE_TEST run shares the store."""
+    world = _open_world(tmp_path, _AXIS)
+    _add(
+        world,
+        camera_id="cam-a",
+        track_id=1,
+        t_start=1.0,
+        upper="red",
+        vector=_AXIS,
+        run_id="run-1",
+        derived_from="CODE_TEST",
+    )
+    _add(
+        world,
+        camera_id="cam-a",
+        track_id=1,
+        t_start=1.0,
+        upper="red",
+        vector=_AXIS,
+        run_id="run-2",
+        derived_from="SITE",
+    )
+    assert _attrs(world, run_id="run-2") == [TrackRef("cam-a", 1, 1.0, 1.0, None)]
+    refs = _crop_search(world, window=(0, 10), run_id="run-2")
+    assert [(item.camera_id, item.track_id) for item in refs] == [("cam-a", 1)]
+
+
+def test_unknown_run_raises_while_another_run_is_stored(tmp_path: Path) -> None:
+    """A missing run id raises before an audit write when another run has rows."""
+    world = _open_world(tmp_path, _AXIS)
+    _add(world, camera_id="cam-a", track_id=1, t_start=1.0, upper="red", run_id="run-1")
+    with pytest.raises(ValueError, match="unknown"):
+        _attrs(world, run_id="run-9")
+    assert world.audit.count() == 0
+
+
+def test_by_track_searches_vectors_from_the_run_origin(tmp_path: Path) -> None:
+    """A SITE click keeps the SITE track. A higher CODE_TEST score stays out."""
+    world = _open_world(tmp_path, _AXIS)
+    _add(
+        world,
+        camera_id="cam-a",
+        track_id=1,
+        t_start=1.0,
+        vector=_ORTH,
+        run_id="run-1",
+        derived_from="SITE",
+    )
+    _add(
+        world,
+        camera_id="cam-a",
+        track_id=2,
+        t_start=1.0,
+        vector=_DIAG,
+        run_id="run-1",
+        derived_from="SITE",
+    )
+    _add_vector(world, "cam-a", 1, 3, _AXIS, run_id="run-1", derived_from="CODE_TEST")
+    refs = _call(world, "by_track", k=1)
+    assert [(item.camera_id, item.track_id) for item in refs] == [("cam-a", 2)]
+
+
+def test_by_track_refuses_a_mixed_origin_run_before_embed(tmp_path: Path) -> None:
+    """Click-to-search raises before embed and before audit when the run has two origins."""
+    world = _open_world(tmp_path, _AXIS)
+    _add(world, camera_id="cam-a", track_id=1, t_start=1.0, vector=_AXIS, derived_from="CODE_TEST")
+    _add(world, camera_id="cam-a", track_id=2, t_start=2.0, derived_from="SMOKE")
+    with pytest.raises(ValueError, match="more than one derived_from"):
+        _call(world, "by_track")
+    assert world.audit.count() == 0
+    assert world.embedder.calls == 0
+
+
 def test_backpack_track_is_searched(tmp_path: Path) -> None:
     """Loading only DetClass.PERSON would return the later person track."""
     world = _open_world(tmp_path)
@@ -1598,6 +1695,41 @@ def test_vector_span_is_the_union_of_overlapping_ranges(tmp_path: Path) -> None:
     assert refs[0].t_start == 0.0
     assert refs[0].t_end == 60.0
     assert refs[0].score == pytest.approx(1.0)
+
+
+def test_span_is_the_min_start_of_only_the_overlapping_ranges(tmp_path: Path) -> None:
+    """The backpack starts before the person. The handbag is outside and stays out."""
+    world = _open_world(tmp_path, _AXIS)
+    _add(
+        world,
+        camera_id="cam-a",
+        track_id=1,
+        t_start=50.0,
+        t_end=60.0,
+        det_class=DetClass.PERSON,
+        attributes=False,
+        vector=_AXIS,
+    )
+    _add(
+        world,
+        camera_id="cam-a",
+        track_id=1,
+        t_start=20.0,
+        t_end=30.0,
+        det_class=DetClass.BACKPACK,
+        attributes=False,
+    )
+    _add(
+        world,
+        camera_id="cam-a",
+        track_id=1,
+        t_start=200.0,
+        t_end=210.0,
+        det_class=DetClass.HANDBAG,
+        attributes=False,
+    )
+    refs = _crop_search(world, window=(25, 100), k=1, run_id="run-1")
+    assert [(item.t_start, item.t_end) for item in refs] == [(20.0, 60.0)]
 
 
 def test_reported_span_is_not_clipped_to_the_window(tmp_path: Path) -> None:
