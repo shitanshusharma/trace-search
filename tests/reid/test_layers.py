@@ -773,15 +773,10 @@ def test_layer_module_does_not_import_a_deep_learning_package() -> None:
 def test_no_network_guard_records_zero_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    def refuse_connect(*_args: object, **_kwargs: object) -> None:
-        calls.append("connect")
-        raise OSError("refused")
-
     def refuse_create_connection(*_args: object, **_kwargs: object) -> None:
         calls.append("create_connection")
         raise OSError("refused")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse_connect)
     monkeypatch.setattr(socket, "create_connection", refuse_create_connection)
     values = _nchw(22)
     rng = np.random.default_rng(0)

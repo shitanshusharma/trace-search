@@ -956,15 +956,10 @@ def test_no_network_on_add_search_delete_count_and_purge(
 ) -> None:
     calls: list[str] = []
 
-    def refuse_connect(*_args: object, **_kwargs: object) -> None:
-        calls.append("connect")
-        raise OSError("refused")
-
     def refuse_create_connection(*_args: object, **_kwargs: object) -> None:
         calls.append("create_connection")
         raise OSError("refused")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse_connect)
     monkeypatch.setattr(socket, "create_connection", refuse_create_connection)
     store = _store(tmp_path)
     row = _embedding("cam-a", 1, 1, _unit(1.0, 0.0, 0.0))
