@@ -11,6 +11,7 @@ Covers:
 - Negative coordinates and out-of-frame boxes
 """
 
+import math
 import warnings
 
 import numpy as np
@@ -423,3 +424,286 @@ class TestAttributeQuery:
 
         assert AttributeQuery.matches(attrs, {"upper_color": "red", "bag_on_track": True}) is True
         assert AttributeQuery.matches(attrs, {"upper_color": "red", "bag_on_track": False}) is False
+
+
+def _person(
+    *,
+    upper: Color = Color.RED,
+    lower: Color = Color.BLUE,
+    bag: bool = True,
+    upper_confidence: float = 0.9,
+    lower_confidence: float = 0.8,
+) -> PersonAttributes:
+    return PersonAttributes(
+        upper_clothing_color=upper,
+        lower_clothing_color=lower,
+        bag_on_track=bag,
+        upper_confidence=upper_confidence,
+        lower_confidence=lower_confidence,
+    )
+
+
+class TestAttributeQueryValidation:
+    """Present query fields are checked before a match can return False."""
+
+    def test_bag_on_track_yes_raises_type_error(self):
+        """A string bag flag is a type error, not a failed comparison."""
+        with pytest.raises(TypeError, match="bag_on_track"):
+            AttributeQuery.matches(_person(), {"bag_on_track": "yes"})
+
+    @pytest.mark.parametrize(
+        "value", [1, 0, None, np.bool_(True)], ids=["1", "0", "None", "np.bool_"]
+    )
+    def test_bag_on_track_non_bool_raises_type_error(self, value: object):
+        """0, 1, None, and np.bool_ are not bools, even when they compare equal."""
+        with pytest.raises(TypeError, match="bag_on_track"):
+            AttributeQuery.matches(_person(bag=bool(value)), {"bag_on_track": value})
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("upper_color", "mauve"),
+            ("lower_color", "mauve"),
+            ("upper_color", "RED"),
+            ("lower_color", " red"),
+            ("upper_color", ""),
+        ],
+    )
+    def test_bad_color_string_raises_value_error(self, key: str, value: str):
+        """A string that is not a Color value is a ValueError naming the field."""
+        with pytest.raises(ValueError, match=key):
+            AttributeQuery.matches(_person(), {key: value})
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("upper_color", 3),
+            ("lower_color", 3),
+            ("upper_color", None),
+            ("lower_color", None),
+        ],
+    )
+    def test_non_str_color_raises_type_error(self, key: str, value: object):
+        """A non-str colour, including None, is a TypeError."""
+        with pytest.raises(TypeError, match=key):
+            AttributeQuery.matches(_person(), {key: value})
+
+    def test_mauve_upper_raises_before_low_confidence_reject(self):
+        """A bad upper colour raises even when confidence would already reject."""
+        person = _person(upper_confidence=0.2)
+        with pytest.raises(ValueError, match="upper_color") as caught:
+            AttributeQuery.matches(person, {"upper_color": "mauve", "min_confidence": 1.0})
+        assert "mauve" in str(caught.value)
+
+    def test_mauve_lower_raises_before_low_confidence_reject(self):
+        """A bad lower colour raises even when confidence would already reject."""
+        person = _person(lower_confidence=0.2)
+        with pytest.raises(ValueError, match="lower_color") as caught:
+            AttributeQuery.matches(person, {"lower_color": "mauve", "min_confidence": 1.0})
+        assert "mauve" in str(caught.value)
+
+    def test_bad_bag_raises_before_color_mismatch_returns_false(self):
+        """A bad bag flag raises even when an earlier colour would not match."""
+        with pytest.raises(TypeError, match="bag_on_track"):
+            AttributeQuery.matches(_person(), {"upper_color": "blue", "bag_on_track": "yes"})
+
+    def test_bad_bag_raises_before_lower_mismatch_returns_false(self):
+        """A bad bag flag raises even when the lower colour would not match."""
+        with pytest.raises(TypeError, match="bag_on_track"):
+            AttributeQuery.matches(_person(), {"lower_color": "red", "bag_on_track": "yes"})
+
+    def test_bad_lower_color_raises_before_upper_mismatch_returns_false(self):
+        """A bad lower colour raises even when the upper colour would not match."""
+        with pytest.raises(ValueError, match="lower_color"):
+            AttributeQuery.matches(_person(), {"upper_color": "blue", "lower_color": "mauve"})
+
+    def test_bad_lower_raises_before_upper_confidence_reject(self):
+        """A bad lower colour raises even when upper confidence would reject."""
+        person = _person(upper_confidence=0.2)
+        with pytest.raises(ValueError, match="lower_color"):
+            AttributeQuery.matches(
+                person,
+                {"upper_color": "red", "lower_color": "mauve", "min_confidence": 1.0},
+            )
+
+    def test_bad_bag_raises_before_confidence_reject(self):
+        """A bad bag flag raises even when colour confidence would reject."""
+        person = _person(upper_confidence=0.2, lower_confidence=0.2)
+        with pytest.raises(TypeError, match="bag_on_track"):
+            AttributeQuery.matches(
+                person,
+                {
+                    "upper_color": "red",
+                    "lower_color": "blue",
+                    "bag_on_track": "yes",
+                    "min_confidence": 1.0,
+                },
+            )
+
+    def test_bag_mismatch_does_not_skip_upper_color_validation(self):
+        """A valid bag mismatch still validates a bad upper colour."""
+        with pytest.raises(ValueError, match="upper_color"):
+            AttributeQuery.matches(_person(), {"bag_on_track": False, "upper_color": "mauve"})
+
+    def test_bag_mismatch_does_not_skip_lower_color_validation(self):
+        """A valid bag mismatch still validates a bad lower colour."""
+        with pytest.raises(ValueError, match="lower_color"):
+            AttributeQuery.matches(_person(), {"bag_on_track": False, "lower_color": "mauve"})
+
+    def test_bag_mismatch_does_not_skip_lower_color_none(self):
+        """A valid bag mismatch still rejects a non-str lower colour."""
+        with pytest.raises(TypeError, match="lower_color"):
+            AttributeQuery.matches(_person(), {"bag_on_track": False, "lower_color": None})
+
+    def test_bag_mismatch_does_not_skip_nan_min_confidence(self):
+        """A valid bag mismatch still rejects a non-finite threshold."""
+        with pytest.raises(ValueError, match="finite"):
+            AttributeQuery.matches(
+                _person(),
+                {"bag_on_track": False, "min_confidence": float("nan")},
+            )
+
+    def test_upper_color_mismatch_does_not_skip_min_confidence(self):
+        """A valid upper mismatch still validates min_confidence."""
+        with pytest.raises(ValueError, match="finite"):
+            AttributeQuery.matches(
+                _person(),
+                {"upper_color": "blue", "min_confidence": float("nan")},
+            )
+
+    def test_lower_color_mismatch_does_not_skip_min_confidence(self):
+        """A valid lower mismatch still validates min_confidence."""
+        with pytest.raises(ValueError, match="finite"):
+            AttributeQuery.matches(
+                _person(),
+                {"lower_color": "red", "min_confidence": float("nan")},
+            )
+
+    def test_min_confidence_str_raises_type_error(self):
+        """A string threshold is a TypeError, including when no colour is queried."""
+        with pytest.raises(TypeError, match="min_confidence"):
+            AttributeQuery.matches(_person(), {"min_confidence": "0.5"})
+
+    @pytest.mark.parametrize(
+        "value",
+        [np.float32(0.5), np.int64(0), None],
+        ids=["np.float32", "np.int64", "None"],
+    )
+    def test_min_confidence_numpy_or_none_raises_type_error(self, value: object):
+        """numpy scalars that are not int or float, and None, are a TypeError."""
+        with pytest.raises(TypeError, match="min_confidence"):
+            AttributeQuery.matches(_person(), {"min_confidence": value})
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_min_confidence_bool_raises_type_error(self, value: bool):
+        """bool is an int subclass and is still refused."""
+        with pytest.raises(TypeError, match="min_confidence"):
+            AttributeQuery.matches(_person(), {"min_confidence": value})
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_min_confidence_non_finite_raises_value_error(self, value: float):
+        """NaN and infinities are bad values, not a silent match."""
+        with pytest.raises(ValueError, match="finite"):
+            AttributeQuery.matches(_person(), {"upper_color": "red", "min_confidence": value})
+
+    @pytest.mark.parametrize("value", [-0.1, 1.5, 2])
+    def test_min_confidence_out_of_range_raises_value_error(self, value: float):
+        """A number outside the closed range [0, 1] is a ValueError."""
+        with pytest.raises(ValueError, match=r"min_confidence must be in \[0, 1\]"):
+            AttributeQuery.matches(_person(), {"min_confidence": value})
+
+    @pytest.mark.parametrize(
+        "value",
+        [math.nextafter(1.0, 2.0), -5e-324],
+        ids=["nextafter(1.0, 2.0)", "-5e-324"],
+    )
+    def test_min_confidence_just_outside_unit_interval_raises_value_error(self, value: float):
+        """The next float past 1, and the next float below 0, are still out of range."""
+        assert -5e-324 == math.nextafter(0.0, -1.0)
+        with pytest.raises(ValueError, match=r"min_confidence must be in \[0, 1\]"):
+            AttributeQuery.matches(_person(), {"min_confidence": value})
+
+    def test_absent_min_confidence_matches_colour_confidence_below_one_tenth(self):
+        """An absent threshold is 0.0, so 0.0 and 0.05 still match a colour-only query."""
+        zero = _person(upper_confidence=0.0)
+        slight = _person(upper_confidence=0.05)
+        assert AttributeQuery.matches(zero, {"upper_color": "red"}) is True
+        assert AttributeQuery.matches(slight, {"upper_color": "red"}) is True
+
+    def test_out_of_range_min_confidence_raises_before_confidence_reject(self):
+        """An out-of-range threshold raises instead of rejecting the colour."""
+        person = _person(upper_confidence=0.2)
+        with pytest.raises(ValueError, match="min_confidence"):
+            AttributeQuery.matches(person, {"upper_color": "red", "min_confidence": 1.5})
+
+    def test_min_confidence_type_is_checked_before_color_value(self):
+        """The first invalid field in documented order raises."""
+        with pytest.raises(TypeError, match="min_confidence"):
+            AttributeQuery.matches(_person(), {"upper_color": "mauve", "min_confidence": "high"})
+
+    def test_upper_color_is_checked_before_lower_color(self):
+        """A bad upper colour wins over a bad lower colour of a different type."""
+        with pytest.raises(ValueError, match="upper_color"):
+            AttributeQuery.matches(_person(), {"upper_color": "mauve", "lower_color": 3})
+
+    def test_lower_color_is_checked_before_bag(self):
+        """A bad lower colour wins over a bad bag flag."""
+        with pytest.raises(ValueError, match="lower_color"):
+            AttributeQuery.matches(_person(), {"lower_color": "mauve", "bag_on_track": "yes"})
+
+    def test_valid_query_regression(self):
+        """Known-good queries keep the same accept and reject results."""
+        person = _person(upper_confidence=0.5, lower_confidence=0.4)
+        assert AttributeQuery.matches(person, {}) is True
+        assert AttributeQuery.matches(person, {"not_a_field": "ignored"}) is True
+        assert AttributeQuery.matches(person, {"upper_color": "red"}) is True
+        assert AttributeQuery.matches(person, {"upper_color": Color.RED}) is True
+        assert AttributeQuery.matches(person, {"upper_color": "blue"}) is False
+        assert AttributeQuery.matches(person, {"lower_color": "blue"}) is True
+        assert AttributeQuery.matches(person, {"lower_color": "red"}) is False
+        assert AttributeQuery.matches(person, {"bag_on_track": True}) is True
+        assert AttributeQuery.matches(person, {"bag_on_track": False}) is False
+        assert AttributeQuery.matches(person, {"upper_color": "red", "min_confidence": 0.5}) is True
+        assert (
+            AttributeQuery.matches(person, {"lower_color": "blue", "min_confidence": 0.4}) is True
+        )
+        assert (
+            AttributeQuery.matches(person, {"upper_color": "red", "min_confidence": 0.51}) is False
+        )
+        assert (
+            AttributeQuery.matches(person, {"lower_color": "blue", "min_confidence": 0.41}) is False
+        )
+        assert AttributeQuery.matches(person, {"min_confidence": 0}) is True
+        assert AttributeQuery.matches(person, {"min_confidence": 1}) is True
+        assert AttributeQuery.matches(person, {"min_confidence": 0.0}) is True
+        assert AttributeQuery.matches(person, {"min_confidence": 1.0}) is True
+        assert AttributeQuery.matches(person, {"min_confidence": np.float64(0.4)}) is True
+        assert AttributeQuery.matches(person, {"bag_on_track": True, "min_confidence": 1.0}) is True
+        assert (
+            AttributeQuery.matches(
+                person,
+                {
+                    "upper_color": "red",
+                    "lower_color": "blue",
+                    "bag_on_track": True,
+                    "min_confidence": 0.4,
+                },
+            )
+            is True
+        )
+        low = _person(upper_confidence=0.2, lower_confidence=0.2, bag=False)
+        assert AttributeQuery.matches(low, {"upper_color": "blue", "min_confidence": 1.0}) is False
+        exact = _person(upper_confidence=1.0, lower_confidence=0.0)
+        assert AttributeQuery.matches(exact, {"upper_color": "red", "min_confidence": 1.0}) is True
+        assert AttributeQuery.matches(exact, {"lower_color": "blue", "min_confidence": 0}) is True
+        assert (
+            AttributeQuery.matches(exact, {"lower_color": "blue", "min_confidence": 0.01}) is False
+        )
+        both = _person(upper_confidence=0.9, lower_confidence=0.2)
+        assert (
+            AttributeQuery.matches(
+                both,
+                {"upper_color": "red", "lower_color": "blue", "min_confidence": 0.5},
+            )
+            is False
+        )
