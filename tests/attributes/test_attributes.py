@@ -11,6 +11,7 @@ Covers:
 - Negative coordinates and out-of-frame boxes
 """
 
+import math
 import warnings
 
 import numpy as np
@@ -539,6 +540,45 @@ class TestAttributeQueryValidation:
                 },
             )
 
+    def test_bag_mismatch_does_not_skip_upper_color_validation(self):
+        """A valid bag mismatch still validates a bad upper colour."""
+        with pytest.raises(ValueError, match="upper_color"):
+            AttributeQuery.matches(_person(), {"bag_on_track": False, "upper_color": "mauve"})
+
+    def test_bag_mismatch_does_not_skip_lower_color_validation(self):
+        """A valid bag mismatch still validates a bad lower colour."""
+        with pytest.raises(ValueError, match="lower_color"):
+            AttributeQuery.matches(_person(), {"bag_on_track": False, "lower_color": "mauve"})
+
+    def test_bag_mismatch_does_not_skip_lower_color_none(self):
+        """A valid bag mismatch still rejects a non-str lower colour."""
+        with pytest.raises(TypeError, match="lower_color"):
+            AttributeQuery.matches(_person(), {"bag_on_track": False, "lower_color": None})
+
+    def test_bag_mismatch_does_not_skip_nan_min_confidence(self):
+        """A valid bag mismatch still rejects a non-finite threshold."""
+        with pytest.raises(ValueError, match="finite"):
+            AttributeQuery.matches(
+                _person(),
+                {"bag_on_track": False, "min_confidence": float("nan")},
+            )
+
+    def test_upper_color_mismatch_does_not_skip_min_confidence(self):
+        """A valid upper mismatch still validates min_confidence."""
+        with pytest.raises(ValueError, match="finite"):
+            AttributeQuery.matches(
+                _person(),
+                {"upper_color": "blue", "min_confidence": float("nan")},
+            )
+
+    def test_lower_color_mismatch_does_not_skip_min_confidence(self):
+        """A valid lower mismatch still validates min_confidence."""
+        with pytest.raises(ValueError, match="finite"):
+            AttributeQuery.matches(
+                _person(),
+                {"lower_color": "red", "min_confidence": float("nan")},
+            )
+
     def test_min_confidence_str_raises_type_error(self):
         """A string threshold is a TypeError, including when no colour is queried."""
         with pytest.raises(TypeError, match="min_confidence"):
@@ -571,6 +611,24 @@ class TestAttributeQueryValidation:
         """A number outside the closed range [0, 1] is a ValueError."""
         with pytest.raises(ValueError, match=r"min_confidence must be in \[0, 1\]"):
             AttributeQuery.matches(_person(), {"min_confidence": value})
+
+    @pytest.mark.parametrize(
+        "value",
+        [math.nextafter(1.0, 2.0), -5e-324],
+        ids=["nextafter(1.0, 2.0)", "-5e-324"],
+    )
+    def test_min_confidence_just_outside_unit_interval_raises_value_error(self, value: float):
+        """The next float past 1, and the next float below 0, are still out of range."""
+        assert -5e-324 == math.nextafter(0.0, -1.0)
+        with pytest.raises(ValueError, match=r"min_confidence must be in \[0, 1\]"):
+            AttributeQuery.matches(_person(), {"min_confidence": value})
+
+    def test_absent_min_confidence_matches_colour_confidence_below_one_tenth(self):
+        """An absent threshold is 0.0, so 0.0 and 0.05 still match a colour-only query."""
+        zero = _person(upper_confidence=0.0)
+        slight = _person(upper_confidence=0.05)
+        assert AttributeQuery.matches(zero, {"upper_color": "red"}) is True
+        assert AttributeQuery.matches(slight, {"upper_color": "red"}) is True
 
     def test_out_of_range_min_confidence_raises_before_confidence_reject(self):
         """An out-of-range threshold raises instead of rejecting the colour."""
