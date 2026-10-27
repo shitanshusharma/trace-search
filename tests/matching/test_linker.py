@@ -5,6 +5,7 @@ No footage, no files written into the repo tree, and no network.
 
 from __future__ import annotations
 
+import math
 import random
 import socket
 import sys
@@ -24,7 +25,6 @@ from trace_search.matching.linker import (
     MIN_SCORE,
     Link,
     _assign,
-    _cost_matrix,
     link_tracklets,
     topology_mask,
 )
@@ -246,10 +246,10 @@ def test_greedy_assignment_differs_from_hungarian() -> None:
     }
 
 
-def test_equal_scores_break_ties_on_camera_and_track_id() -> None:
-    """Both exits look the same. The total is equal either way.
+def test_equal_scores_repeat_after_a_shuffle() -> None:
+    """Both pairings have the same total. Shuffled input does not change it.
 
-    The smaller ``(camera_id, track_id)`` pairing is (1, 1) and (2, 2).
+    Ties are deterministic: solver order over keys sorted by (camera_id, track_id).
     """
     tracklets = (
         _tracklet("cam-a", 2, 0.0, 0.0),
@@ -265,10 +265,16 @@ def test_equal_scores_break_ties_on_camera_and_track_id() -> None:
         ("cam-b", 2): _attrs("red", "blue", True),
     }
     links = link_tracklets(tracklets, _window(), vectors, attributes)
-    assert _pairs(links) == {
-        ("cam-a", 1, "cam-b", 1),
-        ("cam-a", 2, "cam-b", 2),
+    optimal = {
+        frozenset({("cam-a", 1, "cam-b", 1), ("cam-a", 2, "cam-b", 2)}),
+        frozenset({("cam-a", 1, "cam-b", 2), ("cam-a", 2, "cam-b", 1)}),
     }
+    assert frozenset(_pairs(links)) in optimal
+    assert sum(link.score for link in links) == pytest.approx(1.5)
+    again = link_tracklets(tracklets, _window(), vectors, attributes)
+    shuffled = _shuffled(tracklets, 7)
+    third = link_tracklets(shuffled, _window(), vectors, attributes)
+    assert links == again == third
 
 
 def test_colour_mismatch_with_equal_vectors_scores_lower_than_a_match() -> None:
@@ -472,7 +478,8 @@ def test_track_without_a_vector_is_not_linked() -> None:
 def test_tracks_on_one_camera_are_not_linked() -> None:
     """Two exits on one camera are not linked to each other.
 
-    The edge has one entry, so the tie-break keeps the smaller track id.
+    One entry can take only one of them. The total is the same either way,
+    and a shuffled input returns the same link.
     """
     tracklets = (
         _tracklet("cam-a", 1, 0.0, 0.0),
@@ -482,8 +489,13 @@ def test_tracks_on_one_camera_are_not_linked() -> None:
     vectors = {("cam-a", 1): _EAST, ("cam-a", 2): _EAST, ("cam-b", 3): _EAST}
     attributes = {key: _agree() for key in vectors}
     links = link_tracklets(tracklets, _window(), vectors, attributes)
-    assert _pairs(links) == {("cam-a", 1, "cam-b", 3)}
-    assert all(link.from_camera != link.to_camera for link in links)
+    assert len(links) == 1
+    assert links[0].score == 1.0
+    assert (links[0].to_camera, links[0].to_track) == ("cam-b", 3)
+    assert links[0].from_track in (1, 2)
+    assert links[0].from_camera != links[0].to_camera
+    shuffled = link_tracklets(_shuffled(tracklets, 3), _window(), vectors, attributes)
+    assert shuffled == links
 
 
 def test_min_score_drops_the_weaker_assigned_pair() -> None:
@@ -501,7 +513,18 @@ def test_min_score_drops_the_weaker_assigned_pair() -> None:
         ("cam-b", 2): _attrs("red", "red", True),
     }
     links = link_tracklets(tracklets, _window(), vectors, attributes, min_score=0.9)
-    assert _pairs(links) == {("cam-a", 1, "cam-b", 1)}
+    assert len(links) == 1
+    assert links[0].score == 1.0
+    assert (links[0].to_camera, links[0].to_track) == ("cam-b", 1)
+    assert links[0].from_track in (1, 2)
+    shuffled = link_tracklets(
+        _shuffled(tracklets, 4),
+        _window(),
+        vectors,
+        attributes,
+        min_score=0.9,
+    )
+    assert shuffled == links
 
 
 def test_score_equal_to_min_score_is_kept() -> None:
@@ -688,10 +711,9 @@ def test_module_docstring_states_the_score_limits() -> None:
     assert "not evidence" in text
     assert "share is 0" in text
     assert "keeps every mapped score, including 0" in text
-    assert "no tie-break penalty" in text
-    assert "1e-12" in text
-    assert "longer side of the grid" in text
-    assert "the first solve is the optimal total" in text
+    assert "the objective is maximising total score" in text
+    assert "deterministic: solver order over keys sorted by (camera_id, track_id)" in text
+    assert "lexicographic" not in text
     assert "differ in ``run_id`` or ``det_class`` is skipped" in text
     assert "not linked to a handbag track" in text
     mask_text = " ".join((topology_mask.__doc__ or "").split())
@@ -858,6 +880,83 @@ def test_store_read_uses_only_the_requested_run_and_origin(tmp_path: Path) -> No
     assert link.score == 1.0
 
 
+def test_search_run_filter_keeps_the_weaker_in_scope_vector() -> None:
+    """A foreign-run East row would outscore the in-scope North vector."""
+    vectors = InMemoryVectorStore(2)
+    vectors.add("run-2", "CODE_TEST", (_embedding("cam-a", 1, 0, _EAST),))
+    vectors.add(
+        _RUN,
+        "CODE_TEST",
+        (
+            _embedding("cam-a", 1, 5, _NORTH),
+            _embedding("cam-b", 2, 4, _EAST),
+        ),
+    )
+    links = link_tracklets(
+        (_tracklet("cam-a", 1, 0.0, 0.0), _tracklet("cam-b", 2, 15.0, 15.0)),
+        _window(),
+        vectors,
+        {},
+        run_id=_RUN,
+        derived_from="CODE_TEST",
+        attr_weight=0.0,
+    )
+    assert len(links) == 1
+    assert links[0].score == 0.5
+
+
+def test_search_origin_filter_keeps_the_weaker_in_scope_vector() -> None:
+    """A same-run SMOKE East row would outscore the in-scope North vector."""
+    vectors = InMemoryVectorStore(2)
+    vectors.add(_RUN, "SMOKE", (_embedding("cam-a", 1, 0, _EAST),))
+    vectors.add(
+        _RUN,
+        "CODE_TEST",
+        (
+            _embedding("cam-a", 1, 5, _NORTH),
+            _embedding("cam-b", 2, 4, _EAST),
+        ),
+    )
+    links = link_tracklets(
+        (_tracklet("cam-a", 1, 0.0, 0.0), _tracklet("cam-b", 2, 15.0, 15.0)),
+        _window(),
+        vectors,
+        {},
+        run_id=_RUN,
+        derived_from="CODE_TEST",
+        attr_weight=0.0,
+    )
+    assert len(links) == 1
+    assert links[0].score == 0.5
+
+
+def test_attribute_origin_filter_keeps_the_lower_score(tmp_path: Path) -> None:
+    """A later SMOKE row agrees. The in-scope row disagrees, so the score stays 0.5."""
+    vectors = InMemoryVectorStore(2)
+    vectors.add(
+        _RUN,
+        "CODE_TEST",
+        (
+            _embedding("cam-a", 1, 0, _EAST),
+            _embedding("cam-b", 2, 0, _EAST),
+        ),
+    )
+    attributes = TrackAttributeStore(tmp_path / "attr-scope.sqlite")
+    _write_attr(attributes, "cam-a", 1, "green", "black", False)
+    _write_attr(attributes, "cam-a", 1, "red", "blue", True, derived_from="SMOKE")
+    _write_attr(attributes, "cam-b", 2, "red", "blue", True)
+    links = link_tracklets(
+        (_tracklet("cam-a", 1, 0.0, 0.0), _tracklet("cam-b", 2, 15.0, 15.0)),
+        _window(),
+        vectors,
+        attributes,
+        run_id=_RUN,
+        derived_from="CODE_TEST",
+    )
+    assert len(links) == 1
+    assert links[0].score == 0.5
+
+
 def test_store_read_requires_run_and_derived_from() -> None:
     vectors = InMemoryVectorStore(2)
     with pytest.raises(ValueError, match="required when reading a store"):
@@ -925,12 +1024,12 @@ def test_a_zero_store_vector_is_refused() -> None:
 
 
 def test_a_1e_5_total_gap_beats_identity_on_2x2_and_3x3() -> None:
-    """The higher total wins by 1e-5. Identity is the tie-break order, and it loses."""
+    """The higher total wins by 1e-5. The diagonal sum is lower, so it loses."""
     two = [
         [0.9, 0.9 + 5e-6],
         [0.9 + 5e-6, 0.9],
     ]
-    assert set(_assign(_cost_matrix(two))) == {(0, 1), (1, 0)}
+    assert set(_assign(two)) == {(0, 1), (1, 0)}
     base = 0.9
     bumped = 0.9 + 5e-6
     three = [
@@ -938,7 +1037,7 @@ def test_a_1e_5_total_gap_beats_identity_on_2x2_and_3x3() -> None:
         [base, base, base],
         [bumped, base, base],
     ]
-    assert set(_assign(_cost_matrix(three))) == {(0, 2), (1, 1), (2, 0)}
+    assert set(_assign(three)) == {(0, 2), (1, 1), (2, 0)}
 
 
 def test_review_gaps_of_1e_4_and_1_2e_4_beat_identity() -> None:
@@ -947,7 +1046,7 @@ def test_review_gaps_of_1e_4_and_1_2e_4_beat_identity() -> None:
         [0.9, 0.90005],
         [0.90005, 0.9],
     ]
-    assert set(_assign(_cost_matrix(two))) == {(0, 1), (1, 0)}
+    assert set(_assign(two)) == {(0, 1), (1, 0)}
     base = 0.9
     bumped = 0.90006
     three = [
@@ -955,31 +1054,55 @@ def test_review_gaps_of_1e_4_and_1_2e_4_beat_identity() -> None:
         [base, base, base],
         [bumped, base, base],
     ]
-    assert set(_assign(_cost_matrix(three))) == {(0, 2), (1, 1), (2, 0)}
+    assert set(_assign(three)) == {(0, 2), (1, 1), (2, 0)}
 
 
-def test_exact_score_tie_picks_sorted_track_order() -> None:
+def test_exact_score_tie_matches_the_best_total() -> None:
+    """Tied grids keep the best total and the same links after a shuffle.
+
+    Ties are deterministic: solver order over keys sorted by (camera_id, track_id).
+    """
     tied = [
         [0.5, 0.5],
         [0.5, 0.5],
     ]
-    assert _assign(_cost_matrix(tied)) == [(0, 0), (1, 1)]
     wide = [[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]]
-    assert _assign(_cost_matrix(wide)) == [(0, 0), (1, 1)]
+    tied_pairs = _assign(tied)
+    wide_pairs = _assign(wide)
+    assert _selected_total(tied, tied_pairs, 0.0) == pytest.approx(_best_total(tied, 0.0))
+    assert _selected_total(wide, wide_pairs, 0.0) == pytest.approx(_best_total(wide, 0.0))
+    assert _assign(tied) == tied_pairs
+    tracklets = (
+        _tracklet("cam-a", 2, 0.0, 0.0),
+        _tracklet("cam-a", 1, 0.0, 0.0),
+        _tracklet("cam-b", 3, 15.0, 15.0),
+        _tracklet("cam-b", 1, 15.0, 15.0),
+        _tracklet("cam-b", 2, 15.0, 15.0),
+    )
+    keys = (("cam-a", 1), ("cam-a", 2), ("cam-b", 1), ("cam-b", 2), ("cam-b", 3))
+    vectors = {key: _EAST for key in keys}
+    links = link_tracklets(tracklets, _window(), vectors, {}, attr_weight=0.0)
+    assert len(links) == 2
+    assert sum(link.score for link in links) == pytest.approx(2.0)
+    again = link_tracklets(tracklets, _window(), vectors, {}, attr_weight=0.0)
+    shuffled = link_tracklets(_shuffled(tracklets, 9), _window(), vectors, {}, attr_weight=0.0)
+    assert links == again == shuffled
 
 
-def test_large_exact_tie_follows_track_id_order() -> None:
-    """200 by 200 equal scores pair the sorted track ids in order."""
+def test_large_exact_tie_repeats_after_a_shuffle() -> None:
+    """200 by 200 equal scores stay optimal and repeat after a shuffle."""
     count = 200
     exits = tuple(_tracklet("cam-a", track_id, 0.0, 0.0) for track_id in range(count, 0, -1))
     entries = tuple(_tracklet("cam-b", track_id, 15.0, 15.0) for track_id in range(count, 0, -1))
     vectors = {("cam-a", track_id): _EAST for track_id in range(1, count + 1)}
     vectors.update({("cam-b", track_id): _EAST for track_id in range(1, count + 1)})
-    links = link_tracklets((*exits, *entries), _window(), vectors, {})
+    order = (*exits, *entries)
+    links = link_tracklets(order, _window(), vectors, {})
+    again = link_tracklets(order, _window(), vectors, {})
+    shuffled = link_tracklets(_shuffled(order, 11), _window(), vectors, {})
+    assert links == again == shuffled
     assert len(links) == count
-    assert _pairs(links) == {
-        ("cam-a", track_id, "cam-b", track_id) for track_id in range(1, count + 1)
-    }
+    assert sum(link.score for link in links) == pytest.approx(count * 0.5)
 
 
 def test_an_out_of_window_cell_does_not_drop_the_best_link() -> None:
@@ -1014,7 +1137,45 @@ def test_an_out_of_window_cell_does_not_drop_the_best_link() -> None:
 def test_minimal_grid_keeps_the_higher_valid_cell() -> None:
     """0.3 is under the floor, so the 0.9 cell wins and the 0.50001 cell loses."""
     grid = [[0.9, 0.3], [0.50001, None]]
-    assert _assign(_cost_matrix(grid, min_score=0.4)) == [(0, 0)]
+    assert _assign(grid, min_score=0.4) == [(0, 0)]
+
+
+def test_public_floor_keeps_only_the_point_nine_link() -> None:
+    """[[0.9, 0.3], [0.50001, None]] at min_score 0.4 keeps a1 to b1 only."""
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 5.0),
+        _tracklet("cam-a", 2, 0.0, 0.0),
+        _tracklet("cam-b", 1, 15.0, 15.0),
+        _tracklet("cam-b", 2, 25.0, 25.0),
+    )
+    vectors = {
+        ("cam-a", 1): (0.8, -0.4, math.sqrt(0.2)),
+        ("cam-a", 2): (0.00002, 0.0, math.sqrt(1.0 - 0.00002**2)),
+        ("cam-b", 1): (1.0, 0.0, 0.0),
+        ("cam-b", 2): (0.0, 1.0, 0.0),
+    }
+    links = link_tracklets(tracklets, _window(), vectors, {}, attr_weight=0.0, min_score=0.4)
+    assert _pairs(links) == {("cam-a", 1, "cam-b", 1)}
+    assert links[0].score == pytest.approx(0.9)
+
+
+def test_min_score_keeps_point_nine_and_drops_point_three_nine() -> None:
+    """[[0.9, 0.39], [0.6, None]] at min_score 0.4 keeps the 0.9 link only."""
+    tracklets = (
+        _tracklet("cam-a", 1, 0.0, 5.0),
+        _tracklet("cam-a", 2, 0.0, 0.0),
+        _tracklet("cam-b", 1, 15.0, 15.0),
+        _tracklet("cam-b", 2, 25.0, 25.0),
+    )
+    vectors = {
+        ("cam-a", 1): (0.8, -0.22, math.sqrt(1.0 - 0.8**2 - 0.22**2)),
+        ("cam-a", 2): (0.2, 0.0, math.sqrt(1.0 - 0.2**2)),
+        ("cam-b", 1): (1.0, 0.0, 0.0),
+        ("cam-b", 2): (0.0, 1.0, 0.0),
+    }
+    links = link_tracklets(tracklets, _window(), vectors, {}, attr_weight=0.0, min_score=0.4)
+    assert _pairs(links) == {("cam-a", 1, "cam-b", 1)}
+    assert links[0].score == pytest.approx(0.9)
 
 
 def test_tiny_gap_on_the_public_path_beats_track_order() -> None:
@@ -1036,37 +1197,54 @@ def test_tiny_gap_on_the_public_path_beats_track_order() -> None:
     assert abs((links[0].score + links[1].score) - 1.80001) < 1e-8
 
 
+def test_wide_tie_matches_brute_force_total() -> None:
+    """[[0.5, 0.5, 0.6], [0.5, 0.5, 0.6]] does not raise and matches brute force."""
+    grid = [[0.5, 0.5, 0.6], [0.5, 0.5, 0.6]]
+    pairs = _assign(grid)
+    assert _selected_total(grid, pairs, 0.0) == pytest.approx(_best_total(grid, 0.0))
+
+
 def test_assignment_matches_brute_force_partial_matchings() -> None:
-    """A few hundred small grids, including gaps and ties, match exhaustive search."""
+    """3,000 grids, including forbidden cells and both rectangular orientations."""
     rng = random.Random(20261027)
-    for _case in range(300):
-        row_count = rng.randint(1, 4)
-        column_count = rng.randint(1, 4)
+    mismatches = 0
+    shapes = ((1, 2), (2, 1), (1, 3), (3, 1), (2, 4), (4, 2), (3, 4), (4, 3))
+    for case in range(3000):
+        if case < len(shapes):
+            row_count, column_count = shapes[case]
+        else:
+            row_count = rng.randint(1, 4)
+            column_count = rng.randint(1, 4)
         grid: list[list[float | None]] = []
         for _row in range(row_count):
             row: list[float | None] = []
             for _column in range(column_count):
-                if rng.random() < 0.2:
+                roll = rng.random()
+                if roll < 0.2:
                     row.append(None)
-                elif rng.random() < 0.3:
-                    row.append(rng.choice((0.0, 0.5, 1.0)))
+                elif roll < 0.5:
+                    row.append(rng.choice((0.0, 0.2, 0.5, 1.0)))
                 else:
                     row.append(rng.random())
             grid.append(row)
-        floor = rng.choice((0.0, 0.0, 0.4))
-        assert _assign(_cost_matrix(grid, min_score=floor)) == _brute_assignment(grid, floor)
+        floor = rng.choice((0.0, 0.4, 0.7))
+        got = _selected_total(grid, _assign(grid, min_score=floor), floor)
+        best = _best_total(grid, floor)
+        if not math.isclose(got, best, rel_tol=0.0, abs_tol=1e-9):
+            mismatches += 1
+    assert mismatches == 0
 
 
 def test_mostly_tied_grid_finishes_within_five_seconds() -> None:
-    """200 by 200 scores on three levels. The tie pass runs, and it stays fast."""
+    """200 by 200 scores on three levels finish well under five seconds."""
     rng = random.Random(11)
     scores = [[rng.choice((0.5, 0.51, 0.52)) for _column in range(200)] for _row in range(200)]
     distinct = {value for row in scores for value in row}
     assert len(distinct) > 1
     started = time.perf_counter()
-    first = _assign(_cost_matrix(scores))
+    first = _assign(scores)
     elapsed = time.perf_counter() - started
-    second = _assign(_cost_matrix(scores))
+    second = _assign(scores)
     assert first == second
     assert len(first) == 200
     assert elapsed < 5.0
@@ -1077,9 +1255,9 @@ def test_large_random_grid_stays_fast() -> None:
     rng = random.Random(3)
     scores = [[rng.random() for _column in range(200)] for _row in range(200)]
     started = time.perf_counter()
-    first = _assign(_cost_matrix(scores))
+    first = _assign(scores)
     elapsed = time.perf_counter() - started
-    assert _assign(_cost_matrix(scores)) == first
+    assert _assign(scores) == first
     assert elapsed < 5.0
 
 
@@ -1220,40 +1398,57 @@ def test_lowest_frame_wins_and_the_same_frame_is_refused(tmp_path: Path) -> None
         )
 
 
-def _brute_assignment(
+def _best_total(
     scores: Sequence[Sequence[float | None]],
     min_score: float,
-) -> list[tuple[int, int]]:
-    """Every partial matching. Higher total wins, then the column tuple."""
+) -> float:
+    """Best sum over valid partial matchings. Unmatched rows add nothing."""
     row_count = len(scores)
     column_count = len(scores[0]) if row_count else 0
-    sentinel = column_count
-    limit = 1e-12 * max(row_count, column_count, 1)
-    best_total = 0.0
-    best_choice: tuple[int, ...] | None = None
+    best = 0.0
 
-    def walk(row: int, used: set[int], total: float, choice: tuple[int, ...]) -> None:
-        nonlocal best_total, best_choice
+    def walk(row: int, used: int, total: float) -> None:
+        nonlocal best
         if row == row_count:
-            better_total = best_choice is None or total > best_total + limit
-            tied = best_choice is not None and total >= best_total - limit and choice < best_choice
-            if better_total or tied:
-                best_total = total
-                best_choice = choice
+            if total > best:
+                best = total
             return
-        walk(row + 1, used, total, choice + (sentinel,))
+        walk(row + 1, used, total)
         for column in range(column_count):
-            if column in used:
+            if used & (1 << column):
                 continue
             score = scores[row][column]
             if score is None or score < min_score:
                 continue
-            walk(row + 1, used | {column}, total + float(score), choice + (column,))
+            walk(row + 1, used | (1 << column), total + float(score))
 
-    walk(0, set(), 0.0, ())
-    if best_choice is None:
-        return []
-    return [(row, column) for row, column in enumerate(best_choice) if column != sentinel]
+    walk(0, 0, 0.0)
+    return best
+
+
+def _selected_total(
+    scores: Sequence[Sequence[float | None]],
+    pairs: Sequence[tuple[int, int]],
+    min_score: float,
+) -> float:
+    total = 0.0
+    seen_rows: set[int] = set()
+    seen_columns: set[int] = set()
+    for row, column in pairs:
+        assert row not in seen_rows
+        assert column not in seen_columns
+        seen_rows.add(row)
+        seen_columns.add(column)
+        score = scores[row][column]
+        assert score is not None and score >= min_score
+        total += float(score)
+    return total
+
+
+def _shuffled(items: Sequence[Tracklet], seed: int) -> tuple[Tracklet, ...]:
+    copied = list(items)
+    random.Random(seed).shuffle(copied)
+    return tuple(copied)
 
 
 class _FixedVectorStore:

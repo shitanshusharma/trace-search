@@ -19,20 +19,16 @@ They were not tuned against any stock clip.
 
 An attribute counts only when both tracks know it. ``UNKNOWN`` and ``None``
 are not known. Share is the number agreeing divided by the number known.
-With 0 known attributes, share is 0. Each camera pair is assigned one-to-one.
-The Hungarian step uses ``-score`` with no tie-break penalty. A missing cell,
-a pair outside the window, and a score below ``min_score`` are infeasible
-and are never chosen. A row may stay unmatched. That unmatched row costs
-nothing, so the first solve is the optimal total of the valid links even
-when some cells are missing. Equal totals break on ``(camera_id, track_id)``.
-Two totals are equal when ``math.isclose`` says so with ``rel_tol`` 0 and
-``abs_tol`` ``1e-12`` times the longer side of the grid. When that optimum
-is unique, the tie walk does not run. Otherwise exits are walked in
-``(camera_id, track_id)`` order, and the first entry in that order that
-still reaches the optimal total is fixed. The walk uses the tight edges of
-the optimum, so it does not re-solve every row. When every feasible cell
-has the same score, that pairing is the diagonal of the sorted rows and
-columns, so a large tied grid does not re-solve.
+With 0 known attributes, share is 0. Each camera pair is assigned one-to-one,
+and the objective is maximising total score. Exits and entries are sorted by
+``(camera_id, track_id)`` before the grid is built. An allowed cell has a
+gain equal to its score. A missing cell, a pair outside the window, and a
+score below ``min_score`` are forbidden and cost strictly more than a dummy
+pairing. Dummy gain is 0, so a dummy costs 0, and the solver leaves a track
+unmatched rather than take a forbidden or below-threshold cell. Dummy rows
+and columns pad the grid to a square. One ``linear_sum_assignment`` on
+``-gain`` solves it, and dummy and forbidden pairs are dropped. Ties are
+deterministic: solver order over keys sorted by (camera_id, track_id).
 
 ``MIN_SCORE`` of 0 keeps every mapped score, including 0. Pairs are dropped
 only when the score is strictly under the floor, and the map cannot be
@@ -79,18 +75,10 @@ MIN_SCORE = 0.0
 # against any stock clip.
 ATTR_WEIGHT = 1.0
 
-# Absolute tolerance per row of the longer grid side. Float64 sums of
-# values near 1 drift by a few ulps per add. 1e-12 per row sits above that
-# drift and below a 1e-5 score gap. Not a similarity threshold.
-_TOTAL_ABS_TOL_PER_ROW = 1e-12
-
-# Infeasible cost. Feasible costs sit in [-1, 0] and an unmatched row costs
-# 0, so a blocked cell is never chosen instead of leaving the row unmatched.
-_BLOCKED = 2.0
-
-# Reduced cost at or below this is a tight edge of the optimum. It sits
-# well below a 1e-5 score gap. Totals still use ``_TOTAL_ABS_TOL_PER_ROW``.
-_REDUCED_COST_TOL = 1e-12
+# Dummy gain is 0, so an unmatched row or column costs 0. Forbidden cells
+# cost more than that. Feasible costs sit in [-1, 0], and 1 is strictly
+# above the dummy, so a forbidden or below-threshold cell is never chosen.
+_FORBIDDEN_COST = 1.0
 
 __all__ = (
     "ATTR_WEIGHT",
@@ -500,9 +488,19 @@ def _links_for_edge(
     min_score: float,
     attr_weight: float,
 ) -> list[Link]:
-    scores = _score_grid(exits, entries, vectors, attributes, topology, attr_weight)
-    chosen = _assign(_cost_matrix(scores, min_score=min_score))
-    return _keep_assigned(exits, entries, scores, chosen, min_score)
+    """Sort both sides, then maximise the total score of the allowed cells."""
+    ordered_exits = _ordered(exits)
+    ordered_entries = _ordered(entries)
+    scores = _score_grid(
+        ordered_exits,
+        ordered_entries,
+        vectors,
+        attributes,
+        topology,
+        attr_weight,
+    )
+    chosen = _assign(scores, min_score=min_score)
+    return _keep_assigned(ordered_exits, ordered_entries, scores, chosen, min_score)
 
 
 def _score_grid(
@@ -562,227 +560,68 @@ def _cost_matrix(
     *,
     min_score: float = 0.0,
 ) -> npt.NDArray[np.float64]:
-    """Cost is ``-score`` for a valid link and 0 for leaving a row unmatched.
+    """Square ``-gain`` cost. Forbidden cells cost more than a dummy.
 
-    A missing cell or a score below ``min_score`` is blocked. Blocked is
-    worse than unmatched, so those cells are never chosen. One dummy column
-    per row is the unmatched choice. There is no tie-break penalty.
+    Dummy rows and columns stay at 0, which is a gain of 0. A missing cell
+    or a score below ``min_score`` costs ``_FORBIDDEN_COST``, so leaving the
+    track unmatched is strictly cheaper.
     """
     row_count = len(scores)
     column_count = len(scores[0]) if row_count else 0
-    width = column_count + row_count
-    cost = np.full((row_count, width), _BLOCKED, dtype=np.float64)
+    side = row_count + column_count
+    cost = np.zeros((side, side), dtype=np.float64)
     for row, row_scores in enumerate(scores):
         for column, score in enumerate(row_scores):
             cost[row, column] = _cell_cost(score, min_score)
-        cost[row, column_count + row] = 0.0
-    return cast(npt.NDArray[np.float64], cost)
+    return cost
 
 
 def _cell_cost(score: float | None, min_score: float) -> float:
     if score is None or score < min_score:
-        return _BLOCKED
+        return _FORBIDDEN_COST
     return -float(score)
 
 
-def _assign(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
-    """Optimal valid links, then the lexicographic tie on column order.
+def _assign(
+    scores: Sequence[Sequence[float | None]],
+    *,
+    min_score: float = 0.0,
+) -> list[tuple[int, int]]:
+    """One Hungarian solve. Drop dummy pairs and forbidden pairs.
 
-    Columns before the dummy block are the real entries. Rows and those
-    columns are already in ``(camera_id, track_id)`` order. A uniform real
-    block is the diagonal, so a large exact tie does not re-solve. A unique
-    optimum keeps the Hungarian matching and skips the tie walk. Any other
-    tie is broken on the tight edges of that same optimum.
+    Rows and columns follow the order of ``scores``. Callers sort exits and
+    entries by ``(camera_id, track_id)`` before building that grid. The
+    objective is maximising total score. Ties are deterministic: solver
+    order over keys sorted by (camera_id, track_id).
     """
-    row_count = int(cost.shape[0])
-    width = int(cost.shape[1])
-    if row_count == 0 or width == 0:
+    row_count = len(scores)
+    column_count = len(scores[0]) if row_count else 0
+    if row_count == 0 or column_count == 0:
         return []
-    real = width - row_count
-    if real <= 0:
-        return []
-    if _uniform_real(cost, real):
-        return _diagonal_pairs(min(row_count, real))
-    return _lex_optimal(cost, real)
+    chosen = _hungarian(_cost_matrix(scores, min_score=min_score))
+    return [
+        (row, column)
+        for row, column in chosen
+        if _real_allowed(scores, row, column, row_count, column_count, min_score)
+    ]
 
 
-def _uniform_real(cost: npt.NDArray[np.float64], real: int) -> bool:
-    """True when every real cell is feasible and the costs are identical."""
-    block = cost[:, :real]
-    if block.size == 0:
-        return False
-    first = float(block[0, 0])
-    if not math.isfinite(first) or first >= _BLOCKED:
-        return False
-    return bool(np.all(np.equal(block, first)))
-
-
-def _diagonal_pairs(width: int) -> list[tuple[int, int]]:
-    """Smallest rows with the smallest columns."""
-    return [(index, index) for index in range(width)]
-
-
-def _lex_optimal(cost: npt.NDArray[np.float64], real: int) -> list[tuple[int, int]]:
-    columns = _matched_columns(cost)
-    slack = _reduced_slack(cost, columns)
-    if _one_tight_column(slack, columns):
-        return _real_pairs(columns, real)
-    chosen = _lex_tight(_tight_mask(slack, columns), columns)
-    _require_same_total(cost, columns, chosen)
-    return _real_pairs(chosen, real)
-
-
-def _matched_columns(cost: npt.NDArray[np.float64]) -> list[int]:
-    columns = [-1] * int(cost.shape[0])
-    for row, column in _hungarian(cost):
-        columns[row] = column
-    if any(column < 0 for column in columns):
-        raise ValueError("assignment left a row without a column")
-    return columns
-
-
-def _reduced_slack(
-    cost: npt.NDArray[np.float64],
-    columns: Sequence[int],
-) -> npt.NDArray[np.float64]:
-    """Slack of an optimal dual. A tight edge has slack near 0."""
-    row_count = int(cost.shape[0])
-    width = int(cost.shape[1])
-    matched = np.empty(row_count, dtype=np.float64)
-    for row, column in enumerate(columns):
-        matched[row] = float(cost[row, column])
-    dual_v = np.zeros(width, dtype=np.float64)
-    index = np.asarray(list(columns), dtype=np.int64)
-    for _step in range(width):
-        base = dual_v[index] - matched
-        candidate = np.min(cost + base[:, None], axis=0)
-        updated = np.minimum(dual_v, candidate)
-        if bool(np.allclose(updated, dual_v, rtol=0.0, atol=_REDUCED_COST_TOL)):
-            dual_v = updated
-            break
-        dual_v = updated
-    dual_u = matched - dual_v[index]
-    slack = cost - dual_u[:, None] - dual_v[None, :]
-    if float(np.min(slack)) < -1e-8:
-        raise ValueError("assignment duals are not feasible")
-    return cast(npt.NDArray[np.float64], slack)
-
-
-def _one_tight_column(slack: npt.NDArray[np.float64], columns: Sequence[int]) -> bool:
-    """True when each row has one tight column, so the optimum is unique."""
-    counts = np.count_nonzero(_tight_mask(slack, columns), axis=1)
-    return bool(np.all(counts == 1))
-
-
-def _tight_mask(
-    slack: npt.NDArray[np.float64],
-    columns: Sequence[int],
-) -> npt.NDArray[np.bool_]:
-    tight = np.array(np.less_equal(slack, _REDUCED_COST_TOL), dtype=bool)
-    for row, column in enumerate(columns):
-        tight[row, column] = True
-    return cast(npt.NDArray[np.bool_], tight)
-
-
-def _real_pairs(columns: Sequence[int], real: int) -> list[tuple[int, int]]:
-    return [(row, column) for row, column in enumerate(columns) if 0 <= column < real]
-
-
-def _require_same_total(
-    cost: npt.NDArray[np.float64],
-    left: Sequence[int],
-    right: Sequence[int],
-) -> None:
-    side = _score_side(cost)
-    if _totals_equal(_selection_sum(cost, left), _selection_sum(cost, right), side):
-        return
-    raise ValueError("assignment lost the optimal score total")
-
-
-def _score_side(cost: npt.NDArray[np.float64]) -> int:
-    """Longer side of the score grid, ignoring the unmatched dummy columns."""
-    rows = int(cost.shape[0])
-    real = int(cost.shape[1]) - rows
-    return max(rows, real, 1)
-
-
-def _selection_sum(cost: npt.NDArray[np.float64], columns: Sequence[int]) -> float:
-    total = 0.0
-    for row, column in enumerate(columns):
-        if column < 0:
-            continue
-        total += float(cost[row, column])
-    return total
-
-
-def _lex_tight(tight: npt.NDArray[np.bool_], columns: Sequence[int]) -> list[int]:
-    """Lexicographically smallest row-perfect matching on tight edges."""
-    width = int(tight.shape[1])
-    adjacency = _adjacency(tight)
-    owner = [-1] * width
-    chosen = list(columns)
-    for row, column in enumerate(chosen):
-        if column >= 0:
-            owner[column] = row
-    for row in range(len(chosen)):
-        _place_row(adjacency, owner, chosen, row, width)
-    return chosen
-
-
-def _adjacency(tight: npt.NDArray[np.bool_]) -> list[list[int]]:
-    adjacency: list[list[int]] = []
-    for row in range(int(tight.shape[0])):
-        found = np.flatnonzero(tight[row])
-        adjacency.append([int(item) for item in found])
-    return adjacency
-
-
-def _place_row(
-    adjacency: Sequence[Sequence[int]],
-    owner: list[int],
-    chosen: list[int],
+def _real_allowed(
+    scores: Sequence[Sequence[float | None]],
     row: int,
-    width: int,
-) -> None:
-    current = chosen[row]
-    if current >= 0:
-        owner[current] = -1
-        chosen[row] = -1
-    seen = [False] * width
-    if _dfs_tight(adjacency, owner, chosen, row, row, seen):
-        return
-    chosen[row] = -1
-
-
-def _dfs_tight(
-    adjacency: Sequence[Sequence[int]],
-    owner: list[int],
-    chosen: list[int],
-    row: int,
-    locked: int,
-    seen: list[bool],
+    column: int,
+    row_count: int,
+    column_count: int,
+    min_score: float,
 ) -> bool:
-    for column in adjacency[row]:
-        if seen[column]:
-            continue
-        seen[column] = True
-        previous = owner[column]
-        moved = previous >= locked and _dfs_tight(adjacency, owner, chosen, previous, locked, seen)
-        if previous == -1 or moved:
-            owner[column] = row
-            chosen[row] = column
-            return True
-    return False
-
-
-def _totals_equal(left: float, right: float, side: int) -> bool:
-    """Equal within ``1e-12`` times the longer grid side. Not a 1e-4 gap."""
-    limit = _TOTAL_ABS_TOL_PER_ROW * max(side, 1)
-    return math.isclose(left, right, rel_tol=0.0, abs_tol=limit)
+    if row >= row_count or column >= column_count:
+        return False
+    score = scores[row][column]
+    return score is not None and score >= min_score
 
 
 def _hungarian(cost: npt.NDArray[np.float64]) -> list[tuple[int, int]]:
-    """One Hungarian solution. Ties are not broken here.
+    """One ``linear_sum_assignment`` solve.
 
     The import is at module scope. ``importlib`` would hide it from the
     project-rules and semgrep fences. scipy 1.17.1 ships no ``py.typed``
