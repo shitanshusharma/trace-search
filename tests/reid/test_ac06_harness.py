@@ -93,9 +93,9 @@ def _exact(actual: object, expected: Fraction) -> None:
     assert Fraction(actual).limit_denominator(expected.denominator) == expected
 
 
-def _accept_pair(query: EvalItem, gallery: EvalItem) -> bool:
+def _accept_pair(_query: EvalItem, _gallery: EvalItem) -> bool:
     """Keep every gallery item. The arguments are the mask signature."""
-    return query.track_id == query.track_id and gallery.track_id == gallery.track_id
+    return True
 
 
 def _success_payloads() -> list[dict[str, object]]:

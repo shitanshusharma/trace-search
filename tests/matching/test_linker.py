@@ -6,6 +6,7 @@ No footage, no files written into the repo tree, and no network.
 from __future__ import annotations
 
 import socket
+import sys
 from collections.abc import Sequence
 from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
@@ -652,9 +653,7 @@ def test_reads_vectors_and_attributes_from_the_stores(tmp_path: Path) -> None:
 
 
 def test_module_docstring_states_the_score_limits() -> None:
-    import trace_search.matching.linker as linker_module
-
-    text = linker_module.__doc__ or ""
+    text = sys.modules["trace_search.matching.linker"].__doc__ or ""
     assert "placeholder similarity has no accuracy meaning" in text
     assert "((cosine + 1) / 2 + attr_weight * share) / (1 + attr_weight)" in text
     assert "not evidence" in text
