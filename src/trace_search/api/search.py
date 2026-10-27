@@ -7,7 +7,14 @@ Inside the window means inclusive overlap, not containment. A track is
 inside the window when t_end >= window start and t_start <= window end.
 Touching either edge counts as inside. A track that covers the window
 and extends past either end is inside. A track that ends before the
-window start, or starts after the window end, is outside.
+window start, or starts after the window end, is outside. The reported
+``t_start`` and ``t_end`` are the track's own span, not the window.
+
+Every call takes a ``run_id``. Track ids restart per run, so spans and
+dedupe use ``(run_id, camera_id, track_id)``. Vector search and attribute
+reads also take that run and the one ``derived_from`` stored for it.
+``TrackStore.count`` is the public lookup for that origin. An unknown
+run raises before a search and before an audit write.
 
 Results are sorted by score descending, then by t_start ascending, then
 by camera_id ascending, then by track_id ascending. That last pair makes
@@ -23,7 +30,6 @@ from __future__ import annotations
 
 import json
 import math
-import sqlite3
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -31,7 +37,7 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 
-from trace_search.attributes.attributes import Box
+from trace_search.attributes.attributes import AttributeQuery, Box, Color, PersonAttributes
 from trace_search.attributes.store import (
     TrackAttributeRecord,
     TrackAttributeStore,
@@ -41,15 +47,14 @@ from trace_search.audit.log import AuditAction, AuditLog
 from trace_search.detection.types import DetClass
 from trace_search.matching.tracklets import Tracklet, load_tracklets
 from trace_search.reid.types import AppearanceEmbedder, AppearanceEmbedding
-from trace_search.reid.vector_store import VectorStore
+from trace_search.reid.vector_store import ALLOWED_DERIVED_FROM, VectorStore
 from trace_search.tracking.store import TrackStore
 
-# ``TrackStore.read`` does not return ``run_id``, and the store has no
-# list-runs method. ``load_tracklets`` needs the id. This read is the
-# smallest way to discover runs without editing the track store.
-_RUN_ID_SQL = "SELECT DISTINCT run_id FROM track_observations ORDER BY run_id"
+# Stable probe order. ``ALLOWED_DERIVED_FROM`` is a set.
+_ORIGINS = tuple(sorted(ALLOWED_DERIVED_FROM))
 
-_TrackKey = tuple[str, int]
+# Track ids restart every run, so a camera and track id are not enough.
+_TrackKey = tuple[str, str, int]
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,7 @@ class _Scope:
     window: tuple[float, float]
     camera_ids: tuple[str, ...]
     limit: int
+    run_id: str
 
 
 class SearchService:
@@ -121,28 +127,39 @@ class SearchService:
         t_window: tuple[float, float],
         camera_ids: Collection[str],
         limit: int = 50,
+        *,
+        run_id: str,
     ) -> list[TrackRef]:
         """Return matching tracks inside the window and camera set.
 
-        ``query`` uses the attribute-store filter rules. An unknown colour
-        or a non-bool bag raises before any store read and before any audit
-        write. ``limit`` is a positive int. ``True`` and ``False`` are
-        rejected because ``bool`` is a subclass of ``int``.
+        ``run_id`` is required. The read uses that run and its stored
+        ``derived_from``. ``query`` uses the attribute-store filter rules.
+        An unknown colour or a non-bool bag raises before any store read
+        and before any audit write. ``limit`` is a positive int. ``True``
+        and ``False`` are rejected because ``bool`` is a subclass of ``int``.
 
         Results have ``score is None``. They sort by t_start ascending,
         then by camera_id and track_id. Inside the window means inclusive
-        overlap, not containment.
+        overlap, not containment. Reported times are the track span.
         """
-        scope = _scope(operator, case_id, purpose, t_window, camera_ids, limit, "limit")
+        scope = _scope(operator, case_id, purpose, run_id, t_window, camera_ids, limit, "limit")
         checked = _require_attribute_filter(query)
+        origin = _origin_for_run(self._tracks, scope.run_id)
         refs = _attribute_hits(
             self._tracks,
             self._attributes,
             checked,
+            scope.run_id,
+            origin,
             scope.window,
             scope.camera_ids,
         )
-        return self._finish(scope, checked, _limited(_ordered(refs), scope.limit))
+        return self._finish(
+            scope,
+            "limit",
+            _attribute_query(checked),
+            _limited(_ordered(refs), scope.limit),
+        )
 
     def by_example_crop(
         self,
@@ -153,6 +170,8 @@ class SearchService:
         t_window: tuple[float, float],
         camera_ids: Collection[str],
         k: int = 50,
+        *,
+        run_id: str,
     ) -> list[TrackRef]:
         """Return the nearest tracks to an in-memory crop.
 
@@ -166,17 +185,20 @@ class SearchService:
         Results are sorted by score descending, then by t_start ascending,
         then by camera_id ascending, then by track_id ascending.
         """
-        scope = _scope(operator, case_id, purpose, t_window, camera_ids, k, "k")
+        scope = _scope(operator, case_id, purpose, run_id, t_window, camera_ids, k, "k")
         image = _require_uint8_image("crop", crop)
+        origin = _origin_for_run(self._tracks, scope.run_id)
         refs = _vector_hits(
             self._tracks,
             self._vectors,
             self._embedder,
             image,
+            scope.run_id,
+            origin,
             scope.window,
             scope.camera_ids,
         )
-        return self._finish(scope, _crop_query(image), _limited(_ordered(refs), scope.limit))
+        return self._finish(scope, "k", _crop_query(image), _limited(_ordered(refs), scope.limit))
 
     def by_track(
         self,
@@ -190,6 +212,8 @@ class SearchService:
         t_window: tuple[float, float],
         camera_ids: Collection[str],
         k: int = 50,
+        *,
+        run_id: str,
     ) -> list[TrackRef]:
         """Click-to-search: cut a crop from ``frame`` and search by that crop.
 
@@ -200,40 +224,44 @@ class SearchService:
         Scores are not evidence: placeholder similarity has no accuracy
         meaning.
         """
-        scope = _scope(operator, case_id, purpose, t_window, camera_ids, k, "k")
+        scope = _scope(operator, case_id, purpose, run_id, t_window, camera_ids, k, "k")
         source = _require_nonempty_str("camera_id", camera_id)
         track = _require_index("track_id", track_id)
         frame_index = _require_index("frame_number", frame_number)
         image = _require_uint8_image("frame", frame)
-        box = _box_for(self._tracks, source, track, frame_index)
+        origin = _origin_for_run(self._tracks, scope.run_id)
+        box = _box_for(self._tracks, source, track, frame_index, scope.run_id)
         crop = _require_uint8_image("crop", _slice_crop(image, box))
         refs = _vector_hits(
             self._tracks,
             self._vectors,
             self._embedder,
             crop,
+            scope.run_id,
+            origin,
             scope.window,
             scope.camera_ids,
         )
         payload = _track_query(source, track, frame_index, crop)
-        return self._finish(scope, payload, _limited(_ordered(refs), scope.limit))
+        return self._finish(scope, "k", payload, _limited(_ordered(refs), scope.limit))
 
     def _finish(
         self,
         scope: _Scope,
+        limit_key: str,
         query_payload: Mapping[str, object],
         refs: Sequence[TrackRef],
     ) -> list[TrackRef]:
         """Append one audit entry, then return ``refs``.
 
         ``append`` runs before the return. If it raises, this raises and
-        the caller gets no list.
+        the caller gets no list. The query records the validated scope.
         """
         returned = list(refs)
         self._audit.append(
             operator_username=scope.operator,
             action=AuditAction.SEARCH,
-            query=_canonical_json(query_payload),
+            query=_canonical_json(_with_scope(scope, limit_key, query_payload)),
             case_id=scope.case_id,
             purpose=scope.purpose,
             result_ids=[_result_id(item) for item in returned],
@@ -245,16 +273,18 @@ def _scope(
     operator: object,
     case_id: object,
     purpose: object,
+    run_id: object,
     t_window: object,
     camera_ids: object,
     limit: object,
     limit_label: str,
 ) -> _Scope:
-    """Check operator, case, purpose, window, cameras, and limit."""
+    """Check operator, case, purpose, run, window, cameras, and limit."""
     return _Scope(
         operator=_require_nonempty_str("operator", operator),
         case_id=_require_nonempty_str("case_id", case_id),
         purpose=_require_nonempty_str("purpose", purpose),
+        run_id=_require_nonempty_str("run_id", run_id),
         window=_require_window(t_window),
         camera_ids=_require_camera_ids(camera_ids),
         limit=_require_positive_int(limit_label, limit),
@@ -262,7 +292,7 @@ def _scope(
 
 
 def _require_nonempty_str(label: str, value: object) -> str:
-    """Reject a missing, blank, or non-str value. Do not strip a real id."""
+    """Reject a missing, blank, or non-str value. Return it unchanged."""
     if not isinstance(value, str) or value.strip() == "":
         raise ValueError(f"{label} must be a non-empty string, got {value!r}")
     return value
@@ -283,7 +313,11 @@ def _require_index(label: str, value: object) -> int:
 
 
 def _require_epoch(value: object) -> float:
-    """A finite int or float. ``bool`` is excluded. Do not clamp."""
+    """A finite ``int`` or ``float``. ``bool`` is excluded. Do not clamp.
+
+    NumPy numbers such as ``np.float32`` are not accepted. Callers pass
+    Python ``int`` and ``float`` only.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"t_window endpoints must be real numbers, got {value!r}")
     number = float(value)
@@ -327,7 +361,7 @@ def _require_camera_ids(value: object) -> tuple[str, ...]:
     unique: dict[str, None] = {}
     for item in value:
         unique.setdefault(_require_camera_id(item), None)
-    return tuple(unique)
+    return tuple(sorted(unique))
 
 
 def _require_uint8_image(label: str, value: object) -> npt.NDArray[np.uint8]:
@@ -359,12 +393,18 @@ def _camera_allowed(camera_id: str, camera_ids: Collection[str]) -> bool:
     return camera_id in camera_ids
 
 
-def _stored_run_ids(store: TrackStore) -> tuple[str, ...]:
-    """Run ids present in the track database, in ascending order."""
-    with sqlite3.connect(store.db_path) as connection:
-        cursor = connection.execute(_RUN_ID_SQL)
-        found = [str(row[0]) for row in cursor]
-    return tuple(found)
+def _origin_for_run(store: TrackStore, run_id: str) -> str:
+    """The one ``derived_from`` stored on ``run_id``.
+
+    ``TrackStore`` has no method that returns the origin. ``count`` is the
+    public read: exactly one of ``SMOKE``, ``CODE_TEST``, and ``SITE`` must
+    have rows. Zero rows is an unknown run. Two origins is mixed and also
+    refused. This runs after the text checks and before a search.
+    """
+    found = [origin for origin in _ORIGINS if store.count(run_id=run_id, derived_from=origin) > 0]
+    if len(found) != 1:
+        raise ValueError(f"run_id {run_id!r} is unknown or has more than one derived_from")
+    return found[0]
 
 
 def _tracklets_for_run(store: TrackStore, run_id: str) -> list[Tracklet]:
@@ -375,62 +415,98 @@ def _tracklets_for_run(store: TrackStore, run_id: str) -> list[Tracklet]:
     return loaded
 
 
-def _load_tracklets(store: TrackStore) -> tuple[Tracklet, ...]:
-    """All tracklets known to ``store``. The search filters them afterwards."""
-    loaded: list[Tracklet] = []
-    for run_id in _stored_run_ids(store):
-        loaded.extend(_tracklets_for_run(store, run_id))
-    return tuple(loaded)
-
-
-def _index_tracklets(tracklets: Sequence[Tracklet]) -> dict[tuple[str, int, str], Tracklet]:
-    """Map ``(camera_id, track_id, run_id)`` to the tracklet that carries time."""
-    return {(item.camera_id, item.track_id, item.run_id): item for item in tracklets}
+def _load_tracklets(store: TrackStore, run_id: str) -> tuple[Tracklet, ...]:
+    """Tracklets for ``run_id`` only. The search filters cameras and time."""
+    return tuple(_tracklets_for_run(store, run_id))
 
 
 def _attribute_ref(
     record: TrackAttributeRecord,
-    indexed: Mapping[tuple[str, int, str], Tracklet],
+    spans: Mapping[_TrackKey, tuple[tuple[float, float], ...]],
+    run_id: str,
     camera_ids: Collection[str],
     window: tuple[float, float],
 ) -> TrackRef | None:
-    """One attribute row as a ``TrackRef``, or ``None`` when it is out of scope."""
+    """One attribute row as a ``TrackRef``, or ``None`` when it is out of scope.
+
+    The span key is the run passed to ``read``. Checking ``record.run_id``
+    again would hide a read that dropped that argument.
+    """
     if not _camera_allowed(record.camera_id, camera_ids):
         return None
-    tracklet = indexed[(record.camera_id, record.track_id, record.run_id)]
-    if not _overlaps(tracklet.t_start, tracklet.t_end, window):
+    span = _span_for(spans, (run_id, record.camera_id, record.track_id), window)
+    if span is None:
         return None
     return TrackRef(
-        camera_id=tracklet.camera_id,
-        track_id=tracklet.track_id,
-        t_start=tracklet.t_start,
-        t_end=tracklet.t_end,
+        camera_id=record.camera_id,
+        track_id=record.track_id,
+        t_start=span[0],
+        t_end=span[1],
         score=None,
     )
+
+
+def _attributes_match(record: TrackAttributeRecord, query: Mapping[str, object]) -> bool:
+    """Apply an already-validated filter. Do not re-check its types."""
+    attrs = PersonAttributes(
+        upper_clothing_color=Color(record.upper_color),
+        lower_clothing_color=Color(record.lower_color),
+        bag_on_track=record.bag_on_track,
+        upper_confidence=record.upper_confidence,
+        lower_confidence=record.lower_confidence,
+    )
+    return AttributeQuery.matches(attrs, query)
+
+
+def _attribute_rows(
+    attributes: TrackAttributeStore,
+    tracklets: Sequence[Tracklet],
+    run_id: str,
+    origin: str,
+) -> list[TrackAttributeRecord]:
+    """Rows for ``run_id`` and ``origin``. Other runs and origins stay out.
+
+    ``read`` takes the run. It has no origin argument, so ``derived_from``
+    is applied to the rows it returns. Cameras come from this run's
+    tracklets, including cameras the caller did not ask for, so the camera
+    check below is the one that drops them.
+    """
+    cameras: dict[str, None] = {}
+    for tracklet in tracklets:
+        cameras.setdefault(tracklet.camera_id, None)
+    rows: list[TrackAttributeRecord] = []
+    for camera_id in cameras:
+        for record in attributes.read(camera_id, None, run_id):
+            if record.derived_from != origin:
+                continue
+            rows.append(record)
+    return rows
 
 
 def _attribute_hits(
     tracks: TrackStore,
     attributes: TrackAttributeStore,
     query: Mapping[str, object],
+    run_id: str,
+    origin: str,
     window: tuple[float, float],
     camera_ids: Collection[str],
 ) -> list[TrackRef]:
-    """Attribute matches, filtered here for camera and inclusive overlap.
+    """Attribute matches for one run, filtered here for camera and overlap.
 
-    The store is asked with ``camera_ids=None`` and ``t_window=None`` so
-    this module's filters are the ones that decide membership. Duplicate
-    rows for one ``(camera_id, track_id)`` become one ref.
+    Duplicate rows for one ``(run_id, camera_id, track_id)`` become one ref.
+    The reported times are the union of overlapping spans, not the window.
     """
-    tracklets = _load_tracklets(tracks)
-    records = attributes.query(query, None, None, tracklets)
-    indexed = _index_tracklets(tracklets)
+    tracklets = _load_tracklets(tracks, run_id)
+    spans = _spans(tracklets)
     chosen: dict[_TrackKey, TrackRef] = {}
-    for record in records:
-        ref = _attribute_ref(record, indexed, camera_ids, window)
+    for record in _attribute_rows(attributes, tracklets, run_id, origin):
+        if not _attributes_match(record, query):
+            continue
+        ref = _attribute_ref(record, spans, run_id, camera_ids, window)
         if ref is None:
             continue
-        key = (ref.camera_id, ref.track_id)
+        key = (run_id, ref.camera_id, ref.track_id)
         if key in chosen:
             continue
         chosen[key] = ref
@@ -440,10 +516,10 @@ def _attribute_hits(
 def _spans(
     tracklets: Sequence[Tracklet],
 ) -> dict[_TrackKey, tuple[tuple[float, float], ...]]:
-    """Time spans for every known ``(camera_id, track_id)``, including out of window."""
+    """Time spans keyed by ``(run_id, camera_id, track_id)``, including out of window."""
     grouped: dict[_TrackKey, list[tuple[float, float]]] = {}
     for tracklet in tracklets:
-        grouped.setdefault((tracklet.camera_id, tracklet.track_id), []).append(
+        grouped.setdefault((tracklet.run_id, tracklet.camera_id, tracklet.track_id), []).append(
             (tracklet.t_start, tracklet.t_end)
         )
     return {key: tuple(ranges) for key, ranges in grouped.items()}
@@ -462,31 +538,46 @@ def _matching_span(
     return (start, end)
 
 
-def _allowed_span(
-    embedding: AppearanceEmbedding,
+def _span_for(
     spans: Mapping[_TrackKey, tuple[tuple[float, float], ...]],
-    camera_ids: Collection[str],
+    key: _TrackKey,
     window: tuple[float, float],
 ) -> tuple[float, float] | None:
-    """Time span when the embedding's track is known, in the cameras, and inside."""
-    if not _camera_allowed(embedding.camera_id, camera_ids):
-        return None
-    ranges = spans.get((embedding.camera_id, embedding.track_id))
+    """Union of ranges for ``key`` that overlap ``window``, or ``None``."""
+    ranges = spans.get(key)
     if ranges is None:
         return None
     return _matching_span(ranges, window)
 
 
+def _allowed_span(
+    embedding: AppearanceEmbedding,
+    spans: Mapping[_TrackKey, tuple[tuple[float, float], ...]],
+    run_id: str,
+    camera_ids: Collection[str],
+    window: tuple[float, float],
+) -> tuple[float, float] | None:
+    """Time span when the embedding's track is known, in the cameras, and inside.
+
+    The embedding has no run id. ``run_id`` is the caller's run, which is
+    also the run ``search`` was given. A span is not clipped to the window.
+    """
+    if not _camera_allowed(embedding.camera_id, camera_ids):
+        return None
+    return _span_for(spans, (run_id, embedding.camera_id, embedding.track_id), window)
+
+
 def _keep_best(
     best: dict[_TrackKey, float],
     times: dict[_TrackKey, tuple[float, float]],
+    run_id: str,
     camera_id: str,
     track_id: int,
     span: tuple[float, float],
     score: float,
 ) -> None:
     """Keep the higher score for one track. A lower or equal score stays put."""
-    key = (camera_id, track_id)
+    key = (run_id, camera_id, track_id)
     previous = best.get(key)
     if previous is not None and score <= previous:
         return
@@ -509,16 +600,18 @@ def _embed_crop(
 def _all_hits(
     vectors: VectorStore,
     row: npt.NDArray[np.float32],
+    run_id: str,
+    origin: str,
 ) -> list[tuple[AppearanceEmbedding, float]]:
-    """Every stored vector, before camera, track, and window scoping.
+    """Every vector in this run and origin, before camera and window scoping.
 
-    ``k`` is the full count so a stray top hit cannot consume the caller's
-    ``k`` and hide a real track. An empty store does not call ``search``.
+    ``k`` is the scoped count so a stray top hit cannot consume the caller's
+    ``k`` and hide a real track. An empty scope does not call ``search``.
     """
-    total = vectors.count()
+    total = vectors.count(derived_from=origin, run_id=run_id)
     if total <= 0:
         return []
-    return vectors.search(row, total)
+    return vectors.search(row, total, run_id=run_id, derived_from=origin)
 
 
 def _vector_hits(
@@ -526,19 +619,29 @@ def _vector_hits(
     vectors: VectorStore,
     embedder: AppearanceEmbedder,
     crop: npt.NDArray[np.uint8],
+    run_id: str,
+    origin: str,
     window: tuple[float, float],
     camera_ids: Collection[str],
 ) -> list[TrackRef]:
-    """Rank known in-window tracks. Stray vectors never become refs."""
+    """Rank known in-window tracks in one run. Stray vectors never become refs."""
     row = _embed_crop(embedder, crop)
-    spans = _spans(_load_tracklets(tracks))
+    spans = _spans(_load_tracklets(tracks, run_id))
     best: dict[_TrackKey, float] = {}
     times: dict[_TrackKey, tuple[float, float]] = {}
-    for embedding, score in _all_hits(vectors, row):
-        span = _allowed_span(embedding, spans, camera_ids, window)
+    for embedding, score in _all_hits(vectors, row, run_id, origin):
+        span = _allowed_span(embedding, spans, run_id, camera_ids, window)
         if span is None:
             continue
-        _keep_best(best, times, embedding.camera_id, embedding.track_id, span, float(score))
+        _keep_best(
+            best,
+            times,
+            run_id,
+            embedding.camera_id,
+            embedding.track_id,
+            span,
+            float(score),
+        )
     return _refs_from_best(best, times)
 
 
@@ -550,7 +653,7 @@ def _refs_from_best(
     refs: list[TrackRef] = []
     for key, score in best.items():
         t_start, t_end = times[key]
-        refs.append(TrackRef(key[0], key[1], t_start, t_end, score))
+        refs.append(TrackRef(key[1], key[2], t_start, t_end, score))
     return refs
 
 
@@ -595,7 +698,33 @@ def _limited(refs: Sequence[TrackRef], limit: int) -> list[TrackRef]:
 
 def _canonical_json(payload: Mapping[str, object]) -> str:
     """Canonical JSON: sorted keys, compact separators, no extra whitespace."""
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _with_scope(
+    scope: _Scope,
+    limit_key: str,
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    """Validated scope plus the method payload. Later keys do not replace scope."""
+    merged: dict[str, object] = {
+        "run_id": scope.run_id,
+        "t_window": [scope.window[0], scope.window[1]],
+        "camera_ids": list(scope.camera_ids),
+        limit_key: scope.limit,
+    }
+    for key, value in payload.items():
+        if key in merged:
+            continue
+        merged[key] = value
+    return merged
+
+
+def _attribute_query(checked: Mapping[str, object]) -> dict[str, object]:
+    """Validated attribute filter plus ``kind``. Numbers are already floats."""
+    payload: dict[str, object] = {"kind": "by_attributes"}
+    payload.update(checked)
+    return payload
 
 
 def _crop_query(crop: npt.NDArray[np.uint8]) -> dict[str, object]:
@@ -631,9 +760,15 @@ def _result_id(ref: TrackRef) -> str:
     return f"{ref.camera_id}:{ref.track_id}"
 
 
-def _box_for(store: TrackStore, camera_id: str, track_id: int, frame_number: int) -> Box:
-    """The stored box for one observation, or raise when it is absent."""
-    for observation in store.read(camera_id):
+def _box_for(
+    store: TrackStore,
+    camera_id: str,
+    track_id: int,
+    frame_number: int,
+    run_id: str,
+) -> Box:
+    """The stored box for one observation in ``run_id``, or raise when it is absent."""
+    for observation in store.read(camera_id, run_id):
         if observation.track_id != track_id:
             continue
         if observation.frame_number != frame_number:
