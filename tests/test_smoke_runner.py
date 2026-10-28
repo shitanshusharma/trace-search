@@ -16,7 +16,7 @@ import pytest
 
 from scripts.run_smoke import main
 from trace_search.detection.types import DetClass
-from trace_search.fixtures.generator import SyntheticVideoGenerator, generate_smoke_fixtures
+from trace_search.fixtures.generator import SyntheticVideoGenerator
 from trace_search.fixtures.guards import LoaderContext, check_fixture_allowed
 from trace_search.ingest.file_ingest import FileVideoSource
 from trace_search.tracking.store import TrackStore
@@ -63,11 +63,13 @@ def _run(argv: list[str]) -> tuple[int, str]:
 
 
 @pytest.fixture(scope="module")
-def five_synthetic_clips(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, list[str]]:
+def five_synthetic_clips(
+    canonical_smoke_set: tuple[Path, list[dict[str, object]]],
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[Path, Path, list[str]]:
     """Five generator clips and a manifest that lives outside the repo."""
+    clips, entries = canonical_smoke_set
     root = tmp_path_factory.mktemp("five-smoke")
-    clips = root / "clips"
-    entries = generate_smoke_fixtures(clips, base_seed=42, num_clips=5)
     manifest = root / "manifest.json"
     _write_manifest(manifest, entries)
     fixture_ids = [str(entry["fixture_id"]) for entry in entries]
@@ -184,11 +186,39 @@ def test_min_clips_below_one_exits_1(tmp_path: Path, min_clips: str) -> None:
     assert "0 clips, 0 errors" not in output
 
 
-def test_min_clips_six_on_five_clips_exits_1(
-    five_synthetic_clips: tuple[Path, Path, list[str]],
-    tmp_path: Path,
-) -> None:
-    clips, manifest, _fixture_ids = five_synthetic_clips
+def _fast_five(tmp_path: Path) -> tuple[Path, Path]:
+    """Five short clips that still persist one track each."""
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    entries: list[dict[str, object]] = []
+    for index in range(5):
+        generator = SyntheticVideoGenerator(seed=1000 + index)
+        path = clips / f"FX-FAST-{index:03d}.mp4"
+        generator.generate_clip(
+            path,
+            duration_sec=1.0,
+            fps=10,
+            width=320,
+            height=240,
+            num_figures=1,
+            num_obstructions=0,
+        )
+        entries.append(
+            {
+                "use": "SMOKE_ONLY",
+                "type": "synthetic_clip",
+                "sha256": generator.compute_sha256(path),
+                "phash": generator.compute_phashes(path, num_samples=10),
+                "fixture_id": f"FX-FAST-{index:03d}",
+            }
+        )
+    manifest = tmp_path / "manifest.json"
+    _write_manifest(manifest, entries)
+    return clips, manifest
+
+
+def test_min_clips_six_on_five_clips_exits_1(tmp_path: Path) -> None:
+    clips, manifest = _fast_five(tmp_path)
     code, output = _run(
         [
             "--manifest",
@@ -204,6 +234,9 @@ def test_min_clips_six_on_five_clips_exits_1(
         ]
     )
     assert code == 1, output
+    assert "5 clips, 0 errors" in output
+    assert "error: 5 clips ran, fewer than min-clips 6" in output
+    assert "Traceback" not in output
 
 
 def _tagged_plant(
@@ -537,10 +570,12 @@ def _invoke(argv: list[str]) -> tuple[int, str]:
     return code, stdout.getvalue() + stderr.getvalue()
 
 
-def test_purge_deletes_only_smoke_rows_from_the_t3_9_run(tmp_path: Path) -> None:
+def test_purge_deletes_only_smoke_rows_from_the_t3_9_run(
+    canonical_smoke: tuple[Path, list[dict[str, object]]],
+    tmp_path: Path,
+) -> None:
     """Plant CODE_TEST, run the 5-clip smoke path, then purge SMOKE rows."""
-    clips = tmp_path / "clips"
-    entries = generate_smoke_fixtures(clips, base_seed=42, num_clips=5)
+    clips, entries = canonical_smoke
     manifest = tmp_path / "manifest.json"
     _write_manifest(manifest, entries)
     db = tmp_path / "smoke.sqlite"

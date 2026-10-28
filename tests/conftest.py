@@ -2,14 +2,45 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 SCHEMA_PATH = Path("licenses/manifest_schema.json")
+
+SmokeSet = tuple[Path, list[dict[str, Any]]]
+
+
+@pytest.fixture(scope="session")
+def canonical_smoke_set(tmp_path_factory: pytest.TempPathFactory) -> SmokeSet:
+    """Generate the base-seed-42 five-clip smoke set once per session."""
+    from trace_search.fixtures.generator import generate_smoke_fixtures
+
+    clips = tmp_path_factory.mktemp("canonical-smoke")
+    entries = generate_smoke_fixtures(clips, base_seed=42, num_clips=5)
+    return clips, entries
+
+
+@pytest.fixture
+def canonical_smoke(canonical_smoke_set: SmokeSet) -> SmokeSet:
+    """A private copy of the shared smoke entries. The clip files stay shared."""
+    clips, entries = canonical_smoke_set
+    copied: list[dict[str, Any]] = copy.deepcopy(entries)
+    return clips, copied
+
+
+def canonical_clip(smoke: SmokeSet, fixture_id: str) -> Path:
+    """Return one shared clip by its fixture id."""
+    clips, entries = smoke
+    name = next(
+        Path(str(entry["path"])).name for entry in entries if entry["fixture_id"] == fixture_id
+    )
+    return clips / name
 
 
 @pytest.fixture(autouse=True)

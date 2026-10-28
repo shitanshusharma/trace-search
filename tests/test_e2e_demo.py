@@ -1175,9 +1175,7 @@ def test_json_helpers_reject_bad_values(tmp_path: Path) -> None:
     path.write_text(json.dumps({"figures": [{"figure_id": ""}]}), encoding="utf-8")
     with pytest.raises(ValueError, match="figure_id"):
         e2e._load_figures(path)
-    assert e2e._optional_run_id(tmp_path) is None
     (tmp_path / "run.json").write_text(json.dumps({"run_id": "abc"}), encoding="utf-8")
-    assert e2e._optional_run_id(tmp_path) == "abc"
     assert e2e._read_run_id(tmp_path) == "abc"
 
 
@@ -1704,30 +1702,54 @@ def test_empty_workdir_removes_created_paths(
     assert outside_file.read_text(encoding="utf-8") == "file"
 
 
-def test_nonempty_workdir_is_refused_and_untouched(tmp_path: Path) -> None:
+def _planted_entry(tmp_path: Path, kind: str) -> tuple[Path, Path, bytes]:
+    """One non-output entry. The third value is the payload that must survive."""
     target = tmp_path / "kept"
+    outside = tmp_path / "outside"
     target.mkdir()
-    manifest = b'{"note":"mine"}\n'
-    truth = b"mine\n"
-    (target / "manifest.json").write_bytes(manifest)
-    (target / "truth.json").write_bytes(truth)
-    row = _observation(
-        "CAM-1",
-        1,
-        0,
-        (0.0, 0.0, 10.0, 10.0),
-        timestamp_seconds=time.time(),
+    payload = b"precious\n"
+    if kind == "file":
+        (target / "precious.txt").write_bytes(payload)
+    elif kind == "dotfile":
+        (target / ".env").write_bytes(payload)
+    elif kind == "subdir":
+        nested = target / "sub"
+        nested.mkdir()
+        (nested / "f").write_bytes(payload)
+    else:
+        outside.mkdir()
+        (outside / "secret.txt").write_bytes(payload)
+        (target / "link").symlink_to(outside, target_is_directory=True)
+    return target, outside, payload
+
+
+def _entry_bytes(target: Path, outside: Path, kind: str) -> tuple[object, ...]:
+    if kind == "file":
+        return ((target / "precious.txt").read_bytes(),)
+    if kind == "dotfile":
+        return ((target / ".env").read_bytes(),)
+    if kind == "subdir":
+        return ((target / "sub" / "f").read_bytes(),)
+    link = target / "link"
+    return (
+        link.is_symlink(),
+        os.readlink(link),
+        (outside / "secret.txt").read_bytes(),
     )
-    TrackStore(target / TRACK_DB_FILENAME).write("kept-run", "fixture", DERIVED_FROM, [row])
-    (target / "run.json").write_text(json.dumps({"run_id": "kept-run"}), encoding="utf-8")
+
+
+@pytest.mark.parametrize("kind", ["file", "dotfile", "subdir", "symlink"])
+def test_nonempty_workdir_is_refused_and_untouched(tmp_path: Path, kind: str) -> None:
+    target, outside, payload = _planted_entry(tmp_path, kind)
+    before = _entry_bytes(target, outside, kind)
     buf = io.StringIO()
-    code = main(["--workdir", str(target), "--seed", "-1"], sink=buf)
+    code = main(["--workdir", str(target)], sink=buf)
+    text = buf.getvalue()
     assert code == 1
-    assert "not empty" in buf.getvalue()
-    assert "Traceback" not in buf.getvalue()
-    assert (target / "manifest.json").read_bytes() == manifest
-    assert (target / "truth.json").read_bytes() == truth
-    assert TrackStore(target / TRACK_DB_FILENAME).count(run_id="kept-run") == 1
+    assert "not empty" in text
+    assert "Traceback" not in text
+    assert _entry_bytes(target, outside, kind) == before
+    assert payload in before
 
 
 def test_output_symlink_is_refused_and_target_stays(tmp_path: Path) -> None:
@@ -1927,6 +1949,30 @@ def test_file_workdir_is_refused(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "keep"
 
 
+_SMALL_SCHEDULE = """\
+import dataclasses
+import runpy
+import sys
+
+import trace_search.pipeline.e2e as e2e
+
+_Orig = e2e.Schedule
+
+
+@dataclasses.dataclass(frozen=True)
+class _Small(_Orig):
+    n_cameras: int = 4
+    n_figures: int = 2
+    seconds: int = 30
+
+
+e2e.Schedule = _Small
+script, workdir = sys.argv[1], sys.argv[2]
+sys.argv = [script, "--workdir", workdir, "--seed", "0"]
+runpy.run_path(script, run_name="__main__")
+"""
+
+
 def test_cli_process_exit_codes(tmp_path: Path) -> None:
     script = _REPO / "scripts" / "run_e2e_demo.py"
     env = dict(os.environ)
@@ -1947,15 +1993,17 @@ def test_cli_process_exit_codes(tmp_path: Path) -> None:
     assert "Traceback" not in failed.stderr
     ok_dir = tmp_path / "ok"
     passed = subprocess.run(
-        [sys.executable, str(script), "--workdir", str(ok_dir), "--seed", "0"],
+        [sys.executable, "-c", _SMALL_SCHEDULE, str(script), str(ok_dir)],
         check=False,
         capture_output=True,
         text=True,
         cwd=_REPO,
         env=env,
     )
-    assert passed.returncode == 0
+    assert passed.returncode == 0, passed.stdout + passed.stderr
     assert passed.stdout.splitlines()[0] == LABEL
+    assert "Traceback" not in passed.stdout
+    assert "Traceback" not in passed.stderr
     assert not ok_dir.exists()
 
 

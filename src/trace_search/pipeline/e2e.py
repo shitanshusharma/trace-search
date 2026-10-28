@@ -1002,13 +1002,6 @@ def _read_run_id(root: Path) -> str:
     return _as_text(payload.get("run_id"), "run_id")
 
 
-def _optional_run_id(root: Path) -> str | None:
-    path = root / RUN_FILENAME
-    if not path.is_file():
-        return None
-    return _read_run_id(root)
-
-
 def _delete_track_rows(root: Path, run_id: str) -> None:
     path = root / TRACK_DB_FILENAME
     if not path.is_file():

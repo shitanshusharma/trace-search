@@ -22,10 +22,10 @@ from PIL import Image
 import trace_search.reid as reid
 import trace_search.reid.data as data_module
 import trace_search.reid.synthetic as synthetic_module
+from tests.conftest import canonical_clip
 from tests.media_helpers import write_mp4v_variant
 from tests.reid.conftest import rgb_frame
 from trace_search.fixtures.content import sha256_file
-from trace_search.fixtures.generator import SyntheticVideoGenerator
 from trace_search.fixtures.guards import FixtureSeparationError, FixtureUseTag, LoaderContext
 from trace_search.reid.data import SyntheticProvenance
 
@@ -972,25 +972,19 @@ def _png_manifest_row(path: Path, fixture_id: str, image: np.ndarray) -> dict[st
     }
 
 
-def test_smoke_figure_png_without_provenance_is_refused(tmp_path: Path) -> None:
+def test_smoke_figure_png_without_provenance_is_refused(
+    canonical_smoke: tuple[Path, list[dict[str, object]]],
+    tmp_path: Path,
+) -> None:
     """A frame-156 figure box saved as a PNG is refused in EVALUATION.
 
-    The clip is regenerated in ``tmp_path``. The caller manifest has one
+    The clip is the shared hallway encode. The caller manifest has one
     DEV row for that PNG. The sample has a path and no in-memory crop.
     """
     repo_root = Path(__file__).resolve().parents[2]
     assert not tmp_path.resolve().is_relative_to(repo_root)
-    clip = tmp_path / "FX-SMOKE-SYN-003_hallway_crowded.mp4"
-    SyntheticVideoGenerator(seed=44).generate_clip(
-        output_path=clip,
-        duration_sec=15.0,
-        fps=30,
-        width=1920,
-        height=1080,
-        num_figures=5,
-        background_brightness=0.85,
-        num_obstructions=3,
-    )
+    clip = canonical_clip(canonical_smoke, "FX-SMOKE-SYN-003")
+    assert not clip.resolve().is_relative_to(repo_root)
     index = 156
     assert index not in _sample_frame_indices(_frame_count(clip))
     frame = _rgb_frames(clip, (index,))[index]
