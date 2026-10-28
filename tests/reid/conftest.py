@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import socket
 from collections.abc import Iterator
 from pathlib import Path
@@ -9,8 +10,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-
-from trace_search.fixtures.generator import generate_smoke_fixtures
 
 
 def fail_if_socket_connect_attempted(attempts: list[tuple[object, object]]) -> None:
@@ -40,15 +39,17 @@ def refuse_socket_connect(
 
 
 @pytest.fixture(scope="module")
-def smoke_clips(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[dict[str, object]]]:
-    """Generate the smoke set once, outside the repo tree."""
-    directory = tmp_path_factory.mktemp("reid-smoke-clips")
+def smoke_clips(
+    canonical_smoke_set: tuple[Path, list[dict[str, object]]],
+) -> tuple[Path, list[dict[str, object]]]:
+    """Reuse the shared smoke set. It is generated outside the repo tree."""
+    directory, entries = canonical_smoke_set
     repo_root = Path(__file__).resolve().parents[2]
     assert not directory.resolve().is_relative_to(repo_root)
-    entries = generate_smoke_fixtures(directory, base_seed=42, num_clips=5)
     assert len(entries) >= 5
     assert all(entry["use"] == "SMOKE_ONLY" for entry in entries)
-    return directory, entries
+    copied: list[dict[str, object]] = copy.deepcopy(entries)
+    return directory, copied
 
 
 def rgb_frame(clip: Path) -> np.ndarray:

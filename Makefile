@@ -1,4 +1,4 @@
-.PHONY: help check lint format types test coverage complexity security clean install
+.PHONY: help check lint format types test coverage complexity security clean install e2e
 
 help:
 	@echo "trace-search - Makefile targets"
@@ -14,6 +14,7 @@ help:
 	@echo "  make complexity       Check code complexity"
 	@echo "  make security         Run security checks"
 	@echo "  make check            Run all checks (lint, types, test, complexity, security)"
+	@echo "  make e2e              Run the synthetic end-to-end demo"
 	@echo "  make clean            Remove generated files"
 	@echo ""
 
@@ -73,6 +74,9 @@ security:
 	@echo "→ CI tools banned licences..."
 	@site="$$(.venv-ci/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"; \
 	PYTHONPATH=src .venv-ci/bin/python -m scripts.check_ci_licenses --path "$$site"
+
+e2e:
+	python scripts/run_e2e_demo.py
 
 check: lint types test complexity security
 	@echo "✅ All checks passed!"

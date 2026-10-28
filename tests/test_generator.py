@@ -97,71 +97,56 @@ def test_phash_computation():
         assert all(len(h) == 16 for h in phashes), "Each pHash should be 16 hex chars"
 
 
-def test_generate_smoke_fixtures_minimum():
+def test_generate_smoke_fixtures_minimum(
+    canonical_smoke: tuple[Path, list[dict[str, object]]],
+) -> None:
     """generate_smoke_fixtures creates at least 5 clips."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_dir = Path(tmpdir) / "smoke"
+    _clips, manifest_entries = canonical_smoke
 
-        manifest_entries = generate_smoke_fixtures(
-            output_dir=output_dir,
-            base_seed=42,
-            num_clips=5,
-        )
+    assert len(manifest_entries) == 5, "Should generate 5 clips"
 
-        assert len(manifest_entries) == 5, "Should generate 5 clips"
-
-        for entry in manifest_entries:
-            assert entry["type"] == "synthetic_clip"
-            assert entry["use"] == "SMOKE_ONLY"
-            assert entry["generator"] == "SyntheticVideoGenerator"
-            assert "fixture_id" in entry
-            assert entry["fixture_id"].startswith("FX-SMOKE-")
-            assert len(entry["sha256"]) == 64
-            assert len(entry["phash"]) == 10
+    for entry in manifest_entries:
+        assert entry["type"] == "synthetic_clip"
+        assert entry["use"] == "SMOKE_ONLY"
+        assert entry["generator"] == "SyntheticVideoGenerator"
+        assert "fixture_id" in entry
+        assert entry["fixture_id"].startswith("FX-SMOKE-")
+        assert len(entry["sha256"]) == 64
+        assert len(entry["phash"]) == 10
 
 
-def test_generate_smoke_fixtures_has_lowlight():
+def test_generate_smoke_fixtures_has_lowlight(
+    canonical_smoke: tuple[Path, list[dict[str, object]]],
+) -> None:
     """At least one fixture has low brightness."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_dir = Path(tmpdir) / "smoke"
+    _clips, manifest_entries = canonical_smoke
 
-        manifest_entries = generate_smoke_fixtures(
-            output_dir=output_dir,
-            base_seed=42,
-            num_clips=5,
-        )
+    has_lowlight = False
+    for entry in manifest_entries:
+        seed_data = entry["seed"]
+        assert isinstance(seed_data, str)
+        if "lowlight" in seed_data.lower():
+            has_lowlight = True
+            break
 
-        has_lowlight = False
-        for entry in manifest_entries:
-            seed_data = entry["seed"]
-            if "lowlight" in seed_data.lower():
-                has_lowlight = True
-                break
-
-        assert has_lowlight, "Should have at least one low-light clip"
+    assert has_lowlight, "Should have at least one low-light clip"
 
 
-def test_generate_smoke_fixtures_determinism():
+def test_generate_smoke_fixtures_determinism(
+    canonical_smoke: tuple[Path, list[dict[str, object]]],
+    tmp_path: Path,
+) -> None:
     """Same seed produces same manifest entries."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_dir1 = Path(tmpdir) / "smoke1"
-        output_dir2 = Path(tmpdir) / "smoke2"
+    _clips, entries1 = canonical_smoke
+    entries2 = generate_smoke_fixtures(
+        output_dir=tmp_path / "smoke2",
+        base_seed=42,
+        num_clips=5,
+    )
 
-        entries1 = generate_smoke_fixtures(
-            output_dir=output_dir1,
-            base_seed=42,
-            num_clips=5,
-        )
-
-        entries2 = generate_smoke_fixtures(
-            output_dir=output_dir2,
-            base_seed=42,
-            num_clips=5,
-        )
-
-        for e1, e2 in zip(entries1, entries2):
-            assert e1["sha256"] == e2["sha256"], "Same seed should produce same SHA-256"
-            assert e1["phash"] == e2["phash"], "Same seed should produce same pHashes"
+    for e1, e2 in zip(entries1, entries2, strict=True):
+        assert e1["sha256"] == e2["sha256"], "Same seed should produce same SHA-256"
+        assert e1["phash"] == e2["phash"], "Same seed should produce same pHashes"
 
 
 def test_generate_smoke_fixtures_rejects_too_few():

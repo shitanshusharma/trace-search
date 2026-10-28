@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import canonical_clip
 from trace_search.fixtures.generator import (
     SyntheticVideoGenerator,
     generate_smoke_fixtures,
@@ -28,7 +29,7 @@ from trace_search.fixtures.separation import check_separation
 from trace_search.fixtures.smoke_rows import is_generated_smoke_clip
 
 
-def test_t1_complete_workflow():
+def test_t1_complete_workflow(canonical_smoke: tuple[Path, list[dict[str, object]]]) -> None:
     """
     End-to-end T1 workflow:
     1. Generate fixtures with deterministic seeds
@@ -36,15 +37,9 @@ def test_t1_complete_workflow():
     3. Test loader guards
     4. Test separation check
     """
+    _clips, manifest_entries = canonical_smoke
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-
-        output_dir = tmpdir / "smoke"
-        manifest_entries = generate_smoke_fixtures(
-            output_dir=output_dir,
-            base_seed=42,
-            num_clips=5,
-        )
 
         assert len(manifest_entries) == 5, "Should generate 5 clips"
 
@@ -240,45 +235,57 @@ def test_t1_determinism_same_seed_same_sha():
         assert path1.read_bytes() == path2.read_bytes()
 
 
-def _assert_regenerated_matches(manifest: dict) -> None:
+def _assert_regenerated_matches(
+    manifest: dict[str, object],
+    clips: Path,
+    first: list[dict[str, object]],
+) -> None:
     """Hash every generated smoke row. The same predicate selects those rows."""
-    committed = [entry for entry in manifest["entries"] if is_generated_smoke_clip(entry)]
+    raw_entries = manifest["entries"]
+    assert isinstance(raw_entries, list)
+    committed = [entry for entry in raw_entries if is_generated_smoke_clip(entry)]
     assert committed
+    assert [entry["fixture_id"] for entry in first] == [entry["fixture_id"] for entry in committed]
+    for entry, stored in zip(first, committed, strict=True):
+        assert entry == stored
+        assert entry["path"].startswith("smoke/")
+        assert "\\" not in entry["path"]
+        assert not entry["path"].startswith("/")
+        assert ".." not in Path(str(entry["path"])).parts
+    clip_count = max(len(committed), 5)
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        first_dir = root / "smoke"
-        second_dir = root / "again" / "smoke"
-        clip_count = max(len(committed), 5)
-        first = generate_smoke_fixtures(output_dir=first_dir, base_seed=42, num_clips=clip_count)
-        second = generate_smoke_fixtures(output_dir=second_dir, base_seed=42, num_clips=clip_count)
-        assert [entry["fixture_id"] for entry in first] == [
-            entry["fixture_id"] for entry in committed
-        ]
-        for entry, repeat, stored in zip(first, second, committed):
-            assert entry == stored
+        second_dir = Path(tmp) / "smoke"
+        second = generate_smoke_fixtures(
+            output_dir=second_dir,
+            base_seed=42,
+            num_clips=clip_count,
+        )
+        for entry, repeat, stored in zip(first, second, committed, strict=True):
             assert repeat == stored
-            assert entry["path"].startswith("smoke/")
-            assert "\\" not in entry["path"]
-            assert not entry["path"].startswith("/")
-            assert ".." not in Path(entry["path"]).parts
-            left = first_dir / Path(entry["path"]).name
-            right = second_dir / Path(entry["path"]).name
+            left = clips / Path(str(entry["path"])).name
+            right = second_dir / Path(str(entry["path"])).name
             assert left.read_bytes() == right.read_bytes()
             assert SyntheticVideoGenerator.compute_sha256(left) == stored["sha256"]
 
 
-def test_regenerate_matches_manifest_entries_byte_for_byte():
+def test_regenerate_matches_manifest_entries_byte_for_byte(
+    canonical_smoke: tuple[Path, list[dict[str, object]]],
+) -> None:
     """The generator's rows, including path, match the committed manifest.
 
     A second run writes the same clip bytes. The manifest SHA-256 is that
     byte string. Every generated smoke row is included, including a later one.
     """
+    clips, first = canonical_smoke
     manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
-    _assert_regenerated_matches(manifest)
+    _assert_regenerated_matches(manifest, clips, first)
 
 
-def test_planted_tampered_synthetic_sha_fails_regenerate():
+def test_planted_tampered_synthetic_sha_fails_regenerate(
+    canonical_smoke: tuple[Path, list[dict[str, object]]],
+) -> None:
     """A generated row with a replaced sha256 fails the regenerate comparison."""
+    clips, first = canonical_smoke
     manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
     tampered = False
     for entry in manifest["entries"]:
@@ -288,10 +295,12 @@ def test_planted_tampered_synthetic_sha_fails_regenerate():
             break
     assert tampered
     with pytest.raises(AssertionError):
-        _assert_regenerated_matches(manifest)
+        _assert_regenerated_matches(manifest, clips, first)
 
 
-def test_regenerate_lowlight_matches_manifest_bytes():
+def test_regenerate_lowlight_matches_manifest_bytes(
+    canonical_smoke: tuple[Path, list[dict[str, object]]],
+) -> None:
     """Same seed regenerates FX-SMOKE-SYN-002 byte-for-byte against the manifest."""
     manifest = json.loads(Path("licenses/manifest.json").read_text(encoding="utf-8"))
     entry = next(
@@ -299,8 +308,8 @@ def test_regenerate_lowlight_matches_manifest_bytes():
     )
     seed = json.loads(entry["seed"])
     config = seed["config"]
+    first = canonical_clip(canonical_smoke, "FX-SMOKE-SYN-002")
     with tempfile.TemporaryDirectory() as tmp:
-        first = Path(tmp) / "a.mp4"
         second = Path(tmp) / "b.mp4"
         kwargs = dict(
             duration_sec=config["duration_sec"],
@@ -311,13 +320,11 @@ def test_regenerate_lowlight_matches_manifest_bytes():
             background_brightness=config["background_brightness"],
             num_obstructions=config["num_obstructions"],
         )
-        gen_a = SyntheticVideoGenerator(seed=seed["base_seed"] + seed["offset"])
-        gen_a.generate_clip(output_path=first, **kwargs)
         gen_b = SyntheticVideoGenerator(seed=seed["base_seed"] + seed["offset"])
         gen_b.generate_clip(output_path=second, **kwargs)
         assert first.read_bytes() == second.read_bytes()
-        assert gen_a.compute_sha256(first) == entry["sha256"]
-        assert gen_a.compute_phashes(first, num_samples=10) == entry["phash"]
+        assert gen_b.compute_sha256(second) == entry["sha256"]
+        assert gen_b.compute_phashes(second, num_samples=10) == entry["phash"]
 
 
 def test_smoke_store_is_gitignored_and_untracked():
