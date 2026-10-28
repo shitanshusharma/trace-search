@@ -104,18 +104,17 @@ python scripts/run_e2e_demo.py --workdir "$RUNNER_TEMP/e2e"
 
 `$RUNNER_TEMP` is set by Actions. The directory must be empty if it already exists. A local run can omit `--workdir`. `make e2e` runs `python scripts/run_e2e_demo.py`, which creates its own temp directory outside the repository.
 
-The first output line is:
+The default schedule is seed 0, 6 cameras, 4 figures. A passing run prints these lines and exits 0. `run time` and `run_id` follow them and change every run:
 
 ```
 CODE_TEST: not evidence for any AC (AC-07 is DEFERRED)
-```
-
-The command then prints one line per figure, `F1: <found>/<truth>` through `F4: <found>/<truth>` on the default schedule (4 figures). A passing run exits 0 and prints these three lines. Each score is that run's value, to four decimal places. The bars in parentheses are fixed:
-
-```
-segment_recall=<score> (>= 0.80) PASS
-segment_precision=<score> (>= 0.90) PASS
-false_merge_rate=<score> (<= 0.05) PASS
+F1: 3/3
+F2: 3/3
+F3: 3/3
+F4: 3/3
+segment_recall=1.0000 (>= 0.80) PASS
+segment_precision=1.0000 (>= 0.90) PASS
+false_merge_rate=0.0000 (<= 0.05) PASS
 ```
 
 Segment recall has to be at least 0.80. Segment precision has to be at least 0.90. The false-merge rate has to be at most 0.05. A miss prints `FAIL` on that line and the process exits 1. This output is not evidence for any acceptance criterion. AC-07 is DEFERRED.

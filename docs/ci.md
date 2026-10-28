@@ -394,13 +394,26 @@ python scripts/run_e2e_demo.py --workdir "$RUNNER_TEMP/e2e"
 
 `$RUNNER_TEMP/e2e` is outside the checkout. The script refuses a workdir inside the repository, an ancestor of the repository, the home directory, or an ancestor of home. An existing workdir must be empty. The step uses the same shell and working directory as the other `run` steps in this job.
 
-The first output line is `CODE_TEST: not evidence for any AC (AC-07 is DEFERRED)`. The process exits 0 only when all three bars pass. The bars are fixed in `src/trace_search/pipeline/e2e.py` (`SEGMENT_RECALL_MIN`, `SEGMENT_PRECISION_MIN`, `FALSE_MERGE_MAX`). They are not fitted to a run. A passing line is `{name}={score:.4f} ({op} {limit:.2f}) PASS`. A miss prints `FAIL` and the process exits 1.
+The default schedule is seed 0. A passing run prints these lines and exits 0. `run time` and `run_id` follow them and change every run:
 
-- **Segment recall** at least 0.80. `segment_recall` is matched truth segments divided by the truth-segment count (`trace_search.matching.route_metrics.segment_recall`). A predicted segment matches a truth segment when the ownership map gives the predicted track that figure, the camera ids are equal, and the gap between the two intervals is at most 10.0 seconds. The gap of 10.0 matches. The gap of 10.1 does not. Matching is one-to-one. An empty truth count raises `ValueError`. It is not reported as 0.0 or 1.0. The printed line is `segment_recall=<score> (>= 0.80) PASS` when `score >= 0.80`.
-- **Segment precision** at least 0.90. `segment_precision` is matched predicted segments divided by the predicted-segment count. The match rule is the same one-to-one rule as recall. An empty predicted count raises `ValueError`. The printed line is `segment_precision=<score> (>= 0.90) PASS` when `score >= 0.90`.
-- **False-merge rate** at most 0.05. `false_merge_rate` is the number of cross-camera links whose tracks belong to different figures, divided by all cross-camera links in the routes. A cross-camera link is two consecutive segments in a route with different `camera_id`s. Same-camera consecutive pairs are not in the denominator. The seed is not an extra link. No cross-camera link raises `ValueError` rather than returning 0.0. The printed line is `false_merge_rate=<score> (<= 0.05) PASS` when `score <= 0.05`.
+```
+CODE_TEST: not evidence for any AC (AC-07 is DEFERRED)
+F1: 3/3
+F2: 3/3
+F3: 3/3
+F4: 3/3
+segment_recall=1.0000 (>= 0.80) PASS
+segment_precision=1.0000 (>= 0.90) PASS
+false_merge_rate=0.0000 (<= 0.05) PASS
+```
 
-`<score>` is the value that run measured, printed to four decimal places. These numbers are not evidence for any acceptance criterion. AC-07 is DEFERRED.
+The bars are fixed in `src/trace_search/pipeline/e2e.py` (`SEGMENT_RECALL_MIN` 0.80, `SEGMENT_PRECISION_MIN` 0.90, `FALSE_MERGE_MAX` 0.05). They are not fitted to a run. The printer is `{name}={value:.4f} ({op} {limit:.2f}) PASS`. A miss prints `FAIL` and the process exits 1.
+
+- **Segment recall** at least 0.80. `segment_recall` is matched truth segments divided by the truth-segment count (`trace_search.matching.route_metrics.segment_recall`). A predicted segment matches a truth segment when the ownership map gives the predicted track that figure, the camera ids are equal, and the gap between the two intervals is at most 10.0 seconds. The gap of 10.0 matches. The gap of 10.1 does not. Matching is one-to-one. An empty truth count raises `ValueError`. It is not reported as 0.0 or 1.0. The passing line on the default schedule is `segment_recall=1.0000 (>= 0.80) PASS`.
+- **Segment precision** at least 0.90. `segment_precision` is matched predicted segments divided by the predicted-segment count. The match rule is the same one-to-one rule as recall. An empty predicted count raises `ValueError`. The passing line on the default schedule is `segment_precision=1.0000 (>= 0.90) PASS`.
+- **False-merge rate** at most 0.05. `false_merge_rate` is the number of cross-camera links whose tracks belong to different figures, divided by all cross-camera links in the routes. A cross-camera link is two consecutive segments in a route with different `camera_id`s. Same-camera consecutive pairs are not in the denominator. The seed is not an extra link. No cross-camera link raises `ValueError` rather than returning 0.0. The passing line on the default schedule is `false_merge_rate=0.0000 (<= 0.05) PASS`.
+
+These numbers are not evidence for any acceptance criterion. AC-07 is DEFERRED.
 
 **Note:** This check is part of the existing `.github/workflows/ci.yml` from PR #1. The job name is `Lint, Test, and License Check` and includes linting, tests, the synthetic end-to-end demo, the app licence fence, and the CI-tools banned-licence check. No extra required check name is added.
 
