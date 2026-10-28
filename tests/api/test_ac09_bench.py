@@ -7,12 +7,17 @@ import math
 import socket
 import sqlite3
 import subprocess
+import sys
+from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from trace_search.api import ac09_bench as bench
 from trace_search.api.ac09_bench import case_plan, run_cases
+from trace_search.reid.sqlite_vector_store import SqliteVectorStore
+from trace_search.reid.vector_store import InMemoryVectorStore
 
 _SCALE = 0.01
 _KEYS = frozenset(
@@ -336,6 +341,7 @@ def test_percentile_endpoints_and_interpolation() -> None:
     assert bench._percentile(samples, 50) == pytest.approx(0.495)
     assert bench._percentile(samples, 95) == pytest.approx(0.9405)
     assert bench._percentile(samples, 95) >= bench._percentile(samples, 50)
+    assert bench._percentile([1.0, 3.0], 95) == pytest.approx(2.9)
 
 
 @pytest.mark.parametrize("percent", [True, "50", None])
@@ -374,6 +380,8 @@ def test_build_ratio_and_three_times_bound() -> None:
         bench._within_3x(-1.0, 1.0)
     with pytest.raises(TypeError, match="one_row_s"):
         bench._build_ratio(True, 1.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="one_row_s"):
+        bench._within_3x(True, 1.0)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="finite"):
         bench._require_build_time("one_batch_s", math.nan)
 
@@ -405,6 +413,8 @@ def test_cpu_model_parser(tmp_path: Path) -> None:
     assert bench._cpu_model_from_text("processor\t: 0\n") == "unknown"
     assert bench._cpu_model_from_text("model name\t: \n") == "unknown"
     assert bench._cpu_model_from_text("model name\t: Test CPU\n") == "Test CPU"
+    assert bench._cpu_model_from_text("processor\t: 0\nmodel name\t: Real CPU\n") == "Real CPU"
+    assert bench._cpu_model_from_text("model\t: decoy\nmodel name\t: Real CPU\n") == "Real CPU"
     missing = tmp_path / "no-cpuinfo"
     assert bench._cpu_model(missing) == "unknown"
     present = tmp_path / "cpuinfo"
@@ -414,6 +424,8 @@ def test_cpu_model_parser(tmp_path: Path) -> None:
 
 def test_ram_parser(tmp_path: Path) -> None:
     assert bench._ram_gb_from_text("MemTotal: 2097152 kB\n") == pytest.approx(2.0)
+    assert bench._memtotal_kib("MemTotal: 1024") == 1024
+    assert bench._memtotal_kib("MemTotal: 1 kB") == 1
     assert bench._kib_to_gb(2 * 1024 * 1024) == pytest.approx(2.0)
     with pytest.raises(ValueError, match="missing from meminfo"):
         bench._ram_gb_from_text("MemFree: 1 kB\n")
@@ -440,10 +452,13 @@ def test_core_count_rejects_an_empty_report(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(bench.os, "cpu_count", lambda: 0)
     with pytest.raises(ValueError, match="unavailable"):
         bench._core_count()
+    monkeypatch.setattr(bench.os, "cpu_count", lambda: 1)
+    assert bench._core_count() == 1
 
 
 def test_tracks_must_divide_across_cameras() -> None:
     assert bench._tracks_per_camera(36) == 6
+    assert bench._tracks_per_camera(6) == 1
     with pytest.raises(TypeError, match="tracks"):
         bench._tracks_per_camera(True)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="multiple"):
@@ -490,6 +505,12 @@ def test_result_uses_the_slower_search_and_quotes_the_prd() -> None:
     assert item["search_p95_s"] == max(item["attribute_search_p95_s"], item["crop_search_p95_s"])
     assert item["search_p50_s"] == max(item["attribute_search_p50_s"], item["crop_search_p50_s"])
     assert item["search_p95_s"] == item["attribute_search_p95_s"]
+    slower_crop = bench._result(plan, [0.0, 1.0], [0.0, 4.0], [1.0])
+    assert slower_crop["crop_search_p95_s"] > slower_crop["attribute_search_p95_s"]
+    assert slower_crop["search_p95_s"] == slower_crop["crop_search_p95_s"]
+    assert slower_crop["search_p50_s"] == max(
+        slower_crop["attribute_search_p50_s"], slower_crop["crop_search_p50_s"]
+    )
     assert item["note"] == "Eng dev run. AC-09 is passed only by QA from the frozen SHA."
     assert item["thresholds"] == {"search_p95_s": 2.0, "route_p95_s": 10.0}
     assert item["prd"]["search"] == "Search latency p95 ≤2 s for an attribute or crop query"
@@ -497,6 +518,11 @@ def test_result_uses_the_slower_search_and_quotes_the_prd() -> None:
     assert item["criterion"] == "AC-09"
     assert item["sha"] == ""
     assert item["index_build"]["tracks"] == 0
+
+
+def test_head_sha_refuses_a_directory_that_is_not_a_checkout(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="failed"):
+        bench._head_sha(tmp_path)
 
 
 def test_head_sha_matches_git() -> None:
@@ -569,11 +595,48 @@ def test_main_removes_its_temporary_directory(
 
 def test_script_entry_rejects_a_bad_scale(monkeypatch: pytest.MonkeyPatch) -> None:
     import runpy
-    import sys
 
+    saved = sys.modules.pop("scripts.bench_ac09", None)
     monkeypatch.setattr(sys, "argv", ["bench_ac09.py", "--scale", "nope"])
-    with pytest.raises(SystemExit):
-        runpy.run_module("scripts.bench_ac09", run_name="__main__")
+    try:
+        with pytest.raises(SystemExit) as caught:
+            runpy.run_module("scripts.bench_ac09", run_name="__main__")
+        assert caught.value.code != 0
+    finally:
+        if saved is not None:
+            sys.modules["scripts.bench_ac09"] = saved
+
+
+def test_main_default_scale_uses_a_temp_dir_outside_the_repo(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.bench_ac09 as script
+
+    seen: dict[str, object] = {}
+
+    def fake(work: Path, *, scale: float, cases: object) -> list[dict[str, str]]:
+        seen["work"] = work
+        seen["scale"] = scale
+        seen["cases"] = cases
+        resolved = work.resolve()
+        repo = bench._repo_root().resolve()
+        assert work.is_dir()
+        assert resolved != Path.cwd().resolve()
+        assert repo != resolved
+        assert repo not in resolved.parents
+        return [{"case": "ac09"}]
+
+    monkeypatch.setattr(script, "run_cases", fake)
+    assert script.main([]) == 0
+    printed = capsys.readouterr().out
+    assert printed.endswith("\n")
+    assert json.loads(printed) == [{"case": "ac09"}]
+    assert seen["scale"] == 1.0
+    assert seen["cases"] is None
+    work = seen["work"]
+    assert isinstance(work, Path)
+    assert not work.exists()
 
 
 def test_main_rejects_a_bad_scale_before_a_run(tmp_path: Path) -> None:
@@ -583,6 +646,176 @@ def test_main_rejects_a_bad_scale_before_a_run(tmp_path: Path) -> None:
         script.main(["--scale", "nope", "--work-dir", str(tmp_path)])
     with pytest.raises(ValueError, match="unknown case"):
         script.main(["--scale", "0.01", "--case", "nope", "--work-dir", str(tmp_path)])
+
+
+def test_one_track_per_camera_is_offset_along_the_chain() -> None:
+    plan = case_plan("ac09", scale=1e-4)
+    assert bench._track_start(plan, 0, 0) == 0.0
+    assert bench._track_start(plan, 1, 0) == 10.0
+    assert bench._track_start(plan, 5, 0) == 50.0
+
+
+def test_timers_subtract_the_start_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks = iter((10.0, 10.25, 20.0, 20.5, 30.0, 30.75))
+    monkeypatch.setattr(bench.time, "perf_counter", lambda: next(ticks))
+    assert bench._time_call(lambda: None) == pytest.approx(0.25)
+    monkeypatch.setattr(bench, "_crop_search", lambda _world, _crop: [])
+    assert bench._time_crop(None, np.zeros((8, 8, 3), dtype=np.uint8)) == pytest.approx(0.5)  # type: ignore[arg-type]
+
+    class _Store:
+        def add(self, run_id: str, derived_from: str, embeddings: object) -> int:
+            return len(tuple(embeddings))  # type: ignore[arg-type]
+
+    rows = bench._unit_embeddings(1, 1, 8, seed=1)
+    assert bench._time_add(_Store(), rows, each=False) == pytest.approx(0.75)
+
+
+def test_one_batch_is_one_add_and_one_row_is_one_add_per_track(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = bench._unit_embeddings(6, 1, 256, seed=4)
+    memory: list[int] = []
+    sqlite_batches: list[int] = []
+    real_memory = InMemoryVectorStore.add
+    real_sqlite = SqliteVectorStore.add
+
+    def spy_memory(
+        self: InMemoryVectorStore,
+        run_id: str,
+        derived_from: str,
+        embeddings: object,
+    ) -> int:
+        batch = tuple(embeddings)  # type: ignore[arg-type]
+        memory.append(len(batch))
+        return real_memory(self, run_id, derived_from, batch)
+
+    def spy_sqlite(
+        self: SqliteVectorStore,
+        run_id: str,
+        derived_from: str,
+        embeddings: object,
+    ) -> int:
+        batch = tuple(embeddings)  # type: ignore[arg-type]
+        sqlite_batches.append(len(batch))
+        return real_sqlite(self, run_id, derived_from, batch)
+
+    monkeypatch.setattr(InMemoryVectorStore, "add", spy_memory)
+    monkeypatch.setattr(SqliteVectorStore, "add", spy_sqlite)
+    measured_memory = bench._measure_memory(rows)
+    measured_sqlite = bench._measure_sqlite(tmp_path, rows)
+    assert memory == [6, 1, 1, 1, 1, 1, 1]
+    assert sqlite_batches == [6, 1, 1, 1, 1, 1, 1]
+    assert measured_memory["store"] == "in_memory"
+    assert measured_sqlite["store"] == "sqlite"
+
+
+def test_run_cases_defaults_to_scale_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scales: list[float] = []
+    real_plan = bench.case_plan
+
+    def recording(case: str, scale: float = 1.0) -> bench.CasePlan:
+        scales.append(scale)
+        return real_plan(case, _SCALE)
+
+    def fake_run(_root: Path, plan: bench.CasePlan) -> bench.CaseResult:
+        return bench._result(plan, [0.1, 0.2], [0.1, 0.4], [0.2, 0.3])
+
+    def fake_index(_root: Path, tracks: int) -> bench._IndexBuild:
+        return bench._IndexBuild(tracks=tracks, embedding_dim=256, stores=[])
+
+    monkeypatch.setattr(bench, "case_plan", recording)
+    monkeypatch.setattr(bench, "_run_case", fake_run)
+    monkeypatch.setattr(bench, "_measure_index_build", fake_index)
+    monkeypatch.setattr(bench, "_head_sha", lambda _repo: "a" * 40)
+    report = run_cases(tmp_path)
+    assert scales == [1.0, 1.0, 1.0]
+    assert [item["case"] for item in report] == ["ac09", "stress-6000x512"]
+    assert report[0]["sha"] == "a" * 40
+
+
+def test_small_index_search_and_route_do_the_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One attribute hit per six tracks, six cameras, and a linked route.
+
+    Scale 0.02 is 12 tracks per camera, so a second red track starts after
+    60 s. No latency threshold is asserted.
+    """
+    plan = case_plan("ac09", scale=0.02)
+    assert plan.tracks_per_camera == 12
+    assert plan.tracks == 72
+    world = bench._build_world(tmp_path, plan)
+    assert world.vectors.count("CODE_TEST", plan.run_id) == plan.tracks
+    assert bench._window(plan) == (0.0, 7200.0)
+    assert world.topology.successors("cam-0") == ("cam-1",)
+    assert world.topology.successors("cam-5") == ()
+    red_ids = [track_id for track_id in range(plan.tracks_per_camera) if track_id % 6 == 0]
+    found = bench._attribute_search(world, {"upper_color": "red"})
+    assert len(found) == plan.cameras * len(red_ids)
+    assert {hit.camera_id for hit in found} == {f"cam-{index}" for index in range(6)}
+    assert min(hit.t_start for hit in found) == pytest.approx(0.0)
+    assert max(hit.t_start for hit in found) > 60.0
+    early = [hit for hit in found if hit.camera_id == "cam-1" and hit.track_id == 0]
+    assert len(early) == 1
+    assert early[0].t_start == pytest.approx(10.0)
+    assert early[0].t_end - early[0].t_start == pytest.approx(0.95)
+    assert early[0].score is None
+    crops = bench._random_crops(2, plan.seed + 1)
+    assert crops[0].shape == (8, 8, 3)
+    assert not np.array_equal(crops[0], crops[1])
+    ranked = bench._crop_search(world, crops[0])
+    assert len(ranked) == 50
+    assert {hit.camera_id for hit in ranked} == {f"cam-{index}" for index in range(6)}
+    scores = [hit.score for hit in ranked]
+    assert all(isinstance(score, float) for score in scores)
+    assert max(score for score in scores if score is not None) > min(
+        score for score in scores if score is not None
+    )
+    route = bench._one_route(world)
+    assert route.seed_camera == "cam-0"
+    assert len(route.segments) >= 2
+    assert {segment.camera_id for segment in route.segments} >= {"cam-0", "cam-1"}
+    timed_queries: list[tuple[dict[str, object], int]] = []
+    real_attribute = bench._attribute_search
+
+    def spy_attribute(active: bench._World, query: dict[str, object]) -> list[object]:
+        hits = real_attribute(active, query)
+        timed_queries.append((dict(query), len(hits)))
+        return hits
+
+    monkeypatch.setattr(bench, "_attribute_search", spy_attribute)
+    world.plan = replace(world.plan, attribute_calls=1, route_builds=1)
+    bench._time_attribute_searches(world)
+    assert timed_queries == [({"upper_color": "red"}, plan.cameras * len(red_ids))]
+    loads = {"n": 0}
+    link_counts: list[int] = []
+    real_load = bench.load_tracklets
+    real_link = bench.link_tracklets
+
+    def spy_load(*args: object, **kwargs: object) -> object:
+        loads["n"] += 1
+        return real_load(*args, **kwargs)  # type: ignore[arg-type]
+
+    def spy_link(*args: object, **kwargs: object) -> list[object]:
+        links = real_link(*args, **kwargs)  # type: ignore[arg-type]
+        link_counts.append(len(links))
+        return links
+
+    monkeypatch.setattr(bench, "load_tracklets", spy_load)
+    monkeypatch.setattr(bench, "link_tracklets", spy_link)
+    world.plan = replace(world.plan, route_builds=1)
+    samples = bench._time_routes(world)
+    assert len(samples) == 1
+    assert loads["n"] == 1
+    assert len(link_counts) == 1
+    assert link_counts[0] > 0
+    assert _n_frames(tmp_path / "attributes.sqlite") == {20}
+    assert _timestamp(tmp_path / "tracks.sqlite", "cam-1", 0, 0) == pytest.approx(10.0)
 
 
 def _table_count(path: Path, table: str) -> int:
@@ -621,3 +854,28 @@ def _origins(path: Path) -> set[str]:
 
 def _line_count(path: Path) -> int:
     return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _n_frames(path: Path) -> set[int]:
+    connection = sqlite3.connect(path)
+    try:
+        rows = connection.execute("select distinct n_frames from track_attributes").fetchall()
+    finally:
+        connection.close()
+    return {int(row[0]) for row in rows}
+
+
+def _timestamp(path: Path, camera_id: str, track_id: int, frame_number: int) -> float:
+    connection = sqlite3.connect(path)
+    try:
+        row = connection.execute(
+            """
+            select timestamp_seconds from track_observations
+            where camera_id = ? and track_id = ? and frame_number = ?
+            """,
+            (camera_id, track_id, frame_number),
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None
+    return float(row[0])

@@ -6,8 +6,9 @@ one attribute row per track, and 20 observations per track. The
 ``stress-6000x512`` case is the larger probe and is reported only.
 
 Crops stay in memory. Rows use ``derived_from='CODE_TEST'``. No video is
-read or written. The printed numbers are an engineering run. AC-09 is
-passed only by QA from the frozen SHA.
+read or written. Each route sample loads tracklets, links them, and builds
+the route. The printed numbers are an engineering run. AC-09 is passed
+only by QA from the frozen SHA.
 
 ``search_p50_s`` and ``search_p95_s`` are the slower of the attribute
 search and the crop search at that percentile. The attribute and crop
@@ -29,13 +30,13 @@ from typing import Protocol, TypedDict
 import numpy as np
 import numpy.typing as npt
 
-from trace_search.api.search import SearchService
+from trace_search.api.search import SearchService, TrackRef
 from trace_search.attributes.store import TrackAttributeStore
 from trace_search.audit.log import AuditLog, init_hmac_key
 from trace_search.detection.types import DetClass
 from trace_search.ingest.camera_registry import CameraConfig, CameraRegistry
 from trace_search.matching.linker import link_tracklets
-from trace_search.matching.route import build_route
+from trace_search.matching.route import Route, build_route
 from trace_search.matching.topology import CameraTopology, TransitEdge
 from trace_search.matching.tracklets import Tracklet, load_tracklets
 from trace_search.reid.placeholder import UntrainedPlaceholderEmbedder
@@ -69,6 +70,9 @@ _STRESS_DIM = 512
 _INDEX_DIM = _AC09_DIM
 _FRAME_GAP_S = 0.05
 _TRANSIT_MAX_S = 60.0
+# Same track id on the next camera starts this many seconds later, inside
+# the transit window, so one track per camera still links.
+_CHAIN_OFFSET_S = 10.0
 _BOX = (1.0, 2.0, 11.0, 21.0)
 _COLORS = ("red", "blue", "black", "green", "gray", "white")
 _EMBEDDER_LABEL = "untrained-placeholder-v1"
@@ -584,14 +588,33 @@ def _write_one_attribute(
 
 def _observations(plan: CasePlan) -> list[TrackObservation]:
     rows: list[TrackObservation] = []
-    span = plan.hours_per_camera * 3600.0
-    step = span / plan.tracks_per_camera
-    for camera_id in _camera_ids(plan.cameras):
+    for camera_index, camera_id in enumerate(_camera_ids(plan.cameras)):
         for track_id in range(plan.tracks_per_camera):
-            rows.extend(
-                _track_rows(camera_id, track_id, track_id * step, plan.observations_per_track)
-            )
+            start = _track_start(plan, camera_index, track_id)
+            rows.extend(_track_rows(camera_id, track_id, start, plan.observations_per_track))
     return rows
+
+
+def _track_start(plan: CasePlan, camera_index: int, track_id: int) -> float:
+    """Start time. Camera ``i`` is ``i * 10`` seconds behind camera 0."""
+    return camera_index * _CHAIN_OFFSET_S + track_id * _track_step(plan)
+
+
+def _track_step(plan: CasePlan) -> float:
+    """Gap between track starts on one camera. The last track stays in the span."""
+    gaps = plan.tracks_per_camera - 1
+    if gaps <= 0:
+        return 0.0
+    return (_span_seconds(plan) - _schedule_slack(plan)) / gaps
+
+
+def _span_seconds(plan: CasePlan) -> float:
+    return plan.hours_per_camera * 3600.0
+
+
+def _schedule_slack(plan: CasePlan) -> float:
+    duration = (plan.observations_per_track - 1) * _FRAME_GAP_S
+    return (plan.cameras - 1) * _CHAIN_OFFSET_S + duration
 
 
 def _track_rows(
@@ -669,7 +692,7 @@ def _topology(camera_ids: Sequence[str]) -> CameraTopology:
 
 
 def _window(plan: CasePlan) -> tuple[float, float]:
-    return (0.0, plan.hours_per_camera * 3600.0)
+    return (0.0, _span_seconds(plan))
 
 
 def _time_attribute_searches(world: _World) -> list[float]:
@@ -680,8 +703,8 @@ def _time_attribute_searches(world: _World) -> list[float]:
     return samples
 
 
-def _attribute_search(world: _World, query: Mapping[str, object]) -> None:
-    world.service.by_attributes(
+def _attribute_search(world: _World, query: Mapping[str, object]) -> list[TrackRef]:
+    return world.service.by_attributes(
         "bench-operator",
         "case-ac09",
         "latency-bench",
@@ -707,8 +730,8 @@ def _time_crop(world: _World, crop: npt.NDArray[np.uint8]) -> float:
     return time.perf_counter() - started
 
 
-def _crop_search(world: _World, crop: npt.NDArray[np.uint8]) -> None:
-    world.service.by_example_crop(
+def _crop_search(world: _World, crop: npt.NDArray[np.uint8]) -> list[TrackRef]:
+    return world.service.by_example_crop(
         "bench-operator",
         "case-ac09",
         "latency-bench",
@@ -738,16 +761,18 @@ def _time_routes(world: _World) -> list[float]:
     return samples
 
 
-def _one_route(world: _World) -> None:
+def _one_route(world: _World) -> Route:
+    """Load tracklets, link them, and build a route. The load is inside the timer."""
+    tracklets = tuple(load_tracklets(world.tracks, world.plan.run_id))
     links = link_tracklets(
-        world.tracklets,
+        tracklets,
         world.topology,
         world.vectors,
         world.attributes,
         run_id=world.plan.run_id,
         derived_from=_ORIGIN,
     )
-    build_route(world.tracklets[0], world.tracklets, links)
+    return build_route(tracklets[0], tracklets, links)
 
 
 def _time_call(call: Callable[[], object]) -> float:
