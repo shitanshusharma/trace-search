@@ -1,4 +1,4 @@
-"""Seeded route fixtures: closed walks, palette, detection, and the licence row.
+"""Seeded route fixtures: one-pass walks, palette, detection, and the licence row.
 
 Generation uses ``tmp_path`` only. The pixel check reads
 ``RouteFixture.sample_frame``, the BGR buffer before mp4v, because the
@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -41,21 +42,21 @@ _SCHEMA = _REPO / "licenses" / "manifest_schema.json"
 _SOURCE = _REPO / "src" / "trace_search" / "fixtures" / "route_generator.py"
 _ROW_NAME = "src/trace_search/fixtures/route_generator.py"
 _BASE = "8af465e2e3ab3e3f9159bfd993cd0082bec62430"
-_ACCEPTED: tuple[tuple[int, int, int, int, tuple[int, int]], ...] = (
-    (4, 2, 10, 30, (320, 240)),
-    (4, 2, 10, 30, (640, 360)),
-    (5, 3, 10, 30, (320, 240)),
-    (5, 3, 10, 30, (640, 360)),
-    (6, 4, 10, 30, (320, 240)),
-    (6, 4, 10, 30, (640, 360)),
-    (4, 2, 10, 40, (320, 240)),
-    (4, 2, 10, 40, (640, 360)),
-    (5, 3, 10, 40, (320, 240)),
-    (5, 3, 10, 40, (640, 360)),
-    (6, 4, 10, 40, (320, 240)),
-    (6, 4, 10, 40, (640, 360)),
-    (4, 2, 30, 30, (320, 240)),
-    (4, 2, 30, 30, (640, 360)),
+_SCHEDULES: tuple[tuple[int, int, int], ...] = (
+    (4, 10, 30),
+    (4, 10, 40),
+    (4, 30, 30),
+    (5, 10, 30),
+    (5, 10, 40),
+    (6, 10, 30),
+    (6, 10, 40),
+)
+_ACCEPTED: tuple[tuple[int, int, int, int, tuple[int, int]], ...] = tuple(
+    (n_cameras, n_figures, fps, seconds, size)
+    for n_cameras, fps, seconds in _SCHEDULES
+    for n_figures in range(2, 9)
+    for size in ((320, 240), (640, 360), (1280, 720))
+    if size != (1280, 720) or (n_cameras == 6 and fps == 10 and seconds == 30)
 )
 _FIXTURES: dict[tuple[Any, ...], RouteFixture] = {}
 
@@ -131,25 +132,6 @@ def _cam1_x(truth: dict[str, Any]) -> list[int]:
     return [box["x1"] for box in truth["figures"][0]["boxes"] if box["camera_id"] == "CAM-1"]
 
 
-def _has_box(figure: dict[str, Any], camera_id: str, frame_index: int) -> bool:
-    return any(
-        box["camera_id"] == camera_id and box["frame_index"] == frame_index
-        for box in figure["boxes"]
-    )
-
-
-def _assert_even_slots_own_frame_zero(figures: list[dict[str, Any]]) -> None:
-    for figure, nxt in zip(figures, figures[1:]):
-        cameras = {visit["camera_id"] for visit in figure["visits"]}
-        if len(cameras) != 3:
-            continue
-        assert {visit["camera_id"] for visit in nxt["visits"]} == cameras
-        camera = figure["visits"][0]["camera_id"]
-        assert _has_box(figure, camera, 0)
-        assert not _has_box(nxt, camera, 0)
-        return
-
-
 def _assert_distractor(fixture: RouteFixture) -> None:
     truth = _load(fixture.truth_path)
     topology = CameraTopology.from_dict(_load(fixture.topology_path))
@@ -173,36 +155,71 @@ def _assert_distractor(fixture: RouteFixture) -> None:
             assert topology.window(destination, origin) is None
 
 
+def _assert_one_pass(visits: list[dict[str, Any]]) -> None:
+    cameras = [str(visit["camera_id"]) for visit in visits]
+    assert cameras == sorted(cameras)
+    assert len(cameras) == len(set(cameras))
+    assert 2 <= len(cameras) <= 3
+    numbers = [int(camera.removeprefix("CAM-")) for camera in cameras]
+    assert numbers[-1] - numbers[0] == len(numbers) - 1
+
+
+def _assert_box_shape(box: dict[str, Any], truth: dict[str, Any]) -> None:
+    assert 0 <= box["x1"] < box["x2"] <= truth["width"]
+    assert 0 <= box["y1"] < box["y2"] <= truth["height"]
+    assert box["y2"] - box["y1"] > box["x2"] - box["x1"]
+    assert (box["y2"] - box["y1"]) % 2 == 0
+    assert (box["x2"] - box["x1"]) % 2 == 0
+
+
+def _assert_motion(boxes: list[dict[str, Any]]) -> None:
+    xs = [int(box["x1"]) for box in boxes]
+    assert xs[0] != xs[-1]
+    assert abs(xs[-1] - xs[0]) >= 80
+    assert len(set(xs)) >= 10
+    deltas = [nxt - prev for prev, nxt in zip(xs, xs[1:])]
+    rising = all(delta >= 0 for delta in deltas)
+    falling = all(delta <= 0 for delta in deltas)
+    assert rising or falling
+    middle = xs[len(xs) // 2]
+    assert middle != xs[0]
+    assert middle != xs[-1]
+
+
+def _visit_boxes(
+    figure: dict[str, Any],
+    visit: dict[str, Any],
+    fps: int,
+    offset: float,
+) -> list[dict[str, Any]]:
+    return [
+        box
+        for box in figure["boxes"]
+        if box["camera_id"] == visit["camera_id"]
+        and visit["t_entry"] <= box["frame_index"] / fps + offset < visit["t_exit"]
+    ]
+
+
 def _assert_dwells(fixture: RouteFixture) -> None:
     truth = _load(fixture.truth_path)
     registry = CameraRegistry.load(fixture.cameras_path)
     fps = int(truth["fps"])
     seconds = int(truth["seconds"])
-    dwell_frames = 15 if fps == 30 else 5
     for figure in truth["figures"]:
         visits = figure["visits"]
-        cameras = {visit["camera_id"] for visit in visits}
-        assert len(visits) == (20 if len(cameras) == 2 else 19)
+        _assert_one_pass(visits)
         for visit in visits:
-            assert visit["t_exit"] - visit["t_entry"] >= 0.5
+            assert visit["t_exit"] - visit["t_entry"] >= 2.0
             camera = registry.get(visit["camera_id"])
             assert camera is not None
+            delay = visit["t_entry"] - camera.clock_offset_seconds
+            assert 0.0 <= delay <= 1.0
             assert visit["t_exit"] <= camera.clock_offset_seconds + seconds
-            frames = [
-                box
-                for box in figure["boxes"]
-                if box["camera_id"] == visit["camera_id"]
-                and visit["t_entry"]
-                <= box["frame_index"] / fps + camera.clock_offset_seconds
-                < visit["t_exit"]
-            ]
-            assert len(frames) == dwell_frames
+            frames = _visit_boxes(figure, visit, fps, camera.clock_offset_seconds)
+            assert len(frames) >= fps * 2
             for box in frames:
-                assert 0 <= box["x1"] < box["x2"] <= truth["width"]
-                assert 0 <= box["y1"] < box["y2"] <= truth["height"]
-                assert box["y2"] - box["y1"] > box["x2"] - box["x1"]
-                assert (box["y2"] - box["y1"]) % 2 == 0
-                assert (box["x2"] - box["x1"]) % 2 == 0
+                _assert_box_shape(box, truth)
+            _assert_motion(frames)
 
 
 def _assert_edges(fixture: RouteFixture) -> None:
@@ -217,6 +234,9 @@ def _assert_edges(fixture: RouteFixture) -> None:
             tuple((visit["camera_id"], visit["t_entry"], visit["t_exit"]) for visit in visits)
         )
         for previous, following in zip(visits, visits[1:]):
+            gap = following["t_entry"] - previous["t_exit"]
+            assert gap >= 1.0
+            assert gap <= 8.0
             assert topology.allows(
                 previous["camera_id"],
                 previous["t_exit"],
@@ -224,11 +244,12 @@ def _assert_edges(fixture: RouteFixture) -> None:
                 following["t_entry"],
             )
             walked.add((previous["camera_id"], following["camera_id"]))
-    assert len(tables) == len(truth["figures"])
+    assert len(tables) == 2
     for edge in payload["edges"]:
         assert edge["min_seconds"] == 0.5
         assert edge["max_seconds"] == 8.0
         assert (edge["from_camera"], edge["to_camera"]) in walked
+        assert topology.window(edge["to_camera"], edge["from_camera"]) is None
 
 
 def _assert_clip_row(index: int, entry: dict[str, Any], clip: Path) -> None:
@@ -281,7 +302,6 @@ def _assert_closed_walk(fixture: RouteFixture) -> None:
     _assert_dwells(fixture)
     _assert_edges(fixture)
     _assert_clips(fixture)
-    _assert_even_slots_own_frame_zero(_load(fixture.truth_path)["figures"])
 
 
 @pytest.fixture(scope="module")
@@ -323,34 +343,33 @@ def test_colour_table_shifts_and_the_last_figure_copies() -> None:
 
 
 def test_offsets_zones_and_figure_counts() -> None:
-    assert route_generator._clock_offsets(4) == (
-        -2.0,
-        -0.33333333333333326,
-        1.3333333333333335,
-        3.0,
-    )
-    assert route_generator._clock_offsets(5) == (-2.0, -0.75, 0.5, 1.75, 3.0)
-    assert route_generator._clock_offsets(6) == (-2.0, -1.0, 0.0, 1.0, 2.0, 3.0)
+    assert route_generator._clock_offsets(4, 30) == (-2.0, 29.0, 60.0, 91.0)
+    assert route_generator._clock_offsets(5, 30) == (-2.0, 29.0, 60.0, 91.0, 122.0)
+    assert route_generator._clock_offsets(6, 30) == (-2.0, 29.0, 60.0, 91.0, 122.0, 153.0)
+    assert route_generator._clock_offsets(6, 40) == (-2.0, 39.0, 80.0, 121.0, 162.0, 203.0)
     assert route_generator._zones(4) == ((0, 1), (2, 3))
     assert route_generator._zones(5) == ((0, 1), (2, 3, 4))
     assert route_generator._zones(6) == ((0, 1, 2), (3, 4, 5))
-    assert route_generator._required_figures(4) == 2
-    assert route_generator._required_figures(5) == 3
-    assert route_generator._required_figures(6) == 4
-    assert route_generator._figures_for_zone(2) == 1
-    assert route_generator._figures_for_zone(3) == 2
+    assert route_generator._left_figure_count(2) == 1
+    assert route_generator._left_figure_count(3) == 1
+    assert route_generator._left_figure_count(4) == 2
+    assert route_generator._left_figure_count(5) == 2
+    assert route_generator._left_figure_count(8) == 4
+    assert route_generator._is_hd_schedule(6, 30)
+    assert not route_generator._is_hd_schedule(4, 30)
+    assert not route_generator._is_hd_schedule(6, 40)
 
 
-def test_samples_dwells_and_frozen_records() -> None:
+def test_samples_slots_and_frozen_records() -> None:
     assert route_generator._sample_indices(300) == (0, 33, 66, 99, 132, 166, 199, 232, 265, 299)
-    assert route_generator._dwell_frames(10) == 5
-    assert route_generator._dwell_frames(30) == 15
+    assert route_generator._sample_indices(400) == (0, 44, 88, 133, 177, 221, 266, 310, 354, 399)
+    assert route_generator._jitter_limit(10, 300) == 10
+    assert route_generator._jitter_limit(30, 900) == 30
     assert route_generator._slot_start(33, 300, 5) == 33
     assert route_generator._slot_start(299, 300, 5) == 295
-    assert route_generator._parity_slots(0) == (0, 2, 4, 6, 8)
-    assert route_generator._parity_slots(1) == (1, 3, 5, 7, 9)
-    offsets = route_generator._clock_offsets(5)
-    assert route_generator._return_start(offsets, 10, (2, 3, 4), 0, 5) == 23
+    assert route_generator._slot_start(295, 300, 5) == 295
+    assert route_generator._visit_start(5, 300) == 5
+    assert route_generator._visit_start(0, 300) == 0
     for cls in (
         route_generator.RouteFixture,
         route_generator._Args,
@@ -358,6 +377,7 @@ def test_samples_dwells_and_frozen_records() -> None:
         route_generator._Box,
         route_generator._Figure,
         route_generator._Plan,
+        route_generator._Variation,
     ):
         assert cls.__dataclass_params__.frozen
     route_generator._require_schedule(4, 10, 40)
@@ -365,26 +385,51 @@ def test_samples_dwells_and_frozen_records() -> None:
     route_generator._require_schedule(4, 30, 30)
 
 
-def test_lane_step_and_both_edge_directions() -> None:
+def test_lane_step_and_forward_edges() -> None:
     assert route_generator._lane_geometry(320, 240, 2) == (54, 108, 27, (8, 124))
     assert route_generator._lane_geometry(320, 240, 4) == (24, 48, 31, (8, 64, 120, 176))
     assert route_generator._lane_geometry(640, 360, 4) == (40, 80, 64, (8, 96, 184, 272))
-    assert route_generator._x_at(0, 0, 27, 0) == 8
-    assert route_generator._x_at(1, 0, 27, 0) == 35
-    assert route_generator._x_at(0, 1, 27, 0) == 35
-    assert route_generator._x_at(9, 0, 27, 0) == 251
-    assert route_generator._x_at(0, 0, 27, 1) == 251
-    assert route_generator._x_at(0, 0, 27, 3) == 251
-    assert route_generator._x_at(9, 0, 27, 1) == 8
+    assert route_generator._lane_geometry(320, 240, 8) == (
+        10,
+        20,
+        32,
+        (8, 36, 64, 92, 120, 148, 176, 204),
+    )
+    assert route_generator._lane_geometry(1280, 720, 8) == (
+        40,
+        80,
+        136,
+        (8, 96, 184, 272, 360, 448, 536, 624),
+    )
     pairs = {
         (edge.from_camera, edge.to_camera, edge.min_seconds, edge.max_seconds)
         for edge in route_generator._edges(4)
     }
     assert ("CAM-1", "CAM-2", 0.5, 8.0) in pairs
-    assert ("CAM-2", "CAM-1", 0.5, 8.0) in pairs
+    assert ("CAM-2", "CAM-1", 0.5, 8.0) not in pairs
     assert ("CAM-3", "CAM-4", 0.5, 8.0) in pairs
-    assert ("CAM-4", "CAM-3", 0.5, 8.0) in pairs
+    assert ("CAM-4", "CAM-3", 0.5, 8.0) not in pairs
     assert ("CAM-2", "CAM-3", 0.5, 8.0) not in pairs
+    six = {(edge.from_camera, edge.to_camera) for edge in route_generator._edges(6)}
+    assert six == {
+        ("CAM-1", "CAM-2"),
+        ("CAM-2", "CAM-3"),
+        ("CAM-4", "CAM-5"),
+        ("CAM-5", "CAM-6"),
+    }
+
+
+def test_x_at_follows_the_lane_step() -> None:
+    assert route_generator._x_at(0, 300, 27, False, 0) == 8
+    assert route_generator._x_at(299, 300, 27, False, 0) == 225
+    assert route_generator._x_at(0, 300, 27, True, 0) == 225
+    assert route_generator._x_at(299, 300, 27, True, 0) == 8
+    assert route_generator._x_at(150, 300, 27, False, 0) == 116
+    assert route_generator._x_at(5, 300, 27, True, 0) == 221
+    assert route_generator._x_at(0, 300, 27, False, 1) == 225
+    assert route_generator._x_at(3, 300, 27, True, 1) == 10
+    assert route_generator._x_at(0, 300, 27, False, 2) == 21
+    assert route_generator._x_at(299, 300, 27, False, 2) == 238
 
 
 def test_signature_defaults_match_the_task() -> None:
@@ -432,17 +477,24 @@ def test_a_different_seed_changes_the_clip_bytes(
     assert _sha(left.truth_path) != _sha(right.truth_path)
 
 
-def test_an_even_seed_shifts_colours_without_reversing(
+def test_colours_and_direction_follow_the_generator(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     left = _load(_once(tmp_path_factory, n_cameras=4, n_figures=2, size=(320, 240)).truth_path)
     right = _load(
         _once(tmp_path_factory, seed=2, n_cameras=4, n_figures=2, size=(320, 240)).truth_path
     )
+    forward = _load(
+        _once(tmp_path_factory, seed=1, n_cameras=4, n_figures=2, size=(320, 240)).truth_path
+    )
     assert left["figures"][0]["upper_bgr"] != right["figures"][0]["upper_bgr"]
     assert left["figures"][0]["lower_bgr"] != right["figures"][0]["lower_bgr"]
-    assert _cam1_x(left)[0] < _cam1_x(left)[-1]
-    assert _cam1_x(right)[0] < _cam1_x(right)[-1]
+    assert route_generator._variation(0, 4, 10, 300).reverse
+    assert route_generator._variation(2, 4, 10, 300).reverse
+    assert not route_generator._variation(1, 4, 10, 300).reverse
+    assert _cam1_x(left)[0] > _cam1_x(left)[-1]
+    assert _cam1_x(right)[0] > _cam1_x(right)[-1]
+    assert _cam1_x(forward)[0] < _cam1_x(forward)[-1]
 
 
 def test_six_cameras_use_planted_offsets_and_fx_code_ids(
@@ -451,7 +503,7 @@ def test_six_cameras_use_planted_offsets_and_fx_code_ids(
     fixture = _once(tmp_path_factory, n_cameras=6, n_figures=4, size=(320, 240))
     registry = CameraRegistry.load(fixture.cameras_path)
     offsets = [registry.get(f"CAM-{index}").clock_offset_seconds for index in range(1, 7)]
-    assert offsets == [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0]
+    assert offsets == [-2.0, 29.0, 60.0, 91.0, 122.0, 153.0]
     assert [camera.site_map_x for camera in registry.list_cameras()] == [
         0.0,
         10.0,
@@ -465,6 +517,13 @@ def test_six_cameras_use_planted_offsets_and_fx_code_ids(
         for camera in registry.list_cameras()
     )
     figures = _load(fixture.truth_path)["figures"]
+    groups = [{visit["camera_id"] for visit in figure["visits"]} for figure in figures]
+    assert groups == [
+        {"CAM-1", "CAM-2", "CAM-3"},
+        {"CAM-1", "CAM-2", "CAM-3"},
+        {"CAM-4", "CAM-5", "CAM-6"},
+        {"CAM-4", "CAM-5", "CAM-6"},
+    ]
     assert figures[1]["upper_bgr"] != figures[0]["upper_bgr"]
     assert figures[2]["upper_bgr"] != figures[0]["upper_bgr"]
     assert figures[1]["upper_bgr"] != figures[2]["upper_bgr"]
@@ -486,41 +545,74 @@ def test_five_cameras_keep_the_floor_split(
     assert cameras[2] == {"CAM-3", "CAM-4", "CAM-5"}
     registry = CameraRegistry.load(fixture.cameras_path)
     offsets = [registry.get(f"CAM-{index}").clock_offset_seconds for index in range(1, 6)]
-    assert offsets == [-2.0, -0.75, 0.5, 1.75, 3.0]
+    assert offsets == [-2.0, 29.0, 60.0, 91.0, 122.0]
     _assert_closed_walk(fixture)
 
 
-def test_default_fixture_walks_both_edge_directions(defaults: RouteFixture) -> None:
+def test_default_fixture_walks_each_corridor_once(defaults: RouteFixture) -> None:
     _assert_closed_walk(defaults)
-    box = _load(defaults.truth_path)["figures"][0]["boxes"][0]
+    figures = _load(defaults.truth_path)["figures"]
+    box = figures[0]["boxes"][0]
     assert box["y2"] - box["y1"] == 80
     assert box["x2"] - box["x1"] == 40
+    groups = [{visit["camera_id"] for visit in figure["visits"]} for figure in figures]
+    assert groups[0] == groups[1] == {"CAM-1", "CAM-2", "CAM-3"}
+    assert groups[2] == groups[3] == {"CAM-4", "CAM-5", "CAM-6"}
+    assert [visit["camera_id"] for visit in figures[0]["visits"]] == ["CAM-1", "CAM-2", "CAM-3"]
 
 
-def test_small_fixture_is_upright_and_walks_back(small: RouteFixture) -> None:
+def test_small_fixture_is_upright_and_moves(small: RouteFixture) -> None:
     _assert_closed_walk(small)
     box = _load(small.truth_path)["figures"][0]["boxes"][0]
     assert box["y2"] - box["y1"] == 108
     assert box["x2"] - box["x1"] == 54
     assert box["y1"] == 8
-    assert box["x1"] == 8
+    assert box["x1"] == 221
     second = _load(small.truth_path)["figures"][1]["boxes"][0]
     assert second["y1"] == 124
+
+
+def test_seed_zero_enters_late_and_keeps_its_colours(small: RouteFixture) -> None:
     truth = _load(small.truth_path)
-    xs = _cam1_x(truth)
     frames = {
         item["frame_index"] for item in truth["figures"][0]["boxes"] if item["camera_id"] == "CAM-1"
     }
-    assert xs[0] == 8
-    assert xs[-1] == 251
-    assert 35 in xs
-    assert {0, 33, 295, 299} <= frames
-    assert 32 not in frames
-    assert 294 not in frames
+    variation = route_generator._variation(0, 4, 10, 300)
+    upper, lower = route_generator._colours(0, variation.shift, 2)
+    xs = _cam1_x(truth)
+    assert xs[0] == 221
+    assert xs[-1] == 8
+    assert variation.jitter[0] == 5
+    assert min(frames) == 5
+    assert 0 not in frames
+    assert 299 in frames
+    assert len(set(xs)) > 10
     assert truth["seed"] == 0
     assert truth["background_bgr"] == [16, 16, 16]
-    assert truth["figures"][0]["upper_bgr"] == [0, 0, 255]
-    assert truth["figures"][0]["lower_bgr"] == [255, 0, 0]
+    assert truth["figures"][0]["upper_bgr"] == list(upper)
+    assert truth["figures"][0]["lower_bgr"] == list(lower)
+
+
+def test_each_figure_walks_its_corridor_once(
+    small: RouteFixture,
+    defaults: RouteFixture,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """A route is one pass of multi-second visits, not a bounce between two cameras."""
+    _assert_dwells(small)
+    _assert_dwells(defaults)
+    four = _load(small.truth_path)["figures"][0]["visits"]
+    six = _load(defaults.truth_path)["figures"][0]["visits"]
+    assert [visit["camera_id"] for visit in four] == ["CAM-1", "CAM-2"]
+    assert [visit["camera_id"] for visit in six] == ["CAM-1", "CAM-2", "CAM-3"]
+    assert all(visit["t_exit"] - visit["t_entry"] >= 2.0 for visit in four)
+    assert all(visit["t_exit"] - visit["t_entry"] >= 2.0 for visit in six)
+    xs = _cam1_x(_load(small.truth_path))
+    assert xs[0] != xs[-1]
+    assert len(set(xs)) >= 10
+    later = _once(tmp_path_factory, seed=1, n_cameras=4, n_figures=2, size=(320, 240))
+    other = _load(later.truth_path)["figures"][0]["visits"][0]["t_entry"]
+    assert four[0]["t_entry"] != other
 
 
 @pytest.mark.parametrize(
@@ -546,6 +638,88 @@ def test_every_accepted_config_passes_the_schema(
     _assert_closed_walk(fixture)
 
 
+def _generator_accepts(
+    n_cameras: int,
+    n_figures: int,
+    fps: int,
+    seconds: int,
+    size: tuple[int, int],
+) -> bool:
+    try:
+        route_generator._require_int("n_cameras", n_cameras, 4, 6)
+        route_generator._require_int("n_figures", n_figures, 2, 8)
+        route_generator._require_int("fps", fps, 10, 30)
+        route_generator._require_int("seconds", seconds, 30, 40)
+        width, height = route_generator._require_size(size)
+        route_generator._require_known_size(width, height, n_cameras, seconds)
+        route_generator._require_schedule(n_cameras, fps, seconds)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def test_accepted_grid_matches_the_predicates() -> None:
+    sizes = ((320, 240), (640, 360), (1280, 720), (640, 480), (1280, 1080), (239, 240))
+    found: set[tuple[int, int, int, int, tuple[int, int]]] = set()
+    for n_cameras in range(3, 8):
+        for n_figures in range(1, 10):
+            for fps in range(9, 32):
+                for seconds in range(29, 42):
+                    for size in sizes:
+                        if _generator_accepts(n_cameras, n_figures, fps, seconds, size):
+                            found.add((n_cameras, n_figures, fps, seconds, size))
+    assert found == set(_ACCEPTED)
+    assert len(_ACCEPTED) == len(found)
+
+
+def test_eight_figures_at_720p_are_accepted(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    fixture = _once(
+        tmp_path_factory,
+        seed=123,
+        n_cameras=6,
+        n_figures=8,
+        fps=10,
+        size=(1280, 720),
+        seconds=30,
+    )
+    _assert_closed_walk(fixture)
+    truth = _load(fixture.truth_path)
+    assert truth["seed"] == 123
+    assert truth["width"] == 1280
+    assert truth["height"] == 720
+    assert len(truth["figures"]) == 8
+    groups = [{visit["camera_id"] for visit in figure["visits"]} for figure in truth["figures"]]
+    assert groups[:4] == [{"CAM-1", "CAM-2", "CAM-3"}] * 4
+    assert groups[4:] == [{"CAM-4", "CAM-5", "CAM-6"}] * 4
+
+
+def test_thirty_fps_and_forty_second_clips_walk_once(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    thirty = _once(
+        tmp_path_factory,
+        n_cameras=4,
+        n_figures=2,
+        fps=30,
+        seconds=30,
+        size=(320, 240),
+    )
+    forty = _once(
+        tmp_path_factory,
+        n_cameras=4,
+        n_figures=2,
+        fps=10,
+        seconds=40,
+        size=(320, 240),
+    )
+    _assert_closed_walk(thirty)
+    _assert_closed_walk(forty)
+    assert _load(thirty.truth_path)["fps"] == 30
+    assert _load(forty.truth_path)["seconds"] == 40
+
+
 def test_sample_frame_uses_only_the_palette(small: RouteFixture) -> None:
     truth = _load(small.truth_path)
     allowed = {tuple(truth["background_bgr"])}
@@ -565,7 +739,12 @@ def test_sample_frame_uses_only_the_palette(small: RouteFixture) -> None:
 def test_sample_frame_matches_the_middle_box(small: RouteFixture) -> None:
     truth = _load(small.truth_path)
     primary = truth["figures"][0]
-    assert small.sample_frame_index == 166
+    middle = primary["boxes"][len(primary["boxes"]) // 2]
+    assert small.sample_frame_index == 3
+    assert small.sample_camera_id == "CAM-2"
+    assert middle["frame_index"] == small.sample_frame_index
+    assert middle["camera_id"] == small.sample_camera_id
+    assert small.sample_frame_index != primary["boxes"][0]["frame_index"]
     box = next(
         item
         for item in primary["boxes"]
@@ -613,6 +792,13 @@ def test_flipping_a_generated_row_to_smoke_only_fails_the_schema(small: RouteFix
     assert any("CODE_TEST" in error and "entries.0.use" in error for error in errors)
 
 
+def _size_message(got: str) -> str:
+    return (
+        r"^size must be \(320, 240\) or \(640, 360\), or \(1280, 720\) "
+        r"for 6 cameras and 30 seconds, got " + got + r"$"
+    )
+
+
 def _reject(tmp_path: Path, error: type[BaseException], match: str, **overrides: Any) -> None:
     out = tmp_path / "rejected"
     with pytest.raises(error, match=match):
@@ -653,18 +839,14 @@ def test_bool_and_non_int_arguments_raise_type_error(
         ({"n_cameras": 3}, r"^n_cameras must be in 4\.\.6, got 3$"),
         ({"n_cameras": 7}, r"^n_cameras must be in 4\.\.6, got 7$"),
         ({"n_cameras": 12}, r"^n_cameras must be in 4\.\.6, got 12$"),
-        ({"n_figures": 1}, r"^n_figures must be in 2\.\.4, got 1$"),
-        ({"n_figures": 5}, r"^n_figures must be in 2\.\.4, got 5$"),
+        ({"n_figures": 1}, r"^n_figures must be in 2\.\.8, got 1$"),
+        ({"n_figures": 9}, r"^n_figures must be in 2\.\.8, got 9$"),
         ({"fps": 0}, r"^fps must be in 10\.\.30, got 0$"),
         ({"fps": 9}, r"^fps must be in 10\.\.30, got 9$"),
         ({"fps": 31}, r"^fps must be in 10\.\.30, got 31$"),
         ({"seconds": 0}, r"^seconds must be in 30\.\.40, got 0$"),
         ({"seconds": 29}, r"^seconds must be in 30\.\.40, got 29$"),
         ({"seconds": 41}, r"^seconds must be in 30\.\.40, got 41$"),
-        ({"n_figures": 2, "n_cameras": 6}, r"^n_figures must be 4 for 6 cameras, got 2$"),
-        ({"n_figures": 4, "n_cameras": 4}, r"^n_figures must be 2 for 4 cameras, got 4$"),
-        ({"n_figures": 4, "n_cameras": 5}, r"^n_figures must be 3 for 5 cameras, got 4$"),
-        ({"n_figures": 2, "n_cameras": 5}, r"^n_figures must be 3 for 5 cameras, got 2$"),
         (
             {"fps": 20},
             r"^unsupported route schedule for 4 cameras at 20 fps and 30 seconds$",
@@ -706,22 +888,25 @@ def test_out_of_range_arguments_raise_value_error(
         ((320, 240, 1), ValueError, r"size must be a \(width, height\) pair"),
         ([320, 240], TypeError, r"size must be a \(width, height\) tuple"),
         (None, TypeError, r"size must be a \(width, height\) tuple"),
-        ((239, 240), ValueError, r"^width must be in 240\.\.640, got 239$"),
-        ((641, 360), ValueError, r"^width must be in 240\.\.640, got 641$"),
-        ((320, 239), ValueError, r"^height must be in 240\.\.640, got 239$"),
-        ((320, 641), ValueError, r"^height must be in 240\.\.640, got 641$"),
+        ((239, 240), ValueError, r"^width must be in 240\.\.1280, got 239$"),
+        ((1281, 720), ValueError, r"^width must be in 240\.\.1280, got 1281$"),
+        ((320, 239), ValueError, r"^height must be in 240\.\.1280, got 239$"),
+        ((320, 1281), ValueError, r"^height must be in 240\.\.1280, got 1281$"),
         ((True, 240), TypeError, r"width must be an int, got True"),
         ((320, True), TypeError, r"height must be an int, got True"),
         ((320.0, 240), TypeError, r"width must be an int, got 320\.0"),
         ((320, 240.0), TypeError, r"height must be an int, got 240\.0"),
-        ((320, 360), ValueError, r"^size must be \(320, 240\) or \(640, 360\), got \(320, 360\)$"),
-        ((640, 240), ValueError, r"^size must be \(320, 240\) or \(640, 360\), got \(640, 240\)$"),
-        ((480, 360), ValueError, r"^size must be \(320, 240\) or \(640, 360\), got \(480, 360\)$"),
-        ((240, 240), ValueError, r"^size must be \(320, 240\) or \(640, 360\), got \(240, 240\)$"),
-        ((640, 480), ValueError, r"^size must be \(320, 240\) or \(640, 360\), got \(640, 480\)$"),
-        ((640, 640), ValueError, r"^size must be \(320, 240\) or \(640, 360\), got \(640, 640\)$"),
-        ((400, 360), ValueError, r"^size must be \(320, 240\) or \(640, 360\), got \(400, 360\)$"),
-        ((320, 320), ValueError, r"^size must be \(320, 240\) or \(640, 360\), got \(320, 320\)$"),
+        ((320, 360), ValueError, _size_message(r"\(320, 360\)")),
+        ((640, 240), ValueError, _size_message(r"\(640, 240\)")),
+        ((480, 360), ValueError, _size_message(r"\(480, 360\)")),
+        ((240, 240), ValueError, _size_message(r"\(240, 240\)")),
+        ((640, 480), ValueError, _size_message(r"\(640, 480\)")),
+        ((640, 640), ValueError, _size_message(r"\(640, 640\)")),
+        ((400, 360), ValueError, _size_message(r"\(400, 360\)")),
+        ((320, 320), ValueError, _size_message(r"\(320, 320\)")),
+        ((1280, 1080), ValueError, _size_message(r"\(1280, 1080\)")),
+        ((1280, 360), ValueError, _size_message(r"\(1280, 360\)")),
+        ((720, 1280), ValueError, _size_message(r"\(720, 1280\)")),
     ],
 )
 def test_size_guards(
@@ -731,6 +916,33 @@ def test_size_guards(
     message: str,
 ) -> None:
     _reject(tmp_path, error, message, size=size)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"size": (1280, 720)}, _size_message(r"\(1280, 720\)")),
+        (
+            {"n_cameras": 5, "n_figures": 3, "size": (1280, 720)},
+            _size_message(r"\(1280, 720\)"),
+        ),
+        (
+            {"n_cameras": 6, "n_figures": 4, "seconds": 40, "size": (1280, 720)},
+            _size_message(r"\(1280, 720\)"),
+        ),
+        ({"fps": 30, "size": (1280, 720)}, _size_message(r"\(1280, 720\)")),
+        (
+            {"n_cameras": 6, "n_figures": 4, "size": (640, 480)},
+            _size_message(r"\(640, 480\)"),
+        ),
+    ],
+)
+def test_720p_requires_six_cameras_and_thirty_seconds(
+    tmp_path: Path,
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    _reject(tmp_path, ValueError, message, **overrides)
 
 
 def test_seed_max_is_accepted(tmp_path: Path) -> None:
@@ -913,27 +1125,54 @@ def test_an_existing_directory_is_accepted(tmp_path: Path) -> None:
     assert fixture.clip_paths[0].is_file()
 
 
-def test_odd_seed_reverses_the_walk(tmp_path_factory: pytest.TempPathFactory) -> None:
-    even = _once(tmp_path_factory, n_cameras=4, n_figures=2, size=(320, 240))
-    odd = _once(tmp_path_factory, seed=1, n_cameras=4, n_figures=2, size=(320, 240))
+def test_variation_replays_one_generator_stream() -> None:
+    rng = np.random.default_rng(0)
+    reverse = int(rng.integers(0, 2)) == 1
+    shift = int(rng.integers(0, 8))
+    jitter = tuple(int(value) for value in rng.integers(0, 11, size=6))
+    got = route_generator._variation(0, 6, 10, 300)
+    assert got.reverse is reverse
+    assert got.shift == shift
+    assert got.jitter == jitter
+    assert jitter == (5, 2, 3, 0, 0, 0)
+    wide = route_generator._variation(1, 6, 10, 300)
+    assert wide.jitter == (8, 10, 0, 1, 9, 10)
+    assert 10 in wide.jitter
+    short = route_generator._variation(0, 4, 10, 300)
+    assert short.jitter == (5, 2, 3, 0)
+    fast = np.random.default_rng(0)
+    assert int(fast.integers(0, 2)) == 1
+    assert int(fast.integers(0, 8)) == shift
+    drawn = tuple(int(value) for value in fast.integers(0, 31, size=4))
+    assert route_generator._variation(0, 4, 30, 900).jitter == drawn
 
-    def xs(fixture: RouteFixture) -> list[int]:
-        truth = _load(fixture.truth_path)
-        boxes = [box for box in truth["figures"][0]["boxes"] if box["camera_id"] == "CAM-1"]
-        return [box["x1"] for box in boxes]
 
-    even_x = xs(even)
-    odd_x = xs(odd)
-    third = _once(tmp_path_factory, seed=3, n_cameras=4, n_figures=2, size=(320, 240))
-    third_x = xs(third)
-    assert even_x[0] == 8
-    assert even_x[-1] == 251
-    assert odd_x[0] == 251
-    assert odd_x[-1] == 8
-    assert third_x == odd_x
-    assert len(set(even_x)) == 10
-    odd_colour = _load(odd.truth_path)["figures"][0]["upper_bgr"]
-    assert _load(third.truth_path)["figures"][0]["upper_bgr"] != odd_colour
+def test_seeds_congruent_mod_8_write_different_clips(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    digests = [
+        _sha(
+            _once(
+                tmp_path_factory,
+                seed=seed,
+                n_cameras=4,
+                n_figures=2,
+                size=(320, 240),
+            ).clip_paths[0]
+        )
+        for seed in (0, 8, 16, 2_147_483_640)
+    ]
+    assert len(set(digests)) == 4
+
+
+def test_direction_is_not_the_seed_parity(tmp_path_factory: pytest.TempPathFactory) -> None:
+    reversed_walk = _once(tmp_path_factory, n_cameras=4, n_figures=2, size=(320, 240))
+    forward = _once(tmp_path_factory, seed=1, n_cameras=4, n_figures=2, size=(320, 240))
+    same_parity = _once(tmp_path_factory, seed=3, n_cameras=4, n_figures=2, size=(320, 240))
+    assert _cam1_x(_load(reversed_walk.truth_path))[0] == 221
+    assert _cam1_x(_load(forward.truth_path))[0] == 13
+    assert _cam1_x(_load(same_parity.truth_path))[0] == 224
+    assert len(set(_cam1_x(_load(reversed_walk.truth_path)))) > 10
 
 
 def test_numpy_seed_is_rejected_before_any_file(tmp_path: Path) -> None:
@@ -1133,10 +1372,10 @@ def test_scripted_figures_match_every_truth_box(
         seconds=30,
     )
     matched, total, false_positives = _match_truth_boxes(defaults)
-    assert matched == total == 380
+    assert matched == total == 3580
     assert false_positives == 0
     matched, total, false_positives = _match_truth_boxes(other)
-    assert matched == total == 200
+    assert matched == total == 1183
     assert false_positives == 0
 
 
@@ -1228,6 +1467,76 @@ def test_edge_of_buffer_container_sizes_keep_their_meaning(tmp_path: Path) -> No
     large = (1 << 56) + fit
     huge = (1).to_bytes(4, "big") + b"moov" + large.to_bytes(8, "big") + plain
     assert b"\x11" * 8 in _stamp_file(tmp_path / "high-byte.mp4", huge)
+
+
+def test_a_narrow_box_raises_before_the_walk_continues(tmp_path: Path) -> None:
+    blob = (4).to_bytes(4, "big") + b"mvhd" + b"\x22" * 8
+    path = tmp_path / "narrow-direct.mp4"
+    path.write_bytes(blob)
+    with pytest.raises(ValueError, match="shorter than its 8-byte header"):
+        route_generator._zero_mp4_times(path)
+    assert path.read_bytes() == blob
+
+
+def test_a_short_box_size_raises_instead_of_hanging(tmp_path: Path) -> None:
+    """A 64-bit size of 0 used to spin. A 32-bit size of 4 is shorter than a header."""
+    program = "\n".join(
+        [
+            "import sys",
+            "from pathlib import Path",
+            "from trace_search.fixtures.route_generator import _zero_mp4_times",
+            "try:",
+            "    _zero_mp4_times(Path(sys.argv[1]))",
+            "except ValueError as exc:",
+            "    print(exc)",
+            "    raise SystemExit(0)",
+            "raise SystemExit(1)",
+        ]
+    )
+    zero_large = (1).to_bytes(4, "big") + b"free" + (0).to_bytes(8, "big") + b"\x11" * 8
+    narrow = (4).to_bytes(4, "big") + b"mvhd" + b"\x22" * 8
+    for name, blob in (("zero-large.mp4", zero_large), ("narrow.mp4", narrow)):
+        path = tmp_path / name
+        path.write_bytes(blob)
+        completed = subprocess.run(
+            [sys.executable, "-c", program, str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert completed.returncode == 0
+        assert "shorter than" in completed.stdout
+        assert path.read_bytes() == blob
+
+
+def test_repo_root_resolves_a_symlinked_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.symlink_to(_REPO, target_is_directory=True)
+    linked = checkout / "src" / "trace_search" / "fixtures" / "route_generator.py"
+    assert linked.resolve() == _SOURCE.resolve()
+    assert Path(str(linked)).parents[3] != _REPO.resolve()
+    monkeypatch.setattr(route_generator, "__file__", str(linked))
+    assert route_generator._repo_root() == _REPO.resolve()
+    leaked = _REPO / "out-probe"
+    try:
+        with pytest.raises(ValueError, match="inside the repository"):
+            generate_route_fixture(
+                checkout / "out-probe",
+                seed=0,
+                n_cameras=4,
+                n_figures=2,
+                fps=10,
+                size=(320, 240),
+                seconds=30,
+            )
+        assert not leaked.exists()
+    finally:
+        if leaked.exists():
+            shutil.rmtree(leaked)
 
 
 def test_licence_row_matches_the_source_and_has_no_use_tag() -> None:

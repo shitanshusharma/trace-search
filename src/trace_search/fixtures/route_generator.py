@@ -6,14 +6,17 @@ under ``out_dir``. Figures are upright rectangles with two flat colour
 bands. There is no head, no limbs, and no text. The last figure copies
 figure 0's colours and walks the other corridor. Corridors are not joined.
 
-The walk is fixed. Each zone is a pair of cameras or a triple. A pair is
-one figure stepping through the ten perceptual-hash samples. A triple is
-two figures, even samples and odd samples, with a return through the middle
-camera so both edge directions are used. Every visit is half a second and
-at least five frames. Sampled frames hold the rectangle at a different x,
-so the ten hashes of a clip differ. Nothing else is drawn.
+Each figure crosses its corridor once. A visit runs to the end of the
+clip, so it lasts nearly the whole recording, and the figure moves across
+the frame the entire time. One seeded ``numpy`` Generator picks the colour
+shift, the direction of that move, and a per-camera entrance of at most one
+second. Clocks step by the clip length plus one second, so those single
+passes still land inside the transit window. Sampled frames therefore hold
+the rectangle at a different x. Nothing else is drawn.
 
 Only configs that keep that walk inside the transit window are accepted.
+``(320, 240)`` and ``(640, 360)`` are accepted on every schedule.
+``(1280, 720)`` is accepted for 6 cameras at 10 fps and 30 seconds.
 The same seed writes byte-identical files. mp4v on opencv-python-headless
 4.10.0.84 (Lavf59.27.100) already stores container times as 0.
 ``_zero_mp4_times`` sets them to 0 again.
@@ -30,7 +33,6 @@ outside this repository.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,15 +52,16 @@ _MAX_SEED = 2_147_483_647
 _MIN_CAMERAS = 4
 _MAX_CAMERAS = 6
 _MIN_FIGURES = 2
-_MAX_FIGURES = 4
+_MAX_FIGURES = 8
 _MIN_FPS = 10
 _MAX_FPS = 30
 _MIN_SECONDS = 30
 _MAX_SECONDS = 40
 _MIN_EDGE = 240
-_MAX_EDGE = 640
+_MAX_EDGE = 1280
 _WINDOW_MIN = 0.5
 _WINDOW_MAX = 8.0
+_GAP_SECONDS = 1.0
 _GUTTER = 8
 _HASH_SAMPLES = 10
 _BACKGROUND_BGR = (16, 16, 16)
@@ -117,7 +120,6 @@ class _Visit:
     camera_index: int
     start_frame: int
     stop_frame: int
-    slot: int
     t_entry: float
     t_exit: float
 
@@ -148,6 +150,15 @@ class _Plan:
     offsets: tuple[float, ...]
     edges: tuple[TransitEdge, ...]
     figures: tuple[_Figure, ...]
+
+
+@dataclass(frozen=True)
+class _Variation:
+    """Seed draws. The same seed replays the same Generator stream."""
+
+    reverse: bool
+    shift: int
+    jitter: tuple[int, ...]
 
 
 def _repo_root() -> Path:
@@ -199,29 +210,30 @@ def _is_default_frame(width: int, height: int) -> bool:
     return height == 360
 
 
-def _require_known_size(width: int, height: int) -> None:
+def _is_hd_frame(width: int, height: int) -> bool:
+    if width != 1280:
+        return False
+    return height == 720
+
+
+def _is_hd_schedule(n_cameras: int, seconds: int) -> bool:
+    """720p stays on the default schedule so every accepted clip is encoded in tests."""
+    if n_cameras != 6:
+        return False
+    return seconds == 30
+
+
+def _require_known_size(width: int, height: int, n_cameras: int, seconds: int) -> None:
     if _is_small_frame(width, height):
         return
     if _is_default_frame(width, height):
         return
-    raise ValueError(f"size must be (320, 240) or (640, 360), got {(width, height)!r}")
-
-
-def _figures_for_zone(length: int) -> int:
-    if length <= 2:
-        return 1
-    return 2
-
-
-def _required_figures(n_cameras: int) -> int:
-    split = n_cameras // 2
-    return _figures_for_zone(split) + _figures_for_zone(n_cameras - split)
-
-
-def _require_figure_count(n_cameras: int, n_figures: int) -> None:
-    expected = _required_figures(n_cameras)
-    if n_figures != expected:
-        raise ValueError(f"n_figures must be {expected} for {n_cameras} cameras, got {n_figures}")
+    if _is_hd_frame(width, height) and _is_hd_schedule(n_cameras, seconds):
+        return
+    raise ValueError(
+        "size must be (320, 240) or (640, 360), or (1280, 720) "
+        f"for 6 cameras and 30 seconds, got {(width, height)!r}"
+    )
 
 
 def _ten_fps_span(fps: int, seconds: int) -> bool:
@@ -287,8 +299,7 @@ def _validate(
     fps_i = _require_int("fps", fps, _MIN_FPS, _MAX_FPS)
     width, height = _require_size(size)
     seconds_i = _require_int("seconds", seconds, _MIN_SECONDS, _MAX_SECONDS)
-    _require_known_size(width, height)
-    _require_figure_count(cameras, figures)
+    _require_known_size(width, height, cameras, seconds_i)
     _require_schedule(cameras, fps_i, seconds_i)
     resolved = _resolved_outside_repo(path)
     return _Args(
@@ -312,9 +323,13 @@ def _figure_id(index: int) -> str:
     return f"F{index + 1}"
 
 
-def _clock_offsets(n_cameras: int) -> tuple[float, ...]:
-    """Spread planted offsets from -2.0 s to +3.0 s across the cameras."""
-    step = 5.0 / float(n_cameras - 1)
+def _clock_offsets(n_cameras: int, seconds: int) -> tuple[float, ...]:
+    """Planted clocks. Each step is the clip length plus the transit gap.
+
+    A visit that fills the file is then one gap later on the next camera,
+    before any seeded entrance delay is added.
+    """
+    step = float(seconds) + _GAP_SECONDS
     return tuple(-2.0 + step * float(index) for index in range(n_cameras))
 
 
@@ -323,17 +338,20 @@ def _zones(n_cameras: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
     return tuple(range(split)), tuple(range(split, n_cameras))
 
 
+def _left_figure_count(n_figures: int) -> int:
+    return n_figures // 2
+
+
 def _edge(left: int, right: int) -> TransitEdge:
     return TransitEdge(_camera_id(left), _camera_id(right), _WINDOW_MIN, _WINDOW_MAX)
 
 
 def _edges(n_cameras: int) -> tuple[TransitEdge, ...]:
-    """Two corridors. Each neighbour link is stored in both directions."""
+    """Two corridors. Each link is the single direction the march walks."""
     found: list[TransitEdge] = []
     for zone in _zones(n_cameras):
         for left, right in zip(zone, zone[1:]):
             found.append(_edge(left, right))
-            found.append(_edge(right, left))
     return tuple(found)
 
 
@@ -343,9 +361,10 @@ def _sample_indices(n_frames: int) -> tuple[int, ...]:
     return tuple(int(index) for index in chosen)
 
 
-def _dwell_frames(fps: int) -> int:
-    """Half a second. Accepted frame rates are even, so this is an int."""
-    return fps // 2
+def _jitter_limit(fps: int, n_frames: int) -> int:
+    """At most one second, and early enough that only frame 0 can be empty."""
+    second = _sample_indices(n_frames)[1]
+    return min(fps, second - 1)
 
 
 def _slot_start(sample: int, n_frames: int, dwell: int) -> int:
@@ -353,6 +372,11 @@ def _slot_start(sample: int, n_frames: int, dwell: int) -> int:
     if sample < latest:
         return sample
     return latest
+
+
+def _visit_start(jitter: int, n_frames: int) -> int:
+    """Seeded entrance. The clamp keeps a one-frame visit inside the clip."""
+    return _slot_start(jitter, n_frames, 1)
 
 
 def _stamp(offset: float, frame: int, fps: int) -> float:
@@ -363,7 +387,6 @@ def _make_visit(
     camera: int,
     start: int,
     stop: int,
-    slot: int,
     offsets: tuple[float, ...],
     fps: int,
 ) -> _Visit:
@@ -371,105 +394,45 @@ def _make_visit(
         camera,
         start,
         stop,
-        slot,
         _stamp(offsets[camera], start, fps),
         _stamp(offsets[camera], stop, fps),
     )
 
 
-def _return_start(
-    offsets: tuple[float, ...],
-    fps: int,
-    zone: tuple[int, ...],
-    start: int,
-    dwell: int,
-) -> int:
-    """First middle-camera frame whose entry is at least half a second later."""
-    exit_t = _stamp(offsets[zone[2]], start + dwell, fps)
-    raw = (exit_t + _WINDOW_MIN - offsets[zone[1]]) * float(fps)
-    return math.ceil(raw)
+def _variation(seed: int, n_cameras: int, fps: int, n_frames: int) -> _Variation:
+    """Draw every seed-dependent choice from one Generator, in this order."""
+    rng = np.random.default_rng(seed)
+    reverse = int(rng.integers(0, 2)) == 1
+    shift = int(rng.integers(0, len(_COLOUR_PAIRS)))
+    limit = _jitter_limit(fps, n_frames)
+    drawn = rng.integers(0, limit + 1, size=n_cameras)
+    jitter = tuple(int(value) for value in drawn)
+    return _Variation(reverse, shift, jitter)
 
 
-def _append_span(
-    found: list[_Visit],
+def _march(
     zone: tuple[int, ...],
-    start: int,
-    dwell: int,
-    slot: int,
+    jitter: tuple[int, ...],
     offsets: tuple[float, ...],
     fps: int,
-) -> None:
-    stop = start + dwell
+    n_frames: int,
+) -> tuple[_Visit, ...]:
+    """One pass. Each camera keeps the figure until the last frame."""
+    found: list[_Visit] = []
     for camera in zone:
-        found.append(_make_visit(camera, start, stop, slot, offsets, fps))
-
-
-def _walk_adjacent(
-    zone: tuple[int, ...],
-    samples: tuple[int, ...],
-    slots: tuple[int, ...],
-    n_frames: int,
-    dwell: int,
-    offsets: tuple[float, ...],
-    fps: int,
-) -> tuple[_Visit, ...]:
-    found: list[_Visit] = []
-    for slot in slots:
-        start = _slot_start(samples[slot], n_frames, dwell)
-        _append_span(found, zone, start, dwell, slot, offsets, fps)
+        start = _visit_start(jitter[camera], n_frames)
+        found.append(_make_visit(camera, start, n_frames, offsets, fps))
     return tuple(found)
-
-
-def _walk_triple(
-    zone: tuple[int, ...],
-    samples: tuple[int, ...],
-    slots: tuple[int, ...],
-    n_frames: int,
-    dwell: int,
-    offsets: tuple[float, ...],
-    fps: int,
-) -> tuple[_Visit, ...]:
-    found: list[_Visit] = []
-    last = len(slots) - 1
-    for ordinal, slot in enumerate(slots):
-        start = _slot_start(samples[slot], n_frames, dwell)
-        _append_span(found, zone, start, dwell, slot, offsets, fps)
-        if ordinal != last:
-            back = _return_start(offsets, fps, zone, start, dwell)
-            found.append(_make_visit(zone[1], back, back + dwell, slot, offsets, fps))
-    return tuple(found)
-
-
-def _parity_slots(parity: int) -> tuple[int, ...]:
-    return tuple(slot for slot in range(_HASH_SAMPLES) if slot % 2 == parity)
-
-
-def _routes_for_zone(
-    zone: tuple[int, ...],
-    samples: tuple[int, ...],
-    n_frames: int,
-    dwell: int,
-    offsets: tuple[float, ...],
-    fps: int,
-) -> tuple[tuple[_Visit, ...], ...]:
-    if len(zone) <= 2:
-        slots = tuple(range(_HASH_SAMPLES))
-        return (_walk_adjacent(zone, samples, slots, n_frames, dwell, offsets, fps),)
-    return (
-        _walk_triple(zone, samples, _parity_slots(0), n_frames, dwell, offsets, fps),
-        _walk_triple(zone, samples, _parity_slots(1), n_frames, dwell, offsets, fps),
-    )
 
 
 def _colours(
     figure_index: int,
-    seed: int,
+    shift: int,
     n_figures: int,
 ) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     source = figure_index
     if figure_index == n_figures - 1:
         source = 0
-    shift = seed % len(_COLOUR_PAIRS)
     return _COLOUR_PAIRS[(source + shift) % len(_COLOUR_PAIRS)]
 
 
@@ -484,12 +447,15 @@ def _lane_geometry(width: int, height: int, count: int) -> tuple[int, int, int, 
     return fig_w, fig_h, step, tops
 
 
-def _x_at(slot: int, camera: int, step: int, seed: int) -> int:
-    position = slot
-    if seed % 2 == 1:
-        position = 9 - slot
-    shifted = (position + camera) % _HASH_SAMPLES
-    return _GUTTER + shifted * step
+def _x_at(frame: int, n_frames: int, step: int, reverse: bool, camera: int) -> int:
+    """Slide across the lane. Odd cameras face the other way."""
+    span = step * 9
+    progress = frame / (n_frames - 1)
+    if reverse != (camera % 2 == 1):
+        progress = 1.0 - progress
+    shift = (camera // 2) * (step // 2)
+    travel = span - (step // 2) * 2
+    return _GUTTER + shift + int(progress * travel)
 
 
 def _boxes_for(
@@ -499,13 +465,14 @@ def _boxes_for(
     fig_h: int,
     step: int,
     tops: tuple[int, ...],
-    seed: int,
+    reverse: bool,
+    n_frames: int,
 ) -> tuple[_Box, ...]:
     top = tops[figure_index]
     found: list[_Box] = []
     for visit in visits:
-        x_left = _x_at(visit.slot, visit.camera_index, step, seed)
         for frame_index in range(visit.start_frame, visit.stop_frame):
+            x_left = _x_at(frame_index, n_frames, step, reverse, visit.camera_index)
             found.append(
                 _Box(
                     visit.camera_index,
@@ -519,32 +486,46 @@ def _boxes_for(
     return tuple(found)
 
 
-def _build_figures(args: _Args, offsets: tuple[float, ...]) -> tuple[_Figure, ...]:
-    samples = _sample_indices(args.n_frames)
-    dwell = _dwell_frames(args.fps)
-    routes: list[tuple[_Visit, ...]] = []
-    for zone in _zones(args.n_cameras):
-        routes.extend(_routes_for_zone(zone, samples, args.n_frames, dwell, offsets, args.fps))
-    fig_w, fig_h, step, tops = _lane_geometry(args.width, args.height, len(routes))
+def _build_figures(
+    args: _Args,
+    offsets: tuple[float, ...],
+    variation: _Variation,
+) -> tuple[_Figure, ...]:
+    zones = _zones(args.n_cameras)
+    left = _left_figure_count(args.n_figures)
+    fig_w, fig_h, step, tops = _lane_geometry(args.width, args.height, args.n_figures)
     figures: list[_Figure] = []
-    for index, visits in enumerate(routes):
-        upper, lower = _colours(index, args.seed, len(routes))
+    for index in range(args.n_figures):
+        zone = zones[0] if index < left else zones[1]
+        visits = _march(zone, variation.jitter, offsets, args.fps, args.n_frames)
+        upper, lower = _colours(index, variation.shift, args.n_figures)
         figures.append(
             _Figure(
                 index,
                 upper,
                 lower,
-                index == len(routes) - 1,
+                index == args.n_figures - 1,
                 visits,
-                _boxes_for(visits, index, fig_w, fig_h, step, tops, args.seed),
+                _boxes_for(
+                    visits,
+                    index,
+                    fig_w,
+                    fig_h,
+                    step,
+                    tops,
+                    variation.reverse,
+                    args.n_frames,
+                ),
             )
         )
     return tuple(figures)
 
 
 def _build_plan(args: _Args) -> _Plan:
-    offsets = _clock_offsets(args.n_cameras)
-    return _Plan(args, offsets, _edges(args.n_cameras), _build_figures(args, offsets))
+    offsets = _clock_offsets(args.n_cameras, args.seconds)
+    variation = _variation(args.seed, args.n_cameras, args.fps, args.n_frames)
+    figures = _build_figures(args, offsets, variation)
+    return _Plan(args, offsets, _edges(args.n_cameras), figures)
 
 
 def _camera_config(index: int, offset: float) -> CameraConfig:
@@ -634,7 +615,9 @@ def _zero_boxes(data: bytearray, start: int, end: int) -> None:
     pos = start
     while pos + 8 <= end:
         size, header = _box_header(data, pos, end)
-        if size < header or pos + size > end:
+        if size < header:
+            raise ValueError(f"mp4 box size {size} is shorter than its {header}-byte header")
+        if pos + size > end:
             return
         kind = bytes(data[pos + 4 : pos + 8])
         payload = pos + header
@@ -843,9 +826,12 @@ def generate_route_fixture(
     and ``seconds`` are ints. A bool is rejected.
 
     Accepted schedules are 4, 5, or 6 cameras at 10 fps for 30 or 40 seconds,
-    plus 4 cameras at 30 fps for 30 seconds. Figure count is fixed by the
-    corridors: 2, 3, or 4. Each side of ``size`` is ``(320, 240)`` or
-    ``(640, 360)``. Seed is ``0..2147483647``.
+    plus 4 cameras at 30 fps for 30 seconds. ``n_figures`` is ``2..8`` on
+    every schedule. ``(320, 240)`` and ``(640, 360)`` are accepted on every
+    schedule. ``(1280, 720)`` is accepted for 6 cameras at 10 fps and 30
+    seconds, which includes 8 figures at 720p. Seed stays ``0..2147483647``.
+    Colours, the direction of the walk across the frame, and each camera's
+    entrance come from ``numpy.random.default_rng(seed)``.
     """
     args = _validate(out_dir, seed, n_cameras, n_figures, fps, size, seconds)
     plan = _build_plan(args)
