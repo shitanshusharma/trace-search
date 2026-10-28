@@ -17,8 +17,9 @@ repository root, an ancestor or descendant of the repository, the home
 directory, or an ancestor of the home directory. An existing workdir
 must be empty. A non-empty one is refused before any write. Unless the
 caller keeps it, the run deletes the run id it holds in memory and
-removes only paths that run created. A directory that already existed
-is left in place.
+removes every path that was not already in the workdir. A file another
+process writes there during the run is removed too. A directory that
+already existed is left in place.
 """
 
 from __future__ import annotations
@@ -495,8 +496,10 @@ def run_demo(
     a descendant, the home directory, an ancestor of home, and a
     non-empty existing directory return 1 before any file is written.
     ``keep`` prints the workdir and leaves it in place. Otherwise this
-    deletes the run id held in memory and removes only paths this run
-    created. A ``run.json`` left on disk is not a source of that id.
+    deletes the run id held in memory and removes every path that was
+    not already in the workdir. A file another process writes there
+    during the run is removed too. A ``run.json`` left on disk is not a
+    source of that id.
     """
     output = _sink(sink)
     try:
@@ -561,10 +564,12 @@ def _make_workdir(root: Path) -> None:
 
 
 def _finish(owned: _Workdir, keep: bool, sink: TextIO, run_id: str | None) -> bool:
-    """Delete this run's paths unless ``keep`` is set. False means cleanup raised.
+    """Delete this run's rows and new paths unless ``keep`` is set.
 
-    ``run_id`` is the id this run created. Cleanup never reads one back
-    from ``run.json``.
+    False means cleanup raised. Paths that were not already in the
+    workdir are removed, including a file another process writes there
+    during the run. ``run_id`` is the id this run created. Cleanup never
+    reads one back from ``run.json``.
     """
     try:
         if keep:

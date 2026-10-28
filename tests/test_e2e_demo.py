@@ -934,6 +934,9 @@ def test_best_figure_and_majority_edges() -> None:
     assert e2e._best_figure(box, [("second", box), ("first", box)]) == "first"
     assert e2e._best_figure(box, [("partial", (0.0, 0.0, 10.0, 6.0)), ("full", box)]) == "full"
     assert e2e._best_figure(box, [("full", box), ("partial", (0.0, 0.0, 10.0, 6.0))]) == "full"
+    higher_iou = (0.0, 0.0, 10.0, 6.0)
+    assert e2e._best_figure(box, [("fig-1", higher_iou), ("fig-9", box)]) == "fig-9"
+    assert e2e._best_figure(box, [("fig-9", box), ("fig-1", higher_iou)]) == "fig-9"
     assert e2e._majority({}, 3) is None
     assert e2e._majority({"A": 1}, 0) is None
     assert e2e._majority({"A": 1, "B": 1}, 2) is None
@@ -1716,10 +1719,15 @@ def _planted_entry(tmp_path: Path, kind: str) -> tuple[Path, Path, bytes]:
         nested = target / "sub"
         nested.mkdir()
         (nested / "f").write_bytes(payload)
-    else:
+    elif kind == "symlink":
         outside.mkdir()
         (outside / "secret.txt").write_bytes(payload)
         (target / "link").symlink_to(outside, target_is_directory=True)
+    elif kind == "dangling":
+        outside.mkdir()
+        (target / "CAM-1.mp4").symlink_to(outside / "CAM-1.mp4")
+    else:
+        raise AssertionError(kind)
     return target, outside, payload
 
 
@@ -1730,6 +1738,10 @@ def _entry_bytes(target: Path, outside: Path, kind: str) -> tuple[object, ...]:
         return ((target / ".env").read_bytes(),)
     if kind == "subdir":
         return ((target / "sub" / "f").read_bytes(),)
+    if kind == "dangling":
+        link = target / "CAM-1.mp4"
+        dest = outside / "CAM-1.mp4"
+        return (link.is_symlink(), os.readlink(link), dest.exists())
     link = target / "link"
     return (
         link.is_symlink(),
@@ -1738,7 +1750,7 @@ def _entry_bytes(target: Path, outside: Path, kind: str) -> tuple[object, ...]:
     )
 
 
-@pytest.mark.parametrize("kind", ["file", "dotfile", "subdir", "symlink"])
+@pytest.mark.parametrize("kind", ["file", "dotfile", "subdir", "symlink", "dangling"])
 def test_nonempty_workdir_is_refused_and_untouched(tmp_path: Path, kind: str) -> None:
     target, outside, payload = _planted_entry(tmp_path, kind)
     before = _entry_bytes(target, outside, kind)
@@ -1749,7 +1761,13 @@ def test_nonempty_workdir_is_refused_and_untouched(tmp_path: Path, kind: str) ->
     assert "not empty" in text
     assert "Traceback" not in text
     assert _entry_bytes(target, outside, kind) == before
-    assert payload in before
+    if kind == "dangling":
+        link = target / "CAM-1.mp4"
+        assert link.is_symlink()
+        assert list(target.iterdir()) == [link]
+        assert not (outside / "CAM-1.mp4").exists()
+    else:
+        assert payload in before
 
 
 def test_output_symlink_is_refused_and_target_stays(tmp_path: Path) -> None:
