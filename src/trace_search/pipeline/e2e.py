@@ -467,8 +467,6 @@ def run_demo(
         return 1
     chosen = Schedule() if schedule is None else schedule
     started = time.perf_counter()
-    code = 1
-    skipped: tuple[str, ...] = ()
     try:
         skipped = _prepare(root, chosen, generate=generate)
         code = score_demo(
