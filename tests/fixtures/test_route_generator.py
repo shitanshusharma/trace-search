@@ -72,7 +72,11 @@ _FIXTURES: dict[tuple[Any, ...], RouteFixture] = {}
 
 @contextmanager
 def _time_limit(seconds: float) -> Iterator[None]:
-    """Fail the caller if a pure-Python walk does not return."""
+    """Fail the caller if a pure-Python walk does not return.
+
+    ``SIGALRM`` only works on the main thread on POSIX. A walk on a
+    worker thread, or on Windows, does not trip this timer.
+    """
 
     def handler(signum: int, frame: object) -> None:
         raise TimeoutError(f"call exceeded {seconds} seconds")
@@ -239,6 +243,8 @@ def _assert_dwells(fixture: RouteFixture) -> None:
             assert camera is not None
             delay = visit["t_entry"] - camera.clock_offset_seconds
             assert 0.0 <= delay <= 1.0
+            drawn = [box for box in figure["boxes"] if box["camera_id"] == visit["camera_id"]]
+            assert visit["t_entry"] == (camera.clock_offset_seconds + drawn[0]["frame_index"] / fps)
             assert visit["t_exit"] == camera.clock_offset_seconds + seconds
             frames = _visit_boxes(figure, visit, fps, camera.clock_offset_seconds)
             assert len(frames) >= fps * 2
@@ -1245,9 +1251,14 @@ def test_seeds_congruent_mod_8_write_different_clips(
                 size=(320, 240),
             ).clip_paths[0]
         )
-        for seed in (0, 8, 16, 2_147_483_640, 2840, 15536)
+        for seed in (0, 8, 16, 2_147_483_640, 2840, 15536, 65536)
     ]
-    assert len(set(digests)) == 6
+    assert len(set(digests)) == 7
+    high = route_generator._variation(65536, 4, 10, 300)
+    assert high.reverse is False
+    assert high.shift == 2
+    assert high.jitter == (4, 0, 6, 0)
+    assert high != route_generator._variation(0, 4, 10, 300)
 
 
 def test_direction_is_not_the_seed_parity(tmp_path_factory: pytest.TempPathFactory) -> None:
@@ -1566,6 +1577,16 @@ def test_short_box_size_boundary_is_eight_bytes(tmp_path: Path) -> None:
     with _time_limit(5), pytest.raises(ValueError, match="shorter than its 16-byte header"):
         route_generator._zero_mp4_times(path)
     assert path.read_bytes() == eight
+    size_seven = (7).to_bytes(4, "big") + b"mvhd"
+    path.write_bytes(size_seven)
+    with pytest.raises(ValueError, match="shorter than its 8-byte header"):
+        route_generator._zero_mp4_times(path)
+    assert path.read_bytes() == size_seven
+    size_fifteen = (1).to_bytes(4, "big") + b"mvhd" + (15).to_bytes(8, "big")
+    path.write_bytes(size_fifteen)
+    with pytest.raises(ValueError, match="shorter than its 16-byte header"):
+        route_generator._zero_mp4_times(path)
+    assert path.read_bytes() == size_fifteen
 
 
 def test_a_narrow_box_raises_before_the_walk_continues(tmp_path: Path) -> None:
@@ -1594,7 +1615,14 @@ def test_a_short_box_size_raises_instead_of_hanging(tmp_path: Path) -> None:
     )
     zero_large = (1).to_bytes(4, "big") + b"free" + (0).to_bytes(8, "big") + b"\x11" * 8
     narrow = (4).to_bytes(4, "big") + b"mvhd" + b"\x22" * 8
-    for name, blob in (("zero-large.mp4", zero_large), ("narrow.mp4", narrow)):
+    size_seven = (7).to_bytes(4, "big") + b"mvhd"
+    size_fifteen = (1).to_bytes(4, "big") + b"mvhd" + (15).to_bytes(8, "big")
+    for name, blob in (
+        ("zero-large.mp4", zero_large),
+        ("narrow.mp4", narrow),
+        ("size-seven.mp4", size_seven),
+        ("size-fifteen.mp4", size_fifteen),
+    ):
         path = tmp_path / name
         path.write_bytes(blob)
         completed = subprocess.run(

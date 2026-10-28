@@ -11,9 +11,10 @@ clip, so it lasts nearly the whole recording, and the figure moves across
 the frame the entire time. One seeded ``numpy`` Generator picks the colour
 shift, the direction of that move, and a per-camera entrance of at most one
 second. The seed is mixed as ``SeedSequence([seed, seed])``, because
-``default_rng(seed)`` repeats the picture for 2840 and 15536. Clocks step
-by the clip length plus one second, so those single passes still land
-inside the transit window. Sampled frames therefore hold
+``default_rng(seed)`` repeats the picture for 2840 and 15536. Rare pairs
+still share a clip, for example 679 and 1749. Clocks step by the clip
+length plus one second, so those single passes still land inside the
+transit window. Sampled frames therefore hold
 the rectangle at a different x. Nothing else is drawn.
 
 Only configs that keep that walk inside the transit window are accepted,
