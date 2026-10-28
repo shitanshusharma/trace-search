@@ -15,6 +15,8 @@ Fail closed:
 - missing directory, missing file, unreadable file
 - decode or pHash errors
 - manifest with no SMOKE_ONLY or CODE_TEST rows
+- a SMOKE_ONLY or CODE_TEST tag on a row whose type is not clip,
+  synthetic_clip, or code_fixture
 - a code path that computes gradients or runs an optimizer step, including a
   one-step loop, and can read SMOKE_ONLY or CODE_TEST data
 """
@@ -36,6 +38,9 @@ from trace_search.fixtures.content import (
 )
 
 FORBIDDEN_TAGS = {"SMOKE_ONLY", "CODE_TEST"}
+# use, phash, and fixture_id are fixture fields. A forbidden tag on any other
+# row type is a fence error, not a dataset hit.
+FIXTURE_ROW_TYPES = frozenset({"clip", "synthetic_clip", "code_fixture"})
 # Casefolded directory names. Any parent with one of these names is a
 # training, eval, or study input, including Data/Train and TRAIN.
 DATA_DIR_NAMES = {
@@ -185,16 +190,44 @@ def load_manifest_entries(manifest_path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _shown_row_type(entry_type: object) -> str:
+    """Label a row type for an error. Non-strings never raise."""
+    if isinstance(entry_type, str):
+        return entry_type
+    if entry_type is None:
+        return "None"
+    return type(entry_type).__name__
+
+
+def _reject_forbidden_tag_on_other_type(entry: dict[str, Any], use_tag: object) -> None:
+    """Raise when a forbidden tag is on a row that is not a fixture row.
+
+    clip, synthetic_clip, and code_fixture may carry the tag. Every other
+    type, including generator, is an error even when the row has no pHash list.
+    A non-string type is named by its type, not raised as TypeError.
+    """
+    entry_type = entry.get("type")
+    if isinstance(entry_type, str) and entry_type in FIXTURE_ROW_TYPES:
+        return
+    shown = _shown_row_type(entry_type)
+    raise SeparationCheckError(f"FAIL-CLOSED: type '{shown}' cannot carry use '{use_tag}'")
+
+
 def forbidden_fixtures(
     entries: list[dict[str, Any]],
 ) -> tuple[dict[str, str], dict[str, list[str]]]:
-    """Map forbidden SHA-256 to fixture id, and SHA-256 to pHashes."""
+    """Map forbidden SHA-256 to fixture id, and SHA-256 to pHashes.
+
+    A forbidden tag on any other row type raises SeparationCheckError and
+    names that type. The row is not indexed.
+    """
     sha_to_id: dict[str, str] = {}
     sha_to_phash: dict[str, list[str]] = {}
     for entry in entries:
         use_tag = entry.get("use")
         if use_tag not in FORBIDDEN_TAGS:
             continue
+        _reject_forbidden_tag_on_other_type(entry, use_tag)
         fixture_id = entry.get("fixture_id") or "unknown"
         sha = entry.get("sha256")
         if not isinstance(sha, str) or len(sha) != 64:
