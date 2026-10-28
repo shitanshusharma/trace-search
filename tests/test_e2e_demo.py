@@ -68,34 +68,39 @@ _MEDIA = (
     "truth.json",
     "manifest.json",
 )
-_STATUS_AT_IMPORT = subprocess.run(
-    ["git", "status", "--porcelain"],
-    check=True,
-    capture_output=True,
-    text=True,
-    cwd=_REPO,
-).stdout
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(autouse=True, scope="module")
 def _refuse_outbound_connect():
-    """These tests refuse socket.socket.connect. Local SQLite does not connect."""
+    """Refuse outbound sockets for this module only.
+
+    ``connect``, ``connect_ex``, ``sendto``, and ``create_connection``
+    raise. The patch ends when this module's tests end.
+    """
 
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise OSError("outbound network is refused")
 
     with pytest.MonkeyPatch.context() as patched:
         patched.setattr(socket.socket, "connect", refuse)
+        patched.setattr(socket.socket, "connect_ex", refuse)
+        patched.setattr(socket.socket, "sendto", refuse)
         patched.setattr(socket, "create_connection", refuse)
         yield
 
 
 def test_socket_connect_is_refused() -> None:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(0.2)
     try:
         with pytest.raises(OSError, match="outbound network is refused"):
             sock.connect(("192.0.2.1", 1))
+        with pytest.raises(OSError, match="outbound network is refused"):
+            sock.connect_ex(("192.0.2.1", 1))
+        with pytest.raises(OSError, match="outbound network is refused"):
+            sock.sendto(b"x", ("192.0.2.1", 1))
+        with pytest.raises(OSError, match="outbound network is refused"):
+            socket.create_connection(("192.0.2.1", 1), timeout=0.2)
     finally:
         sock.close()
 
@@ -113,6 +118,8 @@ class _DemoRun:
     cameras: dict[str, Any]
     truth: dict[str, Any]
     run: dict[str, Any]
+    status_before: str
+    status_after: str
 
 
 def _porcelain() -> str:
@@ -278,7 +285,7 @@ def _plant_cross_figure(root: Path) -> None:
     )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def demo_run(tmp_path_factory: pytest.TempPathFactory) -> _DemoRun:
     """One real pipeline. Snapshot the files, then the default run deletes them."""
     live = tmp_path_factory.mktemp("e2e-live")
@@ -297,9 +304,11 @@ def demo_run(tmp_path_factory: pytest.TempPathFactory) -> _DemoRun:
     try:
         import time
 
+        status_before = _porcelain()
         started = time.perf_counter()
         code = main(["--workdir", str(live), "--seed", "0"], sink=buf)
         elapsed = time.perf_counter() - started
+        status_after = _porcelain()
     finally:
         e2e.delete_run_rows = real_delete
     text = buf.getvalue()
@@ -321,6 +330,8 @@ def demo_run(tmp_path_factory: pytest.TempPathFactory) -> _DemoRun:
         _read_json(saved / "cameras.json"),
         _read_json(saved / "truth.json"),
         _read_json(saved / "run.json"),
+        status_before,
+        status_after,
     )
 
 
@@ -357,8 +368,7 @@ def test_main_passes_and_default_run_is_removed(demo_run: _DemoRun) -> None:
     assert 0.0 < printed_time <= demo_run.elapsed + 0.25
     assert all(not line.startswith("skipped ") for line in lines)
     assert _line(demo_run.text, "run_id=") == f"run_id={demo_run.run_id}"
-    assert _STATUS_AT_IMPORT == ""
-    assert _porcelain() == ""
+    assert demo_run.status_before == demo_run.status_after
 
 
 def test_demo_decodes_real_clips_and_holds_clock_extremes(demo_run: _DemoRun) -> None:
@@ -534,16 +544,18 @@ def test_non_code_test_is_refused_before_a_store_exists(demo_run: _DemoRun, tmp_
     for entry in manifest["entries"]:
         entry["use"] = "SMOKE_ONLY"
     (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(FixtureSeparationError, match="FORBIDDEN"):
+        e2e._prepare(root, Schedule(), generate=False)
     buf = io.StringIO()
     code = run_demo(root, generate=False, keep=True, sink=buf)
     text = buf.getvalue()
     assert code == 1
-    assert "FORBIDDEN" in text
+    assert "not empty" in text
     assert "Traceback" not in text
+    assert "workdir=" not in text
     assert not (root / TRACK_DB_FILENAME).exists()
     assert not (root / ATTRIBUTE_DB_FILENAME).exists()
     assert not (root / EMBEDDING_DB_FILENAME).exists()
-    assert f"workdir={root.resolve()}" in text
 
 
 def test_missing_manifest_row_is_refused(demo_run: _DemoRun, tmp_path: Path) -> None:
@@ -555,10 +567,13 @@ def test_missing_manifest_row_is_refused(demo_run: _DemoRun, tmp_path: Path) -> 
     clip = root / "CAM-1.mp4"
     with pytest.raises(FixtureSeparationError, match="no manifest row"):
         require_code_test_clip(clip, root / "manifest.json")
+    with pytest.raises(FixtureSeparationError, match="no manifest row"):
+        e2e._prepare(root, Schedule(), generate=False)
     buf = io.StringIO()
     code = run_demo(root, generate=False, keep=True, sink=buf)
     assert code == 1
-    assert "no manifest row" in buf.getvalue()
+    assert "not empty" in buf.getvalue()
+    assert "Traceback" not in buf.getvalue()
     assert not (root / TRACK_DB_FILENAME).exists()
 
 
@@ -572,10 +587,13 @@ def test_missing_manifest_file_is_refused(demo_run: _DemoRun, tmp_path: Path) ->
     root = tmp_path / "no-manifest"
     _media_copy(demo_run.root, root)
     (root / "manifest.json").unlink()
+    with pytest.raises(FixtureSeparationError, match="manifest not found"):
+        e2e._prepare(root, Schedule(), generate=False)
     buf = io.StringIO()
     code = run_demo(root, generate=False, keep=True, sink=buf)
     assert code == 1
-    assert "manifest not found" in buf.getvalue()
+    assert "not empty" in buf.getvalue()
+    assert "Traceback" not in buf.getvalue()
     assert not (root / TRACK_DB_FILENAME).exists()
 
 
@@ -615,10 +633,12 @@ def test_bad_seed_exits_without_a_traceback(tmp_path: Path) -> None:
 
 
 def test_keep_leaves_the_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del schedule, generate
         (root / "run.json").write_text(json.dumps({"run_id": "kept"}), encoding="utf-8")
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root
@@ -645,10 +665,12 @@ def test_default_temp_workdir_is_removed(monkeypatch: pytest.MonkeyPatch) -> Non
         created["path"] = path
         return path
 
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del schedule, generate
         (root / "run.json").write_text(json.dumps({"run_id": "temp"}), encoding="utf-8")
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root
@@ -671,9 +693,11 @@ def test_default_temp_workdir_is_removed(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_cleanup_failure_exits_1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del root, schedule, generate
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root, kwargs
@@ -693,10 +717,12 @@ def test_cleanup_failure_exits_1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 def test_bad_run_json_does_not_escape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del schedule, generate
         (root / "run.json").write_text("{}", encoding="utf-8")
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root, kwargs
@@ -708,18 +734,21 @@ def test_bad_run_json_does_not_escape(tmp_path: Path, monkeypatch: pytest.Monkey
     target.mkdir()
     buf = io.StringIO()
     code = run_demo(target, sink=buf)
-    assert code == 1
+    assert code == 0
     assert "Traceback" not in buf.getvalue()
-    assert "run_id" in buf.getvalue()
+    assert target.is_dir()
+    assert not (target / "run.json").exists()
 
 
 def test_stdout_is_the_default_sink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del schedule, generate
         (root / "run.json").write_text(json.dumps({"run_id": "out"}), encoding="utf-8")
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root
@@ -929,7 +958,8 @@ def test_choose_seed_breaks_ties_and_ignores_other_cameras() -> None:
         _observation("CAM-1", 1, 0, (0.0, 0.0, 10.0, 6.0)),
     ]
     assert choose_seed(worse_later, "CAM-1", truth) == ("CAM-1", 4)
-    assert choose_seed([_observation("CAM-2", 1, 0, full)], "CAM-1", truth) is None
+    wrong_camera = [TruthBox("F1", "CAM-2", 0, full)]
+    assert choose_seed([_observation("CAM-2", 1, 0, full)], "CAM-1", wrong_camera) is None
     assert choose_seed([], "CAM-1", truth) is None
     disjoint = _observation("CAM-1", 7, 0, (100.0, 100.0, 110.0, 110.0))
     assert choose_seed([disjoint], "CAM-1", truth) is None
@@ -1147,6 +1177,7 @@ def test_json_helpers_reject_bad_values(tmp_path: Path) -> None:
         e2e._load_figures(path)
     assert e2e._optional_run_id(tmp_path) is None
     (tmp_path / "run.json").write_text(json.dumps({"run_id": "abc"}), encoding="utf-8")
+    assert e2e._optional_run_id(tmp_path) == "abc"
     assert e2e._read_run_id(tmp_path) == "abc"
 
 
@@ -1185,6 +1216,8 @@ def test_exact_iou_tie_uses_the_lower_figure_id() -> None:
     ]
     assert track_ownership(rows, forward)[("CAM-1", 1)] == "F1"
     assert track_ownership(rows, reverse)[("CAM-1", 1)] == "F1"
+    partial = (0.0, 0.0, 10.0, 6.0)
+    assert e2e._best_figure(box, [("F2", box), ("F1", partial)]) == "F2"
 
 
 def test_person_after_a_bag_is_still_owned() -> None:
@@ -1422,9 +1455,11 @@ def test_printed_run_time_is_the_elapsed_span(
     ticks = iter((10.0, 12.5))
     monkeypatch.setattr(e2e.time, "perf_counter", lambda: next(ticks))
 
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del root, schedule, generate
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root
@@ -1463,10 +1498,12 @@ def test_default_temp_dir_inside_the_repo_is_refused(
 
 
 def _fast_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del schedule, generate
         (root / "created-by-run.txt").write_text("new", encoding="utf-8")
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root
@@ -1587,11 +1624,13 @@ def test_tilde_child_expands_outside_the_repo(
     monkeypatch.setenv("HOME", str(home))
     seen: dict[str, Path] = {}
 
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del schedule, generate
         seen["root"] = root
         (root / "run.json").write_text(json.dumps({"run_id": "tilde"}), encoding="utf-8")
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root
@@ -1613,33 +1652,38 @@ def test_tilde_child_expands_outside_the_repo(
 def test_bad_seed_keeps_an_existing_workdir(tmp_path: Path) -> None:
     target = tmp_path / "data"
     target.mkdir()
-    (target / "precious.txt").write_text("keep", encoding="utf-8")
     buf = io.StringIO()
     code = main(["--workdir", str(target), "--seed", "-1"], sink=buf)
     assert code == 1
     assert "Traceback" not in buf.getvalue()
+    assert "seed" in buf.getvalue()
     assert target.is_dir()
-    assert (target / "precious.txt").read_text(encoding="utf-8") == "keep"
+    assert list(target.iterdir()) == []
 
 
-def test_preexisting_workdir_keeps_its_files(
+def test_empty_workdir_removes_created_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "data"
-    kept = target / "kept"
-    kept.mkdir(parents=True)
-    (target / "precious.txt").write_text("keep", encoding="utf-8")
-    (kept / "old.txt").write_text("old", encoding="utf-8")
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel.txt").write_text("keep", encoding="utf-8")
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("file", encoding="utf-8")
 
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del schedule, generate
         (root / "created-by-run.txt").write_text("new", encoding="utf-8")
         nested = root / "nested"
         nested.mkdir()
         (nested / "new.txt").write_text("new", encoding="utf-8")
-        (root / "link").symlink_to(root / "precious.txt")
+        (root / "link").symlink_to(outside_file)
+        (root / "dir-link").symlink_to(outside, target_is_directory=True)
         (root / "run.json").write_text(json.dumps({"run_id": "temp"}), encoding="utf-8")
-        return ()
+        return (), None
 
     def _score(root: Path, **kwargs: object) -> int:
         del root
@@ -1655,18 +1699,195 @@ def test_preexisting_workdir_keeps_its_files(
     assert code == 0
     assert "workdir=" not in buf.getvalue()
     assert target.is_dir()
-    assert (target / "precious.txt").read_text(encoding="utf-8") == "keep"
-    assert (kept / "old.txt").read_text(encoding="utf-8") == "old"
-    assert not (target / "created-by-run.txt").exists()
-    assert not (target / "nested").exists()
-    assert not (target / "link").exists()
-    assert not (target / "run.json").exists()
+    assert list(target.iterdir()) == []
+    assert (outside / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert outside_file.read_text(encoding="utf-8") == "file"
+
+
+def test_nonempty_workdir_is_refused_and_untouched(tmp_path: Path) -> None:
+    target = tmp_path / "kept"
+    target.mkdir()
+    manifest = b'{"note":"mine"}\n'
+    truth = b"mine\n"
+    (target / "manifest.json").write_bytes(manifest)
+    (target / "truth.json").write_bytes(truth)
+    row = _observation(
+        "CAM-1",
+        1,
+        0,
+        (0.0, 0.0, 10.0, 10.0),
+        timestamp_seconds=time.time(),
+    )
+    TrackStore(target / TRACK_DB_FILENAME).write("kept-run", "fixture", DERIVED_FROM, [row])
+    (target / "run.json").write_text(json.dumps({"run_id": "kept-run"}), encoding="utf-8")
+    buf = io.StringIO()
+    code = main(["--workdir", str(target), "--seed", "-1"], sink=buf)
+    assert code == 1
+    assert "not empty" in buf.getvalue()
+    assert "Traceback" not in buf.getvalue()
+    assert (target / "manifest.json").read_bytes() == manifest
+    assert (target / "truth.json").read_bytes() == truth
+    assert TrackStore(target / TRACK_DB_FILENAME).count(run_id="kept-run") == 1
+
+
+def test_output_symlink_is_refused_and_target_stays(tmp_path: Path) -> None:
+    target = tmp_path / "linked"
+    outside = tmp_path / "outside"
+    target.mkdir()
+    outside.mkdir()
+    sentinels = {
+        "CAM-1.mp4": b"clip-bytes",
+        "cameras.json": b'{"cameras":[]}\n',
+        TRACK_DB_FILENAME: b"sqlite-bytes",
+    }
+    for filename, payload in sentinels.items():
+        victim = outside / filename
+        victim.write_bytes(payload)
+        (target / filename).symlink_to(victim)
+    buf = io.StringIO()
+    code = run_demo(target, sink=buf)
+    assert code == 1
+    assert "not empty" in buf.getvalue()
+    assert "Traceback" not in buf.getvalue()
+    for filename, payload in sentinels.items():
+        assert (outside / filename).read_bytes() == payload
+        assert (target / filename).is_symlink()
+
+
+def test_failing_run_keeps_another_runs_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = _observation(
+        "CAM-1",
+        1,
+        0,
+        (0.0, 0.0, 10.0, 10.0),
+        timestamp_seconds=time.time(),
+    )
+
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
+        del schedule, generate
+        store = TrackStore(root / TRACK_DB_FILENAME)
+        store.write("other-run", "fixture", DERIVED_FROM, [row])
+        store.write("this-run", "fixture", DERIVED_FROM, [row])
+        (root / "run.json").write_text(json.dumps({"run_id": "other-run"}), encoding="utf-8")
+        return (), "this-run"
+
+    def _score(root: Path, **kwargs: object) -> int:
+        del root, kwargs
+        raise RuntimeError("score failed")
+
+    seen: dict[str, int] = {}
+    real_remove = remove_workdir
+
+    def _remove(path: Path) -> None:
+        store = TrackStore(path / TRACK_DB_FILENAME)
+        seen["other"] = store.count(run_id="other-run")
+        seen["this"] = store.count(run_id="this-run")
+        real_remove(path)
+
+    monkeypatch.setattr(e2e, "_prepare", _prepare)
+    monkeypatch.setattr(e2e, "score_demo", _score)
+    monkeypatch.setattr(e2e, "remove_workdir", _remove)
+    target = tmp_path / "owned"
+    buf = io.StringIO()
+    code = run_demo(target, sink=buf)
+    assert code == 1
+    assert "RuntimeError" in buf.getvalue()
+    assert "Traceback" not in buf.getvalue()
+    assert seen["other"] == 1
+    assert seen["this"] == 0
+    assert not target.exists()
+
+
+def test_repo_grandparent_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    grand = tmp_path / "grand"
+    repo = grand / "parent" / "repo"
+    repo.mkdir(parents=True)
+    (grand / "precious.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    _fast_success(monkeypatch)
+    buf = io.StringIO()
+    code = run_demo(grand, sink=buf)
+    assert code == 1
+    assert "ancestor of the repository" in buf.getvalue()
+    assert (grand / "precious.txt").read_text(encoding="utf-8") == "keep"
+    assert not (grand / "created-by-run.txt").exists()
+    with pytest.raises(ValueError, match="ancestor of the repository"):
+        remove_workdir(grand)
+    assert (grand / "precious.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_filesystem_root_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    buf = io.StringIO()
+    code = run_demo(Path("/"), sink=buf)
+    assert code == 1
+    assert "ancestor of the repository" in buf.getvalue()
+    assert "Traceback" not in buf.getvalue()
+
+
+def test_symlinked_home_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = tmp_path / "houses" / "real-home"
+    real.mkdir(parents=True)
+    (real / "precious.txt").write_text("keep", encoding="utf-8")
+    link_parent = tmp_path / "links"
+    link_parent.mkdir()
+    link = link_parent / "home"
+    link.symlink_to(real)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("HOME", str(link))
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    _fast_success(monkeypatch)
+    buf = io.StringIO()
+    code = run_demo(real, sink=buf)
+    assert code == 1
+    assert "workdir is the home directory" in buf.getvalue()
+    assert (real / "precious.txt").read_text(encoding="utf-8") == "keep"
+    assert not (real / "created-by-run.txt").exists()
+
+
+def test_home_ancestor_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    zone = tmp_path / "zone"
+    parent = zone / "parent"
+    home = parent / "home"
+    home.mkdir(parents=True)
+    (home / "precious.txt").write_text("keep", encoding="utf-8")
+    (parent / "sentinel.txt").write_text("keep", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    _fast_success(monkeypatch)
+    parent_buf = io.StringIO()
+    parent_code = run_demo(parent, sink=parent_buf)
+    assert parent_code == 1
+    assert "ancestor of the home directory" in parent_buf.getvalue()
+    assert (parent / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert not (parent / "created-by-run.txt").exists()
+    grand_buf = io.StringIO()
+    grand_code = run_demo(zone, sink=grand_buf)
+    assert grand_code == 1
+    assert "ancestor of the home directory" in grand_buf.getvalue()
+    assert (home / "precious.txt").read_text(encoding="utf-8") == "keep"
+    assert not (zone / "created-by-run.txt").exists()
+    with pytest.raises(ValueError, match="ancestor of the home directory"):
+        remove_workdir(zone)
+    assert zone.is_dir()
+    assert (home / "precious.txt").read_text(encoding="utf-8") == "keep"
 
 
 def test_failed_run_removes_only_the_directory_it_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+    def _prepare(
+        root: Path, schedule: Schedule, *, generate: bool
+    ) -> tuple[tuple[str, ...], str | None]:
         del schedule, generate
         now = time.time()
         TrackStore(root / TRACK_DB_FILENAME).write(

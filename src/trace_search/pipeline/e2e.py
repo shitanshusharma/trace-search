@@ -13,10 +13,12 @@ deleted. The traceback is not printed.
 
 SQLite files live in the workdir at the retention registry names. The
 workdir must resolve outside this repository. It must not be the
-repository root, an ancestor of the repository, or the home directory.
-Unless the caller keeps it, the run deletes its own ``run_id`` and
+repository root, an ancestor or descendant of the repository, the home
+directory, or an ancestor of the home directory. An existing workdir
+must be empty. A non-empty one is refused before any write. Unless the
+caller keeps it, the run deletes the run id it holds in memory and
 removes only paths that run created. A directory that already existed
-is left in place, including the files that were already there.
+is left in place.
 """
 
 from __future__ import annotations
@@ -199,8 +201,9 @@ def assert_outside_repo(path: Path) -> Path:
     """Resolve ``path`` and refuse the repo, its ancestors, and home.
 
     ``~`` is expanded before resolving symlinks. The repository root, any
-    descendant, any ancestor, and the home directory itself are refused.
-    A directory under home that is none of those is allowed.
+    descendant, any ancestor, the home directory, and any ancestor of
+    home are refused. A directory under home that is none of those is
+    allowed.
     """
     resolved = Path(path).expanduser().resolve()
     root = _repo_root()
@@ -217,8 +220,11 @@ def _refuse_repo_tree(resolved: Path, root: Path) -> None:
 
 
 def _refuse_home(resolved: Path) -> None:
-    if resolved == Path.home().resolve():
+    home = Path.home().resolve()
+    if resolved == home:
         raise ValueError(f"workdir is the home directory: {resolved}")
+    if resolved in home.parents:
+        raise ValueError(f"workdir is an ancestor of the home directory: {resolved}")
 
 
 def new_workdir() -> Path:
@@ -383,9 +389,10 @@ def delete_run_rows(root: Path, run_id: str) -> None:
 def remove_workdir(path: Path) -> None:
     """Remove a directory that is safe to delete.
 
-    The repository, its ancestors, its descendants, and the home directory
-    are refused. ``run_demo`` calls this only for a directory that run
-    created. A pre-existing workdir is trimmed by ``_remove_created``.
+    The repository, its ancestors, its descendants, the home directory,
+    and any ancestor of home are refused. ``run_demo`` calls this only
+    for a directory that run created. A pre-existing workdir is trimmed
+    by ``_remove_created``.
     """
     resolved = assert_outside_repo(path)
     if not resolved.exists():
@@ -485,9 +492,11 @@ def run_demo(
     """Generate (unless told not to), run the pipeline, score, and clean up.
 
     ``workdir`` None creates a temp directory. The repository, an ancestor,
-    a descendant, and the home directory return 1 before any file is
-    written. ``keep`` prints the workdir and leaves it in place. Otherwise
-    this deletes the run's rows and removes only paths this run created.
+    a descendant, the home directory, an ancestor of home, and a
+    non-empty existing directory return 1 before any file is written.
+    ``keep`` prints the workdir and leaves it in place. Otherwise this
+    deletes the run id held in memory and removes only paths this run
+    created. A ``run.json`` left on disk is not a source of that id.
     """
     output = _sink(sink)
     try:
@@ -497,8 +506,9 @@ def run_demo(
         return 1
     chosen = Schedule() if schedule is None else schedule
     started = time.perf_counter()
+    run_id: str | None = None
     try:
-        skipped = _prepare(owned.root, chosen, generate=generate)
+        skipped, run_id = _prepare(owned.root, chosen, generate=generate)
         code = score_demo(
             owned.root,
             enforce_time_window=enforce_time_window,
@@ -511,7 +521,7 @@ def run_demo(
     except Exception as exc:
         _report_error(exc, output)
         code = 1
-    if not _finish(owned, keep, output):
+    if not _finish(owned, keep, output, run_id):
         return 1
     return code
 
@@ -538,7 +548,9 @@ def _acquire_workdir(workdir: Path | None) -> _Workdir:
 def _existing_workdir(root: Path) -> _Workdir:
     if not root.is_dir():
         raise ValueError(f"workdir is not a directory: {root}")
-    return _Workdir(root, False, _snapshot(root))
+    if any(root.iterdir()):
+        raise ValueError(f"workdir is not empty: {root}")
+    return _Workdir(root, False, frozenset({Path(".")}))
 
 
 def _make_workdir(root: Path) -> None:
@@ -548,20 +560,17 @@ def _make_workdir(root: Path) -> None:
         raise ValueError(f"workdir cannot be created: {root}") from exc
 
 
-def _snapshot(root: Path) -> frozenset[Path]:
-    found = {Path(".")}
-    for path in root.rglob("*"):
-        found.add(path.relative_to(root))
-    return frozenset(found)
+def _finish(owned: _Workdir, keep: bool, sink: TextIO, run_id: str | None) -> bool:
+    """Delete this run's paths unless ``keep`` is set. False means cleanup raised.
 
-
-def _finish(owned: _Workdir, keep: bool, sink: TextIO) -> bool:
-    """Delete this run's paths unless ``keep`` is set. False means cleanup raised."""
+    ``run_id`` is the id this run created. Cleanup never reads one back
+    from ``run.json``.
+    """
     try:
         if keep:
             print(f"workdir={owned.root}", file=sink)
             return True
-        _delete_owned_rows(owned.root)
+        _delete_owned_rows(owned.root, run_id)
         _remove_created(owned)
     except Exception as exc:
         _report_error(exc, sink)
@@ -569,8 +578,7 @@ def _finish(owned: _Workdir, keep: bool, sink: TextIO) -> bool:
     return True
 
 
-def _delete_owned_rows(root: Path) -> None:
-    run_id = _optional_run_id(root)
+def _delete_owned_rows(root: Path, run_id: str | None) -> None:
     if run_id is None:
         return
     delete_run_rows(root, run_id)
@@ -597,7 +605,7 @@ def _remove_one(path: Path) -> None:
     path.rmdir()
 
 
-def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[tuple[str, ...], str]:
     if generate:
         _generate(root, schedule)
     manifest = root / MANIFEST_FILENAME
@@ -608,7 +616,7 @@ def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ..
     pairs = [(camera.camera_id, path) for camera, _fixture_id, path in clips]
     reasons = describe_cameras(root, pairs, run_id)
     _write_run(root, run_id, schedule, frames)
-    return reasons
+    return reasons, run_id
 
 
 def _identified_clips(
