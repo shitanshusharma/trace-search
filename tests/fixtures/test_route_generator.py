@@ -12,8 +12,11 @@ import hashlib
 import inspect
 import json
 import shutil
+import signal
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +68,22 @@ _ACCEPTED: tuple[tuple[int, int, int, int, tuple[int, int]], ...] = (
     )
 )
 _FIXTURES: dict[tuple[Any, ...], RouteFixture] = {}
+
+
+@contextmanager
+def _time_limit(seconds: float) -> Iterator[None]:
+    """Fail the caller if a pure-Python walk does not return."""
+
+    def handler(signum: int, frame: object) -> None:
+        raise TimeoutError(f"call exceeded {seconds} seconds")
+
+    previous = signal.signal(signal.SIGALRM, handler)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _small(out: Path, **overrides: Any) -> RouteFixture:
@@ -220,9 +239,10 @@ def _assert_dwells(fixture: RouteFixture) -> None:
             assert camera is not None
             delay = visit["t_entry"] - camera.clock_offset_seconds
             assert 0.0 <= delay <= 1.0
-            assert visit["t_exit"] <= camera.clock_offset_seconds + seconds
+            assert visit["t_exit"] == camera.clock_offset_seconds + seconds
             frames = _visit_boxes(figure, visit, fps, camera.clock_offset_seconds)
             assert len(frames) >= fps * 2
+            assert frames[-1]["frame_index"] == fps * seconds - 1
             for box in frames:
                 _assert_box_shape(box, truth)
             _assert_motion(frames)
@@ -501,13 +521,13 @@ def test_colours_and_direction_follow_the_generator(
         _once(tmp_path_factory, seed=2, n_cameras=4, n_figures=2, size=(320, 240)).truth_path
     )
     forward = _load(
-        _once(tmp_path_factory, seed=1, n_cameras=4, n_figures=2, size=(320, 240)).truth_path
+        _once(tmp_path_factory, seed=3, n_cameras=4, n_figures=2, size=(320, 240)).truth_path
     )
     assert left["figures"][0]["upper_bgr"] != right["figures"][0]["upper_bgr"]
     assert left["figures"][0]["lower_bgr"] != right["figures"][0]["lower_bgr"]
     assert route_generator._variation(0, 4, 10, 300).reverse
     assert route_generator._variation(2, 4, 10, 300).reverse
-    assert not route_generator._variation(1, 4, 10, 300).reverse
+    assert not route_generator._variation(3, 4, 10, 300).reverse
     assert _cam1_x(left)[0] > _cam1_x(left)[-1]
     assert _cam1_x(right)[0] > _cam1_x(right)[-1]
     assert _cam1_x(forward)[0] < _cam1_x(forward)[-1]
@@ -675,7 +695,16 @@ def _generator_accepts(
 
 
 def test_accepted_grid_matches_the_predicates() -> None:
-    sizes = ((320, 240), (640, 360), (1280, 720), (640, 480), (1280, 1080), (239, 240))
+    sizes = (
+        (320, 240),
+        (640, 360),
+        (1280, 720),
+        (640, 480),
+        (640, 720),
+        (1279, 720),
+        (1280, 1080),
+        (239, 240),
+    )
     found: set[tuple[int, int, int, int, tuple[int, int]]] = set()
     for n_cameras in range(3, 8):
         for n_figures in range(1, 10):
@@ -980,6 +1009,14 @@ def test_size_guards(
             {"n_cameras": 4, "n_figures": 8, "fps": 30, "size": (320, 240)},
             _size_message(r"\(320, 240\)", figures=8),
         ),
+        (
+            {"n_cameras": 6, "n_figures": 8, "size": (640, 720)},
+            _size_message(r"\(640, 720\)", cameras=6, figures=8),
+        ),
+        (
+            {"n_cameras": 6, "n_figures": 8, "size": (1279, 720)},
+            _size_message(r"\(1279, 720\)", cameras=6, figures=8),
+        ),
     ],
 )
 def test_720p_requires_six_cameras_and_thirty_seconds(
@@ -1173,7 +1210,7 @@ def test_an_existing_directory_is_accepted(tmp_path: Path) -> None:
 
 
 def test_variation_replays_one_generator_stream() -> None:
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(np.random.SeedSequence([0, 0]))
     reverse = int(rng.integers(0, 2)) == 1
     shift = int(rng.integers(0, 8))
     jitter = tuple(int(value) for value in rng.integers(0, 11, size=6))
@@ -1182,12 +1219,12 @@ def test_variation_replays_one_generator_stream() -> None:
     assert got.shift == shift
     assert got.jitter == jitter
     assert jitter == (5, 2, 3, 0, 0, 0)
-    wide = route_generator._variation(1, 6, 10, 300)
-    assert wide.jitter == (8, 10, 0, 1, 9, 10)
+    wide = route_generator._variation(16, 6, 10, 300)
+    assert wide.jitter == (2, 3, 1, 10, 7, 5)
     assert 10 in wide.jitter
     short = route_generator._variation(0, 4, 10, 300)
     assert short.jitter == (5, 2, 3, 0)
-    fast = np.random.default_rng(0)
+    fast = np.random.default_rng(np.random.SeedSequence([0, 0]))
     assert int(fast.integers(0, 2)) == 1
     assert int(fast.integers(0, 8)) == shift
     drawn = tuple(int(value) for value in fast.integers(0, 31, size=4))
@@ -1208,18 +1245,18 @@ def test_seeds_congruent_mod_8_write_different_clips(
                 size=(320, 240),
             ).clip_paths[0]
         )
-        for seed in (0, 8, 16, 2_147_483_640)
+        for seed in (0, 8, 16, 2_147_483_640, 2840, 15536)
     ]
-    assert len(set(digests)) == 4
+    assert len(set(digests)) == 6
 
 
 def test_direction_is_not_the_seed_parity(tmp_path_factory: pytest.TempPathFactory) -> None:
     reversed_walk = _once(tmp_path_factory, n_cameras=4, n_figures=2, size=(320, 240))
-    forward = _once(tmp_path_factory, seed=1, n_cameras=4, n_figures=2, size=(320, 240))
-    same_parity = _once(tmp_path_factory, seed=3, n_cameras=4, n_figures=2, size=(320, 240))
+    forward = _once(tmp_path_factory, seed=3, n_cameras=4, n_figures=2, size=(320, 240))
+    same_parity = _once(tmp_path_factory, seed=1, n_cameras=4, n_figures=2, size=(320, 240))
     assert _cam1_x(_load(reversed_walk.truth_path))[0] == 221
-    assert _cam1_x(_load(forward.truth_path))[0] == 13
-    assert _cam1_x(_load(same_parity.truth_path))[0] == 224
+    assert _cam1_x(_load(forward.truth_path))[0] == 10
+    assert _cam1_x(_load(same_parity.truth_path))[0] == 222
     assert len(set(_cam1_x(_load(reversed_walk.truth_path)))) > 10
 
 
@@ -1423,7 +1460,7 @@ def test_scripted_figures_match_every_truth_box(
     assert matched == total == 3580
     assert false_positives == 0
     matched, total, false_positives = _match_truth_boxes(other)
-    assert matched == total == 1183
+    assert matched == total == 1177
     assert false_positives == 0
 
 
@@ -1526,7 +1563,7 @@ def test_short_box_size_boundary_is_eight_bytes(tmp_path: Path) -> None:
     assert path.read_bytes() == seven
     eight = (1).to_bytes(4, "big") + b"free"
     path.write_bytes(eight)
-    with pytest.raises(ValueError, match="shorter than its 16-byte header"):
+    with _time_limit(5), pytest.raises(ValueError, match="shorter than its 16-byte header"):
         route_generator._zero_mp4_times(path)
     assert path.read_bytes() == eight
 

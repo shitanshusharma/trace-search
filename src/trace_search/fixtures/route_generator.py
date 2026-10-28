@@ -10,8 +10,10 @@ Each figure crosses its corridor once. A visit runs to the end of the
 clip, so it lasts nearly the whole recording, and the figure moves across
 the frame the entire time. One seeded ``numpy`` Generator picks the colour
 shift, the direction of that move, and a per-camera entrance of at most one
-second. Clocks step by the clip length plus one second, so those single
-passes still land inside the transit window. Sampled frames therefore hold
+second. The seed is mixed as ``SeedSequence([seed, seed])``, because
+``default_rng(seed)`` repeats the picture for 2840 and 15536. Clocks step
+by the clip length plus one second, so those single passes still land
+inside the transit window. Sampled frames therefore hold
 the rectangle at a different x. Nothing else is drawn.
 
 Only configs that keep that walk inside the transit window are accepted,
@@ -432,6 +434,7 @@ def _make_visit(
     offsets: tuple[float, ...],
     fps: int,
 ) -> _Visit:
+    """``t_exit`` is the exclusive end, one frame past the last drawn box."""
     return _Visit(
         camera,
         start,
@@ -443,7 +446,7 @@ def _make_visit(
 
 def _variation(seed: int, n_cameras: int, fps: int, n_frames: int) -> _Variation:
     """Draw every seed-dependent choice from one Generator, in this order."""
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(np.random.SeedSequence([seed, seed]))
     reverse = int(rng.integers(0, 2)) == 1
     shift = int(rng.integers(0, len(_COLOUR_PAIRS)))
     limit = _jitter_limit(fps, n_frames)
