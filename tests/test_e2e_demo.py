@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
+import socket
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,6 +75,29 @@ _STATUS_AT_IMPORT = subprocess.run(
     text=True,
     cwd=_REPO,
 ).stdout
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _refuse_outbound_connect():
+    """These tests refuse socket.socket.connect. Local SQLite does not connect."""
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError("outbound network is refused")
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(socket.socket, "connect", refuse)
+        patched.setattr(socket, "create_connection", refuse)
+        yield
+
+
+def test_socket_connect_is_refused() -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.2)
+    try:
+        with pytest.raises(OSError, match="outbound network is refused"):
+            sock.connect(("192.0.2.1", 1))
+    finally:
+        sock.close()
 
 
 @dataclass(frozen=True)
@@ -300,7 +327,8 @@ def demo_run(tmp_path_factory: pytest.TempPathFactory) -> _DemoRun:
 def test_main_passes_and_default_run_is_removed(demo_run: _DemoRun) -> None:
     assert demo_run.code == 0
     assert demo_run.elapsed < 180.0
-    assert not demo_run.live.exists()
+    assert demo_run.live.is_dir()
+    assert list(demo_run.live.iterdir()) == []
     assert demo_run.remaining_tracks == 0
     lines = demo_run.text.splitlines()
     assert lines[0] == LABEL
@@ -324,9 +352,13 @@ def test_main_passes_and_default_run_is_removed(demo_run: _DemoRun) -> None:
     assert "(>= 0.80)" in recall_line
     assert "(>= 0.90)" in precision_line
     assert "(<= 0.05)" in merge_line
-    assert _line(demo_run.text, "run time ").startswith("run time ")
+    printed = _line(demo_run.text, "run time ").removeprefix("run time ").removesuffix("s")
+    printed_time = float(printed)
+    assert 0.0 < printed_time <= demo_run.elapsed + 0.25
+    assert all(not line.startswith("skipped ") for line in lines)
     assert _line(demo_run.text, "run_id=") == f"run_id={demo_run.run_id}"
-    assert _porcelain() == _STATUS_AT_IMPORT
+    assert _STATUS_AT_IMPORT == ""
+    assert _porcelain() == ""
 
 
 def test_demo_decodes_real_clips_and_holds_clock_extremes(demo_run: _DemoRun) -> None:
@@ -654,7 +686,7 @@ def test_cleanup_failure_exits_1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(e2e, "score_demo", _score)
     monkeypatch.setattr(e2e, "remove_workdir", _remove)
     buf = io.StringIO()
-    code = run_demo(tmp_path, sink=buf)
+    code = run_demo(tmp_path / "owned", sink=buf)
     assert code == 1
     assert "OSError" in buf.getvalue()
     assert "Traceback" not in buf.getvalue()
@@ -821,6 +853,9 @@ def test_box_iou_and_ownership() -> None:
     assert box_iou(full, (1.0, 20.0, 3.0, 22.0)) == 0.0
     assert box_iou(full, (20.0, 1.0, 22.0, 3.0)) == 0.0
     assert box_iou((0.0, 0.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)) == 0.0
+    sliver = box_iou((0.0, 0.0, 1.0, 1.0), (0.999, 0.0, 1.999, 1.0))
+    assert sliver == pytest.approx(0.001 / 1.999)
+    assert sliver > 0.0
     edge = _observation("CAM-1", 1, 0, (0.0, 0.0, 2.0, 2.0))
     owned = track_ownership([edge], [TruthBox("F1", "CAM-1", 0, (0.0, 0.0, 2.0, 1.0))])
     assert owned[("CAM-1", 1)] == "F1"
@@ -867,7 +902,9 @@ def test_best_figure_and_majority_edges() -> None:
     assert e2e._best_figure(box, [("far", (100.0, 100.0, 110.0, 110.0))]) is None
     assert e2e._best_figure((0.0, 0.0, 2.0, 2.0), [("edge", (0.0, 0.0, 2.0, 1.0))]) == "edge"
     assert e2e._best_figure(box, [("first", box), ("second", box)]) == "first"
+    assert e2e._best_figure(box, [("second", box), ("first", box)]) == "first"
     assert e2e._best_figure(box, [("partial", (0.0, 0.0, 10.0, 6.0)), ("full", box)]) == "full"
+    assert e2e._best_figure(box, [("full", box), ("partial", (0.0, 0.0, 10.0, 6.0))]) == "full"
     assert e2e._majority({}, 3) is None
     assert e2e._majority({"A": 1}, 0) is None
     assert e2e._majority({"A": 1, "B": 1}, 2) is None
@@ -887,8 +924,21 @@ def test_choose_seed_breaks_ties_and_ignores_other_cameras() -> None:
         _observation("CAM-1", 4, 0, full),
     ]
     assert choose_seed(higher, "CAM-1", truth) == ("CAM-1", 4)
+    worse_later = [
+        _observation("CAM-1", 4, 0, full),
+        _observation("CAM-1", 1, 0, (0.0, 0.0, 10.0, 6.0)),
+    ]
+    assert choose_seed(worse_later, "CAM-1", truth) == ("CAM-1", 4)
     assert choose_seed([_observation("CAM-2", 1, 0, full)], "CAM-1", truth) is None
     assert choose_seed([], "CAM-1", truth) is None
+    disjoint = _observation("CAM-1", 7, 0, (100.0, 100.0, 110.0, 110.0))
+    assert choose_seed([disjoint], "CAM-1", truth) is None
+    below = _observation("CAM-1", 8, 0, (0.0, 0.0, 2.0, 2.0))
+    low_truth = [TruthBox("F1", "CAM-1", 0, (0.0, 0.0, 2.0, 0.9))]
+    assert choose_seed([below], "CAM-1", low_truth) is None
+    edge = _observation("CAM-1", 4, 0, (0.0, 0.0, 2.0, 2.0))
+    edge_truth = [TruthBox("F1", "CAM-1", 0, (0.0, 0.0, 2.0, 1.0))]
+    assert choose_seed([edge], "CAM-1", edge_truth) == ("CAM-1", 4)
     assert e2e._better_seed(0.1, ("CAM-1", 3), -1.0, None) is True
     assert e2e._better_seed(0.9, ("CAM-1", 3), 0.2, ("CAM-1", 1)) is True
     assert e2e._better_seed(0.1, ("CAM-1", 3), 0.2, ("CAM-1", 1)) is False
@@ -907,10 +957,12 @@ def test_peak_iou_stays_on_one_camera_and_frame() -> None:
 
 
 def test_edited_window_keeps_each_branch() -> None:
+    assert e2e.SHRUNK_EDGE_MAX == 0.05
+    assert e2e.OPEN_EDGE_MAX == 1_000_000.0
     assert e2e._edited_window(1, 0.5, 8.0, True, True) == (0.5, 8.0)
-    assert e2e._edited_window(0, 0.5, 8.0, False, False) == (0.0, e2e.OPEN_EDGE_MAX)
-    assert e2e._edited_window(0, 0.5, 8.0, True, True) == (0.0, e2e.SHRUNK_EDGE_MAX)
-    assert e2e._edited_window(0, 0.5, 8.0, False, True) == (0.0, e2e.SHRUNK_EDGE_MAX)
+    assert e2e._edited_window(0, 0.5, 8.0, False, False) == (0.0, 1_000_000.0)
+    assert e2e._edited_window(0, 0.5, 8.0, True, True) == (0.0, 0.05)
+    assert e2e._edited_window(0, 0.5, 8.0, False, True) == (0.0, 0.05)
 
 
 def test_skip_reasons_name_only_failed_cameras(
@@ -986,6 +1038,8 @@ def test_delete_run_rows_keeps_other_runs(tmp_path: Path) -> None:
     root.mkdir()
     delete_run_rows(root, "missing")
     assert not (root / TRACK_DB_FILENAME).exists()
+    assert not (root / ATTRIBUTE_DB_FILENAME).exists()
+    assert not (root / EMBEDDING_DB_FILENAME).exists()
     store = TrackStore(root / TRACK_DB_FILENAME)
     attrs = TrackAttributeStore(root / ATTRIBUTE_DB_FILENAME)
     vectors = SqliteVectorStore(root / EMBEDDING_DB_FILENAME, EMBEDDER_DIM)
@@ -1014,6 +1068,8 @@ def test_delete_run_rows_keeps_other_runs(tmp_path: Path) -> None:
     )
     delete_run_rows(only_tracks, "drop-me")
     assert TrackStore(only_tracks / TRACK_DB_FILENAME).count(run_id="drop-me") == 0
+    assert not (only_tracks / ATTRIBUTE_DB_FILENAME).exists()
+    assert not (only_tracks / EMBEDDING_DB_FILENAME).exists()
 
 
 def test_remove_and_reject_workdirs(tmp_path: Path) -> None:
@@ -1107,6 +1163,582 @@ def test_window_edits_cover_each_branch(demo_run: _DemoRun, tmp_path: Path) -> N
     assert closed == (0.5, 8.0)
     assert opened == (0.0, e2e.OPEN_EDGE_MAX)
     assert shrunk == (0.0, e2e.SHRUNK_EDGE_MAX)
+
+
+def test_exact_iou_tie_uses_the_lower_figure_id() -> None:
+    box = (0.0, 0.0, 10.0, 10.0)
+    assert e2e._best_figure(box, [("F3", box), ("F1", box)]) == "F1"
+    assert e2e._best_figure(box, [("F1", box), ("F3", box)]) == "F1"
+    rows = [
+        _observation("CAM-1", 1, 0, box),
+        _observation("CAM-1", 1, 1, box),
+    ]
+    forward = [
+        TruthBox("F1", "CAM-1", 0, box),
+        TruthBox("F1", "CAM-1", 1, box),
+        TruthBox("F3", "CAM-1", 1, box),
+    ]
+    reverse = [
+        TruthBox("F3", "CAM-1", 1, box),
+        TruthBox("F1", "CAM-1", 1, box),
+        TruthBox("F1", "CAM-1", 0, box),
+    ]
+    assert track_ownership(rows, forward)[("CAM-1", 1)] == "F1"
+    assert track_ownership(rows, reverse)[("CAM-1", 1)] == "F1"
+
+
+def test_person_after_a_bag_is_still_owned() -> None:
+    full = (0.0, 0.0, 10.0, 10.0)
+    rows = [
+        _observation("CAM-1", 8, 0, full, det_class=DetClass.BACKPACK),
+        _observation("CAM-1", 4, 0, full),
+        _observation("CAM-1", 4, 1, full),
+    ]
+    boxes = [TruthBox("F1", "CAM-1", 0, full), TruthBox("F1", "CAM-1", 1, full)]
+    owned = track_ownership(rows, boxes)
+    assert owned[("CAM-1", 4)] == "F1"
+    assert ("CAM-1", 8) not in owned
+
+
+def test_a_miss_does_not_drop_later_votes() -> None:
+    full = (0.0, 0.0, 10.0, 10.0)
+    rows = [
+        _observation("CAM-1", 5, 0, (100.0, 100.0, 110.0, 110.0)),
+        _observation("CAM-1", 5, 1, full),
+        _observation("CAM-1", 5, 2, full),
+    ]
+    boxes = [
+        TruthBox("F1", "CAM-1", 1, full),
+        TruthBox("F1", "CAM-1", 2, full),
+    ]
+    assert track_ownership(rows, boxes)[("CAM-1", 5)] == "F1"
+
+
+def test_peak_iou_keeps_searching_after_a_miss() -> None:
+    full = (0.0, 0.0, 10.0, 10.0)
+    row = _observation("CAM-1", 1, 0, full)
+    missed = TruthBox("F1", "CAM-2", 0, full)
+    hit = TruthBox("F1", "CAM-1", 0, full)
+    partial = TruthBox("F1", "CAM-1", 0, (0.0, 0.0, 10.0, 6.0))
+    assert e2e._peak_iou([row], [missed, hit]) == 1.0
+    assert e2e._peak_iou([row], [hit, partial]) == 1.0
+
+
+def test_a_figure_without_a_route_does_not_drop_the_next() -> None:
+    full = (0.0, 0.0, 10.0, 10.0)
+    missed = FigureRecord(
+        "F0",
+        (TruthSegment("F0", "CAM-9", 0.0, 1.0),),
+        (TruthBox("F0", "CAM-9", 0, full),),
+    )
+    kept = FigureRecord(
+        "F1",
+        (TruthSegment("F1", "CAM-1", 0.0, 1.0),),
+        (TruthBox("F1", "CAM-1", 0, full),),
+    )
+    observed = [_observation("CAM-1", 3, 0, full)]
+    reports, routes, predicted, truth = e2e._figure_routes(
+        (missed, kept),
+        observed,
+        [_tracklet("CAM-1", 3)],
+        [],
+        {("CAM-1", 3): "F1"},
+    )
+    assert [item.figure_id for item in reports] == ["F0", "F1"]
+    assert len(routes) == 1
+    assert routes[0].seed_track == 3
+    assert len(predicted) == 1
+    assert len(truth) == 2
+
+
+def test_stored_track_timestamps_match_the_frame_clock(demo_run: _DemoRun) -> None:
+    fps = float(demo_run.run["fps"])
+    offsets = {
+        str(camera["camera_id"]): float(camera["clock_offset_seconds"])
+        for camera in demo_run.cameras["cameras"]
+    }
+    rows = e2e._read_observations(demo_run.root, demo_run.run_id)
+    assert rows
+    for row in rows:
+        implied = row.timestamp_seconds - (row.frame_number / fps) - offsets[row.camera_id]
+        assert implied == pytest.approx(0.0, abs=1e-3)
+    truth_by_id = {figure["figure_id"]: figure for figure in demo_run.truth["figures"]}
+    for figure in demo_run.routes["figures"]:
+        visits = truth_by_id[figure["figure_id"]]["visits"]
+        for segment in figure["segments"]:
+            visit = next(item for item in visits if item["camera_id"] == segment["camera_id"])
+            entry_gap = abs(float(segment["t_entry"]) - float(visit["t_entry"]))
+            exit_gap = abs(float(segment["t_exit"]) - float(visit["t_exit"]))
+            assert entry_gap <= 0.11
+            assert exit_gap <= 0.11
+
+
+def test_describe_source_clock_starts_at_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stamps: list[float] = []
+
+    class _Source:
+        def __init__(
+            self,
+            camera_id: str,
+            path: Path,
+            start_timestamp: float | None = None,
+        ) -> None:
+            del path
+            self.camera_id = camera_id
+            self.start = start_timestamp
+
+        def is_open(self) -> bool:
+            return False
+
+        def open(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def frames(self) -> object:
+            start = 0.0 if self.start is None else float(self.start)
+            for number in range(2):
+                stamp = start + number / 10.0
+                stamps.append(stamp)
+                yield stamp
+
+    def _capture(source: _Source, *_args: object, **_kwargs: object) -> None:
+        for _frame in source.frames():
+            continue
+
+    monkeypatch.setattr(e2e, "FileVideoSource", _Source)
+    monkeypatch.setattr(e2e, "load_tracklets", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(e2e, "describe_tracks", _capture)
+    e2e._describe_one(
+        "CAM-1",
+        tmp_path / "CAM-1.mp4",
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        "run-clock",
+    )
+    assert stamps == [0.0, 0.1]
+
+
+def test_bags_reach_describe_tracks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = TrackStore(tmp_path / TRACK_DB_FILENAME)
+    run_id = "bags"
+    now = time.time()
+    full = (0.0, 0.0, 10.0, 10.0)
+    store.write(
+        run_id,
+        "fixture",
+        DERIVED_FROM,
+        [
+            _observation("CAM-1", 1, 0, full, timestamp_seconds=now),
+            _observation(
+                "CAM-1",
+                2,
+                0,
+                (0.0, 0.0, 4.0, 4.0),
+                det_class=DetClass.BACKPACK,
+                timestamp_seconds=now,
+            ),
+            _observation(
+                "CAM-1",
+                3,
+                0,
+                (1.0, 1.0, 5.0, 5.0),
+                det_class=DetClass.HANDBAG,
+                timestamp_seconds=now,
+            ),
+        ],
+    )
+    seen: dict[str, tuple[int, ...]] = {}
+
+    class _Source:
+        def __init__(
+            self,
+            camera_id: str,
+            path: Path,
+            start_timestamp: float | None = None,
+        ) -> None:
+            del path, start_timestamp
+            self.camera_id = camera_id
+
+        def is_open(self) -> bool:
+            return False
+
+        def open(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def frames(self) -> object:
+            if False:
+                yield None
+
+    def _capture(
+        _source: object,
+        people: object,
+        bags: object,
+        *_args: object,
+        **_kwargs: object,
+    ) -> None:
+        assert isinstance(people, tuple) or isinstance(people, list)
+        assert isinstance(bags, tuple) or isinstance(bags, list)
+        seen["people"] = tuple(int(item.track_id) for item in people)
+        seen["bags"] = tuple(int(item.track_id) for item in bags)
+
+    monkeypatch.setattr(e2e, "FileVideoSource", _Source)
+    monkeypatch.setattr(e2e, "describe_tracks", _capture)
+    e2e._describe_one(
+        "CAM-1",
+        tmp_path / "CAM-1.mp4",
+        store,
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        run_id,
+    )
+    assert seen["people"] == (1,)
+    assert seen["bags"] == (2, 3)
+
+
+@pytest.mark.parametrize("tag", ["TRAIN", "DEV", "HOLD"])
+def test_other_use_tags_fail_closed(demo_run: _DemoRun, tmp_path: Path, tag: str) -> None:
+    root = tmp_path / tag
+    _media_copy(demo_run.root, root)
+    manifest = _read_json(root / "manifest.json")
+    for entry in manifest["entries"]:
+        entry["use"] = tag
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(FixtureSeparationError, match="FORBIDDEN"):
+        require_code_test_clip(root / "CAM-1.mp4", root / "manifest.json")
+
+
+def test_printed_run_time_is_the_elapsed_span(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = iter((10.0, 12.5))
+    monkeypatch.setattr(e2e.time, "perf_counter", lambda: next(ticks))
+
+    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+        del root, schedule, generate
+        return ()
+
+    def _score(root: Path, **kwargs: object) -> int:
+        del root
+        elapsed = kwargs["elapsed_seconds"]
+        assert isinstance(elapsed, float)
+        sink = kwargs["sink"]
+        assert isinstance(sink, io.TextIOBase)
+        report = DemoReport("run-1", 1.0, 1.0, 0.0, (), (), elapsed)
+        print(render_text(report), file=sink, end="")
+        return 0
+
+    monkeypatch.setattr(e2e, "_prepare", _prepare)
+    monkeypatch.setattr(e2e, "score_demo", _score)
+    buf = io.StringIO()
+    code = run_demo(tmp_path / "timed", sink=buf)
+    assert code == 0
+    assert "run time 2.50s" in buf.getvalue()
+
+
+def test_default_temp_dir_inside_the_repo_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    inside = repo / "trace-search-e2e-x"
+    inside.mkdir(parents=True)
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+
+    def _mkdtemp(prefix: str = "") -> str:
+        del prefix
+        return str(inside)
+
+    monkeypatch.setattr(e2e.tempfile, "mkdtemp", _mkdtemp)
+    with pytest.raises(ValueError, match="inside the repository"):
+        new_workdir()
+    assert inside.is_dir()
+
+
+def _fast_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+        del schedule, generate
+        (root / "created-by-run.txt").write_text("new", encoding="utf-8")
+        return ()
+
+    def _score(root: Path, **kwargs: object) -> int:
+        del root
+        sink = kwargs["sink"]
+        assert isinstance(sink, io.TextIOBase)
+        print(LABEL, file=sink)
+        return 0
+
+    monkeypatch.setattr(e2e, "_prepare", _prepare)
+    monkeypatch.setattr(e2e, "score_demo", _score)
+
+
+def test_repo_root_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "sentinel.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    _fast_success(monkeypatch)
+    buf = io.StringIO()
+    code = run_demo(repo, sink=buf)
+    assert code == 1
+    assert "inside the repository" in buf.getvalue()
+    assert (repo / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert not (repo / "created-by-run.txt").exists()
+
+
+def test_repo_ancestor_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent = tmp_path / "parent"
+    repo = parent / "repo"
+    repo.mkdir(parents=True)
+    (parent / "precious.txt").write_text("keep", encoding="utf-8")
+    (repo / "sentinel.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    _fast_success(monkeypatch)
+    buf = io.StringIO()
+    code = run_demo(parent, sink=buf)
+    assert code == 1
+    assert "ancestor of the repository" in buf.getvalue()
+    assert (parent / "precious.txt").read_text(encoding="utf-8") == "keep"
+    assert (repo / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert not (parent / "created-by-run.txt").exists()
+
+
+def test_home_directory_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    repo = tmp_path / "repo"
+    home.mkdir()
+    repo.mkdir()
+    (home / "precious.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    _fast_success(monkeypatch)
+    buf = io.StringIO()
+    code = run_demo(home, sink=buf)
+    assert code == 1
+    assert "home directory" in buf.getvalue()
+    assert (home / "precious.txt").read_text(encoding="utf-8") == "keep"
+    with pytest.raises(ValueError, match="home directory"):
+        assert_outside_repo(Path("~"))
+    with pytest.raises(ValueError, match="home directory"):
+        remove_workdir(home)
+    assert (home / "precious.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_remove_workdir_refuses_an_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "parent"
+    repo = parent / "repo"
+    repo.mkdir(parents=True)
+    (parent / "precious.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    with pytest.raises(ValueError, match="ancestor"):
+        remove_workdir(parent)
+    assert (parent / "precious.txt").read_text(encoding="utf-8") == "keep"
+    assert repo.is_dir()
+
+
+def test_nested_repo_directory_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    nested = repo / "src" / "trace_search"
+    nested.mkdir(parents=True)
+    (nested / "sentinel.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    _fast_success(monkeypatch)
+    buf = io.StringIO()
+    code = run_demo(nested, sink=buf)
+    assert code == 1
+    assert "inside the repository" in buf.getvalue()
+    assert (nested / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert not (nested / "created-by-run.txt").exists()
+
+
+def test_symlink_to_an_existing_repo_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    nested = repo / "src" / "trace_search"
+    nested.mkdir(parents=True)
+    (nested / "sentinel.txt").write_text("keep", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(repo)
+    monkeypatch.setattr(e2e, "_repo_root", lambda: repo.resolve())
+    _fast_success(monkeypatch)
+    buf = io.StringIO()
+    code = run_demo(link / "src" / "trace_search", sink=buf)
+    assert code == 1
+    assert "inside the repository" in buf.getvalue()
+    assert (nested / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert not (nested / "created-by-run.txt").exists()
+
+
+def test_tilde_child_expands_outside_the_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    seen: dict[str, Path] = {}
+
+    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+        del schedule, generate
+        seen["root"] = root
+        (root / "run.json").write_text(json.dumps({"run_id": "tilde"}), encoding="utf-8")
+        return ()
+
+    def _score(root: Path, **kwargs: object) -> int:
+        del root
+        sink = kwargs["sink"]
+        assert isinstance(sink, io.TextIOBase)
+        print(LABEL, file=sink)
+        return 0
+
+    monkeypatch.setattr(e2e, "_prepare", _prepare)
+    monkeypatch.setattr(e2e, "score_demo", _score)
+    buf = io.StringIO()
+    code = run_demo(Path("~/child"), keep=True, sink=buf)
+    assert code == 0
+    assert seen["root"] == (home / "child").resolve()
+    assert (home / "child" / "run.json").is_file()
+    assert not (_REPO / "~").exists()
+
+
+def test_bad_seed_keeps_an_existing_workdir(tmp_path: Path) -> None:
+    target = tmp_path / "data"
+    target.mkdir()
+    (target / "precious.txt").write_text("keep", encoding="utf-8")
+    buf = io.StringIO()
+    code = main(["--workdir", str(target), "--seed", "-1"], sink=buf)
+    assert code == 1
+    assert "Traceback" not in buf.getvalue()
+    assert target.is_dir()
+    assert (target / "precious.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_preexisting_workdir_keeps_its_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "data"
+    kept = target / "kept"
+    kept.mkdir(parents=True)
+    (target / "precious.txt").write_text("keep", encoding="utf-8")
+    (kept / "old.txt").write_text("old", encoding="utf-8")
+
+    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+        del schedule, generate
+        (root / "created-by-run.txt").write_text("new", encoding="utf-8")
+        nested = root / "nested"
+        nested.mkdir()
+        (nested / "new.txt").write_text("new", encoding="utf-8")
+        (root / "link").symlink_to(root / "precious.txt")
+        (root / "run.json").write_text(json.dumps({"run_id": "temp"}), encoding="utf-8")
+        return ()
+
+    def _score(root: Path, **kwargs: object) -> int:
+        del root
+        sink = kwargs["sink"]
+        assert isinstance(sink, io.TextIOBase)
+        print(LABEL, file=sink)
+        return 0
+
+    monkeypatch.setattr(e2e, "_prepare", _prepare)
+    monkeypatch.setattr(e2e, "score_demo", _score)
+    buf = io.StringIO()
+    code = run_demo(target, sink=buf)
+    assert code == 0
+    assert "workdir=" not in buf.getvalue()
+    assert target.is_dir()
+    assert (target / "precious.txt").read_text(encoding="utf-8") == "keep"
+    assert (kept / "old.txt").read_text(encoding="utf-8") == "old"
+    assert not (target / "created-by-run.txt").exists()
+    assert not (target / "nested").exists()
+    assert not (target / "link").exists()
+    assert not (target / "run.json").exists()
+
+
+def test_failed_run_removes_only_the_directory_it_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
+        del schedule, generate
+        now = time.time()
+        TrackStore(root / TRACK_DB_FILENAME).write(
+            "run-x",
+            "fixture",
+            DERIVED_FROM,
+            [_observation("CAM-1", 1, 0, (0.0, 0.0, 10.0, 10.0), timestamp_seconds=now)],
+        )
+        raise RuntimeError("after ingest")
+
+    monkeypatch.setattr(e2e, "_prepare", _prepare)
+    target = tmp_path / "owned"
+    buf = io.StringIO()
+    code = run_demo(target, sink=buf)
+    text = buf.getvalue()
+    assert code == 1
+    assert "RuntimeError" in text
+    assert "Traceback" not in text
+    assert not target.exists()
+
+
+def test_missing_parent_is_refused(tmp_path: Path) -> None:
+    buf = io.StringIO()
+    code = run_demo(tmp_path / "missing" / "child", sink=buf)
+    assert code == 1
+    assert "cannot be created" in buf.getvalue()
+    assert not (tmp_path / "missing").exists()
+
+
+def test_file_workdir_is_refused(tmp_path: Path) -> None:
+    target = tmp_path / "file"
+    target.write_text("keep", encoding="utf-8")
+    buf = io.StringIO()
+    code = run_demo(target, sink=buf)
+    assert code == 1
+    assert "not a directory" in buf.getvalue()
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_cli_process_exit_codes(tmp_path: Path) -> None:
+    script = _REPO / "scripts" / "run_e2e_demo.py"
+    env = dict(os.environ)
+    root = str(_REPO / "src")
+    prior = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = root if prior == "" else root + os.pathsep + prior
+    failed = subprocess.run(
+        [sys.executable, str(script), "--workdir", str(tmp_path / "bad"), "--seed", "-1"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=_REPO,
+        env=env,
+    )
+    assert failed.returncode == 1
+    assert "error:" in failed.stdout
+    assert "Traceback" not in failed.stdout
+    assert "Traceback" not in failed.stderr
+    ok_dir = tmp_path / "ok"
+    passed = subprocess.run(
+        [sys.executable, str(script), "--workdir", str(ok_dir), "--seed", "0"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=_REPO,
+        env=env,
+    )
+    assert passed.returncode == 0
+    assert passed.stdout.splitlines()[0] == LABEL
+    assert not ok_dir.exists()
 
 
 def test_sources_do_not_call_banned_loaders() -> None:

@@ -12,8 +12,11 @@ message is counted and printed. That camera's existing rows are not
 deleted. The traceback is not printed.
 
 SQLite files live in the workdir at the retention registry names. The
-workdir must resolve outside this repository. Unless the caller keeps
-it, the run deletes its own ``run_id`` and removes the directory.
+workdir must resolve outside this repository. It must not be the
+repository root, an ancestor of the repository, or the home directory.
+Unless the caller keeps it, the run deletes its own ``run_id`` and
+removes only paths that run created. A directory that already existed
+is left in place, including the files that were already there.
 """
 
 from __future__ import annotations
@@ -193,12 +196,29 @@ class DemoReport:
 
 
 def assert_outside_repo(path: Path) -> Path:
-    """Resolve ``path`` and refuse the repository tree."""
+    """Resolve ``path`` and refuse the repo, its ancestors, and home.
+
+    ``~`` is expanded before resolving symlinks. The repository root, any
+    descendant, any ancestor, and the home directory itself are refused.
+    A directory under home that is none of those is allowed.
+    """
     resolved = Path(path).expanduser().resolve()
     root = _repo_root()
+    _refuse_repo_tree(resolved, root)
+    _refuse_home(resolved)
+    return resolved
+
+
+def _refuse_repo_tree(resolved: Path, root: Path) -> None:
     if resolved == root or root in resolved.parents:
         raise ValueError(f"workdir is inside the repository: {resolved}")
-    return resolved
+    if resolved in root.parents:
+        raise ValueError(f"workdir is an ancestor of the repository: {resolved}")
+
+
+def _refuse_home(resolved: Path) -> None:
+    if resolved == Path.home().resolve():
+        raise ValueError(f"workdir is the home directory: {resolved}")
 
 
 def new_workdir() -> Path:
@@ -255,8 +275,10 @@ def track_ownership(
     """Own each person track by the figure with a strict majority of boxes.
 
     A box votes only when its best truth IoU on that camera and frame is
-    at least ``IOU_MIN``. The winner needs more than half of the track's
-    boxes. A tie, or a track with no vote, is left out of the map.
+    at least ``IOU_MIN``. An exact IoU tie votes for the lower figure id,
+    so the owner does not depend on truth-file order. The winner needs
+    more than half of the track's boxes. A tie of votes, or a track with
+    no vote, is left out of the map.
     """
     by_frame = _truth_by_frame(truth_boxes)
     owned: dict[TrackKey, str] = {}
@@ -274,7 +296,8 @@ def choose_seed(
 ) -> TrackKey | None:
     """Pick the person track with the highest IoU to ``truth_boxes``.
 
-    Only ``camera_id`` is considered. Equal IoU keeps the smaller track id.
+    Only ``camera_id`` is considered. The peak must be at least ``IOU_MIN``.
+    A disjoint track is not a seed. Equal IoU keeps the smaller track id.
     """
     best_key: TrackKey | None = None
     best_score = -1.0
@@ -282,6 +305,8 @@ def choose_seed(
         if key[0] != camera_id:
             continue
         score = _peak_iou(rows, truth_boxes)
+        if score < IOU_MIN:
+            continue
         if _better_seed(score, key, best_score, best_key):
             best_key = key
             best_score = score
@@ -356,7 +381,12 @@ def delete_run_rows(root: Path, run_id: str) -> None:
 
 
 def remove_workdir(path: Path) -> None:
-    """Remove a workdir that resolves outside the repository."""
+    """Remove a directory that is safe to delete.
+
+    The repository, its ancestors, its descendants, and the home directory
+    are refused. ``run_demo`` calls this only for a directory that run
+    created. A pre-existing workdir is trimmed by ``_remove_created``.
+    """
     resolved = assert_outside_repo(path)
     if not resolved.exists():
         return
@@ -454,23 +484,23 @@ def run_demo(
 ) -> int:
     """Generate (unless told not to), run the pipeline, score, and clean up.
 
-    ``workdir`` None creates a temp directory. A path inside the repository
-    returns 1 before any file is written. ``keep`` prints the workdir and
-    leaves it in place. Otherwise this deletes the run's rows and removes
-    the directory.
+    ``workdir`` None creates a temp directory. The repository, an ancestor,
+    a descendant, and the home directory return 1 before any file is
+    written. ``keep`` prints the workdir and leaves it in place. Otherwise
+    this deletes the run's rows and removes only paths this run created.
     """
     output = _sink(sink)
     try:
-        root = new_workdir() if workdir is None else assert_outside_repo(workdir)
+        owned = _acquire_workdir(workdir)
     except ValueError as exc:
         _report_error(exc, output)
         return 1
     chosen = Schedule() if schedule is None else schedule
     started = time.perf_counter()
     try:
-        skipped = _prepare(root, chosen, generate=generate)
+        skipped = _prepare(owned.root, chosen, generate=generate)
         code = score_demo(
-            root,
+            owned.root,
             enforce_time_window=enforce_time_window,
             shrink_first_window=shrink_first_window,
             emit_json=emit_json,
@@ -481,25 +511,90 @@ def run_demo(
     except Exception as exc:
         _report_error(exc, output)
         code = 1
-    if not _finish(root, keep, output):
+    if not _finish(owned, keep, output):
         return 1
     return code
 
 
-def _finish(root: Path, keep: bool, sink: TextIO) -> bool:
-    """Delete the run unless ``keep`` is set. False means cleanup raised."""
+@dataclass(frozen=True)
+class _Workdir:
+    """A workdir plus the paths that were already there."""
+
+    root: Path
+    created: bool
+    prior: frozenset[Path]
+
+
+def _acquire_workdir(workdir: Path | None) -> _Workdir:
+    if workdir is None:
+        return _Workdir(new_workdir(), True, frozenset())
+    root = assert_outside_repo(workdir)
+    if root.exists():
+        return _existing_workdir(root)
+    _make_workdir(root)
+    return _Workdir(root, True, frozenset())
+
+
+def _existing_workdir(root: Path) -> _Workdir:
+    if not root.is_dir():
+        raise ValueError(f"workdir is not a directory: {root}")
+    return _Workdir(root, False, _snapshot(root))
+
+
+def _make_workdir(root: Path) -> None:
+    try:
+        root.mkdir()
+    except OSError as exc:
+        raise ValueError(f"workdir cannot be created: {root}") from exc
+
+
+def _snapshot(root: Path) -> frozenset[Path]:
+    found = {Path(".")}
+    for path in root.rglob("*"):
+        found.add(path.relative_to(root))
+    return frozenset(found)
+
+
+def _finish(owned: _Workdir, keep: bool, sink: TextIO) -> bool:
+    """Delete this run's paths unless ``keep`` is set. False means cleanup raised."""
     try:
         if keep:
-            print(f"workdir={root}", file=sink)
+            print(f"workdir={owned.root}", file=sink)
             return True
-        run_id = _optional_run_id(root)
-        if run_id is not None:
-            delete_run_rows(root, run_id)
-        remove_workdir(root)
+        _delete_owned_rows(owned.root)
+        _remove_created(owned)
     except Exception as exc:
         _report_error(exc, sink)
         return False
     return True
+
+
+def _delete_owned_rows(root: Path) -> None:
+    run_id = _optional_run_id(root)
+    if run_id is None:
+        return
+    delete_run_rows(root, run_id)
+
+
+def _remove_created(owned: _Workdir) -> None:
+    if owned.created:
+        remove_workdir(owned.root)
+        return
+    _remove_new_paths(owned.root, owned.prior)
+
+
+def _remove_new_paths(root: Path, prior: frozenset[Path]) -> None:
+    created = [path for path in root.rglob("*") if path.relative_to(root) not in prior]
+    created.sort(key=lambda path: len(path.parts), reverse=True)
+    for path in created:
+        _remove_one(path)
+
+
+def _remove_one(path: Path) -> None:
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+        return
+    path.rmdir()
 
 
 def _prepare(root: Path, schedule: Schedule, *, generate: bool) -> tuple[str, ...]:
@@ -1002,16 +1097,25 @@ def _votes(
 
 
 def _best_figure(box: Box, candidates: Sequence[tuple[str, Box]]) -> str | None:
+    """Best IoU at or above ``IOU_MIN``. An exact tie keeps the lower figure id."""
     chosen: str | None = None
     best = IOU_MIN
     for figure_id, truth_box in candidates:
         score = box_iou(box, truth_box)
         if score < IOU_MIN:
             continue
-        if chosen is None or score > best:
+        if _prefer_figure(score, figure_id, best, chosen):
             chosen = figure_id
             best = score
     return chosen
+
+
+def _prefer_figure(score: float, figure_id: str, best: float, chosen: str | None) -> bool:
+    if chosen is None or score > best:
+        return True
+    if score < best:
+        return False
+    return figure_id < chosen
 
 
 def _majority(votes: Mapping[str, int], total: int) -> str | None:
