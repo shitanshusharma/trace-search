@@ -2,8 +2,9 @@
 
 Generation uses ``tmp_path`` only. The pixel check reads
 ``RouteFixture.sample_frame``, the BGR buffer before mp4v, because the
-codec is lossy. A temp copy of the licence manifest, not the repo file,
-carries the planted ``SMOKE_ONLY`` generator row.
+codec is lossy. Every accepted config's pHashes are those rendered
+sample frames, not a placeholder list. A temp copy of the licence
+manifest, not the repo file, carries each planted ``SMOKE_ONLY`` row.
 """
 
 from __future__ import annotations
@@ -24,11 +25,13 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 import pytest
+from PIL import Image
 
 import scripts.check_licenses as check_licenses
+from tests.conftest import invoke_main
 from trace_search.detection.scripted_figures import scripted_figures_detector
 from trace_search.fixtures import route_generator
-from trace_search.fixtures.content import perceptual_hashes
+from trace_search.fixtures.content import _phash_image, perceptual_hashes
 from trace_search.fixtures.guards import (
     FixtureSeparationError,
     LoaderContext,
@@ -69,7 +72,13 @@ _ACCEPTED: tuple[tuple[int, int, int, int, tuple[int, int]], ...] = (
     )
 )
 _FIXTURES: dict[tuple[Any, ...], RouteFixture] = {}
-_STRUCTURAL: dict[tuple[Any, ...], RouteFixture] = {}
+_RENDERED: dict[tuple[Any, ...], RouteFixture] = {}
+_RECORDED: tuple[tuple[int, int, int, int, tuple[int, int], int], ...] = (
+    (4, 2, 10, 30, (320, 240), 0),
+    (4, 2, 30, 30, (320, 240), 0),
+    (4, 2, 10, 40, (320, 240), 0),
+    (6, 8, 10, 30, (1280, 720), 123),
+)
 
 
 @contextmanager
@@ -132,17 +141,23 @@ def _once(factory: pytest.TempPathFactory, **overrides: Any) -> RouteFixture:
     return fixture
 
 
-def _placeholder_clip(path: Path, _plan: object, _camera_index: int, _indexed: object) -> None:
+def _sample_hashes(plan: Any, camera_index: int) -> list[str]:
+    """pHashes of the frames ``perceptual_hashes`` would sample, before mp4v."""
+    indexed = route_generator._index_boxes(plan)
+    hashes: list[str] = []
+    for frame_index in route_generator._sample_indices(plan.args.n_frames):
+        frame = route_generator._render_frame(plan, camera_index, int(frame_index), indexed)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        hashes.append(_phash_image(Image.fromarray(rgb)))
+    return hashes
+
+
+def _stub_clip(path: Path, _plan: object, _camera_index: int, _indexed: object) -> None:
     path.write_bytes(b"mp4v")
 
 
-def _placeholder_hashes(path: Path) -> list[str]:
-    camera = int(path.stem.split("-")[1])
-    return [f"{camera:02x}{frame:014x}" for frame in range(10)]
-
-
-def _structural(factory: pytest.TempPathFactory, **overrides: Any) -> RouteFixture:
-    """Truth, topology, and manifest for one config, without encoding video."""
+def _rendered(factory: pytest.TempPathFactory, **overrides: Any) -> RouteFixture:
+    """Truth and a manifest whose pHashes come from rendered sample frames."""
     params: dict[str, Any] = {
         "seed": 0,
         "n_cameras": 6,
@@ -160,15 +175,32 @@ def _structural(factory: pytest.TempPathFactory, **overrides: Any) -> RouteFixtu
         params["size"],
         params["seconds"],
     )
-    cached = _STRUCTURAL.get(key)
+    cached = _RENDERED.get(key)
     if cached is not None:
         return cached
+    out = factory.mktemp("route")
+    plan = route_generator._build_plan(
+        route_generator._validate(
+            out,
+            params["seed"],
+            params["n_cameras"],
+            params["n_figures"],
+            params["fps"],
+            params["size"],
+            params["seconds"],
+        )
+    )
+
+    def _hashes(path: Path) -> list[str]:
+        camera = int(path.stem.split("-")[1]) - 1
+        return _sample_hashes(plan, camera)
+
     with (
-        patch.object(route_generator, "_write_clip", _placeholder_clip),
-        patch.object(route_generator, "perceptual_hashes", _placeholder_hashes),
+        patch.object(route_generator, "_write_clip", _stub_clip),
+        patch.object(route_generator, "perceptual_hashes", _hashes),
     ):
-        fixture = generate_route_fixture(factory.mktemp("route"), **params)
-    _STRUCTURAL[key] = fixture
+        fixture = generate_route_fixture(out, **params)
+    _RENDERED[key] = fixture
     return fixture
 
 
@@ -378,6 +410,25 @@ def _assert_closed_walk(fixture: RouteFixture, *, encoded: bool = True) -> None:
     _assert_dwells(fixture)
     _assert_edges(fixture)
     _assert_clips(fixture, encoded=encoded)
+
+
+@pytest.fixture(scope="session")
+def recorded_routes(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[tuple[int, int, int, int, tuple[int, int]], RouteFixture]:
+    """Encoded clips the schema sweep decodes. Built here, not by test order."""
+    recorded: dict[tuple[int, int, int, int, tuple[int, int]], RouteFixture] = {}
+    for n_cameras, n_figures, fps, seconds, size, seed in _RECORDED:
+        recorded[(n_cameras, n_figures, fps, seconds, size)] = _once(
+            tmp_path_factory,
+            seed=seed,
+            n_cameras=n_cameras,
+            n_figures=n_figures,
+            fps=fps,
+            seconds=seconds,
+            size=size,
+        )
+    return recorded
 
 
 @pytest.fixture(scope="module")
@@ -707,27 +758,15 @@ def test_each_figure_walks_its_corridor_once(
 )
 def test_every_accepted_config_passes_the_schema(
     tmp_path_factory: pytest.TempPathFactory,
+    recorded_routes: dict[tuple[int, int, int, int, tuple[int, int]], RouteFixture],
     n_cameras: int,
     n_figures: int,
     fps: int,
     seconds: int,
     size: tuple[int, int],
 ) -> None:
-    key = (0, n_cameras, n_figures, fps, size, seconds)
-    if key in _FIXTURES:
-        _assert_closed_walk(
-            _once(
-                tmp_path_factory,
-                n_cameras=n_cameras,
-                n_figures=n_figures,
-                fps=fps,
-                seconds=seconds,
-                size=size,
-            )
-        )
-        return
     _assert_closed_walk(
-        _structural(
+        _rendered(
             tmp_path_factory,
             n_cameras=n_cameras,
             n_figures=n_figures,
@@ -737,6 +776,9 @@ def test_every_accepted_config_passes_the_schema(
         ),
         encoded=False,
     )
+    recorded = recorded_routes.get((n_cameras, n_figures, fps, seconds, size))
+    if recorded is not None:
+        _assert_closed_walk(recorded)
 
 
 def _generator_accepts(
@@ -1749,21 +1791,51 @@ def test_licence_row_matches_the_source_and_has_no_use_tag() -> None:
     assert check_licenses.check_manifest_licenses(_manifest()) == []
 
 
-def test_planted_smoke_only_generator_row_fails_closed(tmp_path: Path) -> None:
-    """The committed generator row passes the licence checks.
-
-    The schema enum allows ``SMOKE_ONLY`` on a generator row, so the refusal
-    is the separation check: a ``SMOKE_ONLY`` row with no pHash list fails
-    closed. The planted file is a temp copy.
-    """
+def _planted_generator(phashes: list[str] | None) -> dict[str, Any]:
     planted = _manifest()
     found = False
     for entry in planted["entries"]:
         if entry.get("name") == _ROW_NAME and entry.get("type") == "generator":
             entry["use"] = "SMOKE_ONLY"
+            if phashes is not None:
+                entry["phash"] = list(phashes)
             found = True
     assert found
+    return planted
+
+
+def _ten_distinct_phashes() -> list[str]:
+    hashes = [f"{index:016x}" for index in range(10)]
+    assert len(hashes) == 10
+    assert len(set(hashes)) == 10
+    return hashes
+
+
+def test_planted_smoke_only_generator_row_fails_closed(tmp_path: Path) -> None:
+    """A SMOKE_ONLY generator row with no pHash list fails closed.
+
+    The fence names type generator. The planted file is a temp copy.
+    """
     path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(_planted_generator(None)), encoding="utf-8")
+    with pytest.raises(SeparationCheckError, match="type 'generator'") as caught:
+        check_separation(path, repo_root=tmp_path)
+    assert "no pHash list" not in str(caught.value)
+
+
+def test_planted_smoke_only_generator_with_ten_phashes_fails_both_fences(
+    tmp_path: Path,
+) -> None:
+    """Ten distinct pHashes do not make a SMOKE_ONLY generator row legal."""
+    planted = _planted_generator(_ten_distinct_phashes())
+    code, stdout, _stderr = invoke_main(planted, tmp_dir=tmp_path)
+    reason = f"{_ROW_NAME}: type 'generator' cannot carry use 'SMOKE_ONLY'"
+    assert code == 1
+    assert reason in stdout
+    assert f"{_ROW_NAME}: type 'generator' cannot carry phash" in stdout
+    path = tmp_path / "separation.json"
     path.write_text(json.dumps(planted), encoding="utf-8")
-    with pytest.raises(SeparationCheckError, match="SMOKE_ONLY"):
-        check_separation(path, repo_root=_REPO)
+    with pytest.raises(SeparationCheckError, match="type 'generator'") as caught:
+        check_separation(path, repo_root=tmp_path)
+    assert "cannot carry use 'SMOKE_ONLY'" in str(caught.value)
+    assert "no pHash list" not in str(caught.value)
