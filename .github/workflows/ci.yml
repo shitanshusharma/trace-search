@@ -55,7 +55,7 @@ jobs:
       run: |
         pytest tests/ -v --tb=short
 
-    - name: E2E demo (synthetic, CODE_TEST)
+    - name: E2E demo (synthetic)
       run: |
         python scripts/run_e2e_demo.py --workdir "$RUNNER_TEMP/e2e"
 
