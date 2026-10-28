@@ -74,17 +74,17 @@
             "minItems": 10,
             "maxItems": 10,
             "uniqueItems": true,
-            "description": "For clips only: exactly 10 perceptual hashes of sampled frames (hex)"
+            "description": "Allowed only on clip, synthetic_clip, and code_fixture. Exactly 10 perceptual hashes of sampled frames (hex)."
           },
           "use": {
             "type": "string",
             "enum": ["SMOKE_ONLY", "CODE_TEST"],
-            "description": "Usage tag. Stock/synthetic clips are SMOKE_ONLY; FX-CODE fixtures are CODE_TEST."
+            "description": "Allowed only on clip, synthetic_clip, and code_fixture. Stock and synthetic clips are SMOKE_ONLY. FX-CODE fixtures are CODE_TEST."
           },
           "fixture_id": {
             "type": "string",
             "pattern": "^FX-(SMOKE(-SYN)?|CODE)-[0-9]+$",
-            "description": "FX-SMOKE-### (clip/SMOKE_ONLY), FX-SMOKE-SYN-### (synthetic_clip/SMOKE_ONLY), FX-CODE-### (code_fixture/CODE_TEST)"
+            "description": "Allowed only on clip, synthetic_clip, and code_fixture. FX-SMOKE-### (clip/SMOKE_ONLY), FX-SMOKE-SYN-### (synthetic_clip/SMOKE_ONLY), FX-CODE-### (code_fixture/CODE_TEST)."
           },
           "path": {
             "type": "string",
@@ -223,6 +223,26 @@
               "properties": {
                 "type": { "const": "clip" },
                 "use": { "const": "SMOKE_ONLY" }
+              }
+            }
+          },
+          {
+            "description": "use, phash, and fixture_id are only allowed on clip, synthetic_clip, and code_fixture rows.",
+            "if": {
+              "not": {
+                "properties": {
+                  "type": {
+                    "enum": ["clip", "synthetic_clip", "code_fixture"]
+                  }
+                },
+                "required": ["type"]
+              }
+            },
+            "then": {
+              "properties": {
+                "use": false,
+                "phash": false,
+                "fixture_id": false
               }
             }
           }

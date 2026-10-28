@@ -834,6 +834,38 @@ def is_license_allowed(
     return allowed
 
 
+# use, phash, and fixture_id belong only on these row types.
+FIXTURE_CARRYING_TYPES = frozenset(('clip', 'synthetic_clip', 'code_fixture'))
+
+
+def _shown_row_type(entry_type: object) -> str:
+    """Label a row type for an error. Non-strings never raise."""
+    if isinstance(entry_type, str):
+        return entry_type
+    if entry_type is None:
+        return 'None'
+    return type(entry_type).__name__
+
+
+def _disallowed_fixture_field_violations(entry: dict) -> list[str]:
+    """Reject use, phash, and fixture_id on any row that is not a fixture row."""
+    raw_type = entry.get('type')
+    if isinstance(raw_type, str) and raw_type in FIXTURE_CARRYING_TYPES:
+        return []
+    shown = _shown_row_type(raw_type)
+    name = entry.get('name') or 'unknown'
+    violations = []
+    if 'use' in entry:
+        violations.append(
+            f"{name}: type '{shown}' cannot carry use '{entry.get('use')}'"
+        )
+    if 'phash' in entry:
+        violations.append(f"{name}: type '{shown}' cannot carry phash")
+    if 'fixture_id' in entry:
+        violations.append(f"{name}: type '{shown}' cannot carry fixture_id")
+    return violations
+
+
 def check_manifest_licenses(
     manifest: dict,
     on_disk: dict[str, list[str]] | None = None,
@@ -846,6 +878,8 @@ def check_manifest_licenses(
         name = entry.get('name', 'unknown')
         entry_type = entry.get('type', '')
 
+        violations.extend(_disallowed_fixture_field_violations(entry))
+
         failure = _license_failure(license_str, name, entry, on_disk)
         if failure:
             violations.append(f"{name}: {failure}")
@@ -854,7 +888,11 @@ def check_manifest_licenses(
         # Applies to every row that carries a generator: synthetic_clip,
         # code_fixture (FX-CODE), and type generator.
         # Empty, NC, Proprietary, GPL, UNKNOWN, and free-text all fail closed.
-        if entry_type in {'synthetic_clip', 'code_fixture', 'generator'}:
+        if isinstance(entry_type, str) and entry_type in {
+            'synthetic_clip',
+            'code_fixture',
+            'generator',
+        }:
             raw_gen = entry.get('generator_license', '')
             generator_license = raw_gen.strip() if isinstance(raw_gen, str) else ''
             if not generator_license:
