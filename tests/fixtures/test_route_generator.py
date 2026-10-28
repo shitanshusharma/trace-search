@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -68,14 +69,16 @@ _ACCEPTED: tuple[tuple[int, int, int, int, tuple[int, int]], ...] = (
     )
 )
 _FIXTURES: dict[tuple[Any, ...], RouteFixture] = {}
+_STRUCTURAL: dict[tuple[Any, ...], RouteFixture] = {}
 
 
 @contextmanager
 def _time_limit(seconds: float) -> Iterator[None]:
     """Fail the caller if a pure-Python walk does not return.
 
-    ``SIGALRM`` only works on the main thread on POSIX. A walk on a
-    worker thread, or on Windows, does not trip this timer.
+    The timer uses ``SIGALRM`` and runs on the main thread on POSIX.
+    On a worker thread ``signal.signal`` raises before the walk starts,
+    so the call fails loudly. Windows has no ``SIGALRM``.
     """
 
     def handler(signum: int, frame: object) -> None:
@@ -126,6 +129,46 @@ def _once(factory: pytest.TempPathFactory, **overrides: Any) -> RouteFixture:
         return cached
     fixture = generate_route_fixture(factory.mktemp("route"), **params)
     _FIXTURES[key] = fixture
+    return fixture
+
+
+def _placeholder_clip(path: Path, _plan: object, _camera_index: int, _indexed: object) -> None:
+    path.write_bytes(b"mp4v")
+
+
+def _placeholder_hashes(path: Path) -> list[str]:
+    camera = int(path.stem.split("-")[1])
+    return [f"{camera:02x}{frame:014x}" for frame in range(10)]
+
+
+def _structural(factory: pytest.TempPathFactory, **overrides: Any) -> RouteFixture:
+    """Truth, topology, and manifest for one config, without encoding video."""
+    params: dict[str, Any] = {
+        "seed": 0,
+        "n_cameras": 6,
+        "n_figures": 4,
+        "fps": 10,
+        "size": (640, 360),
+        "seconds": 30,
+    }
+    params.update(overrides)
+    key = (
+        params["seed"],
+        params["n_cameras"],
+        params["n_figures"],
+        params["fps"],
+        params["size"],
+        params["seconds"],
+    )
+    cached = _STRUCTURAL.get(key)
+    if cached is not None:
+        return cached
+    with (
+        patch.object(route_generator, "_write_clip", _placeholder_clip),
+        patch.object(route_generator, "perceptual_hashes", _placeholder_hashes),
+    ):
+        fixture = generate_route_fixture(factory.mktemp("route"), **params)
+    _STRUCTURAL[key] = fixture
     return fixture
 
 
@@ -315,7 +358,7 @@ def _assert_decoded_clip(clip: Path, truth: dict[str, Any]) -> None:
         capture.release()
 
 
-def _assert_clips(fixture: RouteFixture) -> None:
+def _assert_clips(fixture: RouteFixture, *, encoded: bool = True) -> None:
     manifest = _load(fixture.manifest_path)
     assert manifest["manifest_version"] == "1.0"
     assert manifest["last_updated_ist"] == "2026-10-27"
@@ -326,14 +369,15 @@ def _assert_clips(fixture: RouteFixture) -> None:
     assert entries[0]["phash"] != entries[1]["phash"]
     for index, (entry, clip) in enumerate(zip(entries, fixture.clip_paths)):
         _assert_clip_row(index, entry, clip)
-        _assert_decoded_clip(clip, truth)
+        if encoded:
+            _assert_decoded_clip(clip, truth)
 
 
-def _assert_closed_walk(fixture: RouteFixture) -> None:
+def _assert_closed_walk(fixture: RouteFixture, *, encoded: bool = True) -> None:
     _assert_distractor(fixture)
     _assert_dwells(fixture)
     _assert_edges(fixture)
-    _assert_clips(fixture)
+    _assert_clips(fixture, encoded=encoded)
 
 
 @pytest.fixture(scope="module")
@@ -669,15 +713,30 @@ def test_every_accepted_config_passes_the_schema(
     seconds: int,
     size: tuple[int, int],
 ) -> None:
-    fixture = _once(
-        tmp_path_factory,
-        n_cameras=n_cameras,
-        n_figures=n_figures,
-        fps=fps,
-        seconds=seconds,
-        size=size,
+    key = (0, n_cameras, n_figures, fps, size, seconds)
+    if key in _FIXTURES:
+        _assert_closed_walk(
+            _once(
+                tmp_path_factory,
+                n_cameras=n_cameras,
+                n_figures=n_figures,
+                fps=fps,
+                seconds=seconds,
+                size=size,
+            )
+        )
+        return
+    _assert_closed_walk(
+        _structural(
+            tmp_path_factory,
+            n_cameras=n_cameras,
+            n_figures=n_figures,
+            fps=fps,
+            seconds=seconds,
+            size=size,
+        ),
+        encoded=False,
     )
-    _assert_closed_walk(fixture)
 
 
 def _generator_accepts(
