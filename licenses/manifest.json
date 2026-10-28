@@ -1127,7 +1127,7 @@
       "type": "generator",
       "license": "MIT",
       "source_url": "https://github.com/shitanshusharma/trace-search",
-      "sha256": "2ea145dad3f1d685b68566f94a9d276fe6e5b23ac4a9fc9ade9e12f2e3d45afe",
+      "sha256": "67c5605e729c2d988c20212e226145c46f82d1121deaca26ee541e933c2055d0",
       "generator_license": "MIT",
       "seed": "0..2147483647",
       "notes": "Flat two-band rectangles for seeded route fixtures. Outputs are temp files, never committed. Seed range is 0..2147483647. Licence MIT. D-T6-1 (a), Shitanshu, 24 Oct 2026. This row has no use and no fixture_id. For an in-repo generator row, version is the base commit the file was written against. It is not a content pin and it is not updated when the file bytes change. The sha256 field pins the file bytes."

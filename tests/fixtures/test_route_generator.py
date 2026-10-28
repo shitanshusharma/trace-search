@@ -51,12 +51,18 @@ _SCHEDULES: tuple[tuple[int, int, int], ...] = (
     (6, 10, 30),
     (6, 10, 40),
 )
-_ACCEPTED: tuple[tuple[int, int, int, int, tuple[int, int]], ...] = tuple(
-    (n_cameras, n_figures, fps, seconds, size)
-    for n_cameras, fps, seconds in _SCHEDULES
-    for n_figures in range(2, 9)
-    for size in ((320, 240), (640, 360), (1280, 720))
-    if size != (1280, 720) or (n_cameras == 6 and fps == 10 and seconds == 30)
+_ACCEPTED: tuple[tuple[int, int, int, int, tuple[int, int]], ...] = (
+    tuple(
+        (n_cameras, n_figures, fps, seconds, size)
+        for n_cameras, fps, seconds in _SCHEDULES
+        for n_figures in (2, 4)
+        for size in ((320, 240), (640, 360))
+    )
+    + tuple((4, n_figures, 10, 30, (320, 240)) for n_figures in (3, 5, 6, 7, 8))
+    + (
+        (5, 3, 10, 30, (320, 240)),
+        (6, 8, 10, 30, (1280, 720)),
+    )
 )
 _FIXTURES: dict[tuple[Any, ...], RouteFixture] = {}
 
@@ -355,9 +361,13 @@ def test_offsets_zones_and_figure_counts() -> None:
     assert route_generator._left_figure_count(4) == 2
     assert route_generator._left_figure_count(5) == 2
     assert route_generator._left_figure_count(8) == 4
-    assert route_generator._is_hd_schedule(6, 30)
-    assert not route_generator._is_hd_schedule(4, 30)
-    assert not route_generator._is_hd_schedule(6, 40)
+    assert route_generator._is_default_schedule(6, 30)
+    assert not route_generator._is_default_schedule(4, 30)
+    assert not route_generator._is_default_schedule(6, 40)
+    assert route_generator._pair_or_quad(2)
+    assert route_generator._pair_or_quad(4)
+    assert not route_generator._pair_or_quad(3)
+    assert not route_generator._pair_or_quad(8)
 
 
 def test_samples_slots_and_frozen_records() -> None:
@@ -430,6 +440,12 @@ def test_x_at_follows_the_lane_step() -> None:
     assert route_generator._x_at(3, 300, 27, True, 1) == 10
     assert route_generator._x_at(0, 300, 27, False, 2) == 21
     assert route_generator._x_at(299, 300, 27, False, 2) == 238
+    assert route_generator._x_at(0, 300, 27, False, 3) == 238
+    assert route_generator._x_at(299, 300, 27, False, 3) == 21
+    assert route_generator._x_at(0, 300, 27, False, 4) == 34
+    assert route_generator._x_at(299, 300, 27, False, 4) == 251
+    assert route_generator._x_at(0, 300, 27, False, 5) == 251
+    assert route_generator._x_at(299, 300, 27, False, 5) == 34
 
 
 def test_signature_defaults_match_the_task() -> None:
@@ -651,7 +667,7 @@ def _generator_accepts(
         route_generator._require_int("fps", fps, 10, 30)
         route_generator._require_int("seconds", seconds, 30, 40)
         width, height = route_generator._require_size(size)
-        route_generator._require_known_size(width, height, n_cameras, seconds)
+        route_generator._require_known_size(width, height, n_cameras, n_figures, fps, seconds)
         route_generator._require_schedule(n_cameras, fps, seconds)
     except (TypeError, ValueError):
         return False
@@ -792,10 +808,15 @@ def test_flipping_a_generated_row_to_smoke_only_fails_the_schema(small: RouteFix
     assert any("CODE_TEST" in error and "entries.0.use" in error for error in errors)
 
 
-def _size_message(got: str) -> str:
+def _size_message(
+    got: str,
+    cameras: int = 4,
+    figures: int = 2,
+    seconds: int = 30,
+) -> str:
     return (
-        r"^size must be \(320, 240\) or \(640, 360\), or \(1280, 720\) "
-        r"for 6 cameras and 30 seconds, got " + got + r"$"
+        rf"^size {got} is not accepted for {cameras} cameras, "
+        rf"{figures} figures, and {seconds} seconds$"
     )
 
 
@@ -860,8 +881,12 @@ def test_bool_and_non_int_arguments_raise_type_error(
             r"^unsupported route schedule for 6 cameras at 30 fps and 30 seconds$",
         ),
         (
-            {"n_cameras": 5, "n_figures": 3, "fps": 30},
+            {"n_cameras": 5, "n_figures": 2, "fps": 30},
             r"^unsupported route schedule for 5 cameras at 30 fps and 30 seconds$",
+        ),
+        (
+            {"n_cameras": 5, "n_figures": 3, "fps": 30},
+            _size_message(r"\(320, 240\)", cameras=5, figures=3),
         ),
         (
             {"seconds": 36},
@@ -924,16 +949,36 @@ def test_size_guards(
         ({"size": (1280, 720)}, _size_message(r"\(1280, 720\)")),
         (
             {"n_cameras": 5, "n_figures": 3, "size": (1280, 720)},
-            _size_message(r"\(1280, 720\)"),
+            _size_message(r"\(1280, 720\)", cameras=5, figures=3),
         ),
         (
-            {"n_cameras": 6, "n_figures": 4, "seconds": 40, "size": (1280, 720)},
-            _size_message(r"\(1280, 720\)"),
+            {"n_cameras": 6, "n_figures": 4, "size": (1280, 720)},
+            _size_message(r"\(1280, 720\)", cameras=6, figures=4),
+        ),
+        (
+            {"n_cameras": 6, "n_figures": 8, "seconds": 40, "size": (1280, 720)},
+            _size_message(r"\(1280, 720\)", cameras=6, figures=8, seconds=40),
         ),
         ({"fps": 30, "size": (1280, 720)}, _size_message(r"\(1280, 720\)")),
         (
+            {"n_cameras": 6, "n_figures": 8, "size": (640, 360)},
+            _size_message(r"\(640, 360\)", cameras=6, figures=8),
+        ),
+        (
             {"n_cameras": 6, "n_figures": 4, "size": (640, 480)},
-            _size_message(r"\(640, 480\)"),
+            _size_message(r"\(640, 480\)", cameras=6, figures=4),
+        ),
+        (
+            {"n_cameras": 4, "n_figures": 8, "seconds": 40, "size": (320, 240)},
+            _size_message(r"\(320, 240\)", figures=8, seconds=40),
+        ),
+        (
+            {"n_cameras": 4, "n_figures": 8, "fps": 20, "size": (320, 240)},
+            _size_message(r"\(320, 240\)", figures=8),
+        ),
+        (
+            {"n_cameras": 4, "n_figures": 8, "fps": 30, "size": (320, 240)},
+            _size_message(r"\(320, 240\)", figures=8),
         ),
     ],
 )
@@ -1090,6 +1135,8 @@ def test_json_is_indented_and_sorted(small: RouteFixture) -> None:
     truth = small.truth_path.read_text(encoding="utf-8")
     assert truth.startswith('{\n  "background_bgr"')
     assert truth.endswith("\n")
+    with pytest.raises(ValueError, match="Out of range float values"):
+        route_generator._write_json(small.out_dir / "nan.json", {"value": float("nan")})
 
 
 def test_the_encoder_is_released(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1145,6 +1192,7 @@ def test_variation_replays_one_generator_stream() -> None:
     assert int(fast.integers(0, 8)) == shift
     drawn = tuple(int(value) for value in fast.integers(0, 31, size=4))
     assert route_generator._variation(0, 4, 30, 900).jitter == drawn
+    assert route_generator._variation(3, 6, 10, 300).shift == 0
 
 
 def test_seeds_congruent_mod_8_write_different_clips(
@@ -1467,6 +1515,20 @@ def test_edge_of_buffer_container_sizes_keep_their_meaning(tmp_path: Path) -> No
     large = (1 << 56) + fit
     huge = (1).to_bytes(4, "big") + b"moov" + large.to_bytes(8, "big") + plain
     assert b"\x11" * 8 in _stamp_file(tmp_path / "high-byte.mp4", huge)
+
+
+def test_short_box_size_boundary_is_eight_bytes(tmp_path: Path) -> None:
+    """Seven bytes is not a box. Eight bytes of a 64-bit size 0 raises."""
+    seven = (0).to_bytes(4, "big") + b"mvh"
+    path = tmp_path / "seven.mp4"
+    path.write_bytes(seven)
+    route_generator._zero_mp4_times(path)
+    assert path.read_bytes() == seven
+    eight = (1).to_bytes(4, "big") + b"free"
+    path.write_bytes(eight)
+    with pytest.raises(ValueError, match="shorter than its 16-byte header"):
+        route_generator._zero_mp4_times(path)
+    assert path.read_bytes() == eight
 
 
 def test_a_narrow_box_raises_before_the_walk_continues(tmp_path: Path) -> None:

@@ -14,9 +14,12 @@ second. Clocks step by the clip length plus one second, so those single
 passes still land inside the transit window. Sampled frames therefore hold
 the rectangle at a different x. Nothing else is drawn.
 
-Only configs that keep that walk inside the transit window are accepted.
-``(320, 240)`` and ``(640, 360)`` are accepted on every schedule.
-``(1280, 720)`` is accepted for 6 cameras at 10 fps and 30 seconds.
+Only configs that keep that walk inside the transit window are accepted,
+and every accepted config is encoded by the tests. ``(320, 240)`` and
+``(640, 360)`` take 2 or 4 figures on every schedule. Counts 3, 5, 6, 7,
+and 8 stay on ``(320, 240)`` at 10 fps and 30 seconds with 4 cameras, and
+count 3 also with 5 cameras. ``(1280, 720)`` takes 8 figures on the
+6-camera, 10 fps, 30 second schedule, including seed 123.
 The same seed writes byte-identical files. mp4v on opencv-python-headless
 4.10.0.84 (Lavf59.27.100) already stores container times as 0.
 ``_zero_mp4_times`` sets them to 0 again.
@@ -216,23 +219,62 @@ def _is_hd_frame(width: int, height: int) -> bool:
     return height == 720
 
 
-def _is_hd_schedule(n_cameras: int, seconds: int) -> bool:
-    """720p stays on the default schedule so every accepted clip is encoded in tests."""
+def _is_default_schedule(n_cameras: int, seconds: int) -> bool:
+    """Six cameras and 30 seconds. Schedule validation already forces 10 fps."""
     if n_cameras != 6:
         return False
     return seconds == 30
 
 
-def _require_known_size(width: int, height: int, n_cameras: int, seconds: int) -> None:
-    if _is_small_frame(width, height):
-        return
-    if _is_default_frame(width, height):
-        return
-    if _is_hd_frame(width, height) and _is_hd_schedule(n_cameras, seconds):
+def _pair_or_quad(n_figures: int) -> bool:
+    if n_figures == 2:
+        return True
+    return n_figures == 4
+
+
+def _extra_small(n_cameras: int, n_figures: int, fps: int, seconds: int) -> bool:
+    """Counts other than 2 and 4 stay on one cheap 320p length."""
+    if seconds != 30 or fps != 10:
+        return False
+    if n_cameras == 5 and n_figures == 3:
+        return True
+    if n_cameras != 4:
+        return False
+    return n_figures in (3, 5, 6, 7, 8)
+
+
+def _size_allowed(
+    width: int,
+    height: int,
+    n_cameras: int,
+    n_figures: int,
+    fps: int,
+    seconds: int,
+) -> bool:
+    small = _is_small_frame(width, height)
+    if small or _is_default_frame(width, height):
+        if _pair_or_quad(n_figures):
+            return True
+    if small and _extra_small(n_cameras, n_figures, fps, seconds):
+        return True
+    if _is_hd_frame(width, height) and n_figures == 8:
+        return _is_default_schedule(n_cameras, seconds)
+    return False
+
+
+def _require_known_size(
+    width: int,
+    height: int,
+    n_cameras: int,
+    n_figures: int,
+    fps: int,
+    seconds: int,
+) -> None:
+    if _size_allowed(width, height, n_cameras, n_figures, fps, seconds):
         return
     raise ValueError(
-        "size must be (320, 240) or (640, 360), or (1280, 720) "
-        f"for 6 cameras and 30 seconds, got {(width, height)!r}"
+        f"size {(width, height)!r} is not accepted for {n_cameras} cameras, "
+        f"{n_figures} figures, and {seconds} seconds"
     )
 
 
@@ -299,7 +341,7 @@ def _validate(
     fps_i = _require_int("fps", fps, _MIN_FPS, _MAX_FPS)
     width, height = _require_size(size)
     seconds_i = _require_int("seconds", seconds, _MIN_SECONDS, _MAX_SECONDS)
-    _require_known_size(width, height, cameras, seconds_i)
+    _require_known_size(width, height, cameras, figures, fps_i, seconds_i)
     _require_schedule(cameras, fps_i, seconds_i)
     resolved = _resolved_outside_repo(path)
     return _Args(
@@ -700,14 +742,14 @@ def _truth_payload(plan: _Plan) -> dict[str, Any]:
 
 def _seed_text(plan: _Plan, camera_index: int) -> str:
     payload = {
-        "camera_index": camera_index,
-        "fps": plan.args.fps,
-        "height": plan.args.height,
-        "n_cameras": plan.args.n_cameras,
-        "n_figures": plan.args.n_figures,
-        "seconds": plan.args.seconds,
         "seed": plan.args.seed,
         "width": plan.args.width,
+        "height": plan.args.height,
+        "fps": plan.args.fps,
+        "seconds": plan.args.seconds,
+        "n_cameras": plan.args.n_cameras,
+        "n_figures": plan.args.n_figures,
+        "camera_index": camera_index,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -826,12 +868,14 @@ def generate_route_fixture(
     and ``seconds`` are ints. A bool is rejected.
 
     Accepted schedules are 4, 5, or 6 cameras at 10 fps for 30 or 40 seconds,
-    plus 4 cameras at 30 fps for 30 seconds. ``n_figures`` is ``2..8`` on
-    every schedule. ``(320, 240)`` and ``(640, 360)`` are accepted on every
-    schedule. ``(1280, 720)`` is accepted for 6 cameras at 10 fps and 30
-    seconds, which includes 8 figures at 720p. Seed stays ``0..2147483647``.
-    Colours, the direction of the walk across the frame, and each camera's
-    entrance come from ``numpy.random.default_rng(seed)``.
+    plus 4 cameras at 30 fps for 30 seconds. Figure counts 2 and 4 are
+    accepted at ``(320, 240)`` and ``(640, 360)`` on every schedule. Counts
+    3, 5, 6, 7, and 8 are accepted at ``(320, 240)`` for 4 cameras and 30
+    seconds, and count 3 is also accepted for 5 cameras at that size and
+    length. ``(1280, 720)`` is accepted for 8 figures, 6 cameras, 10 fps,
+    and 30 seconds. Seed stays ``0..2147483647``. Colours, the direction
+    of the walk across the frame, and each camera's entrance come from
+    ``numpy.random.default_rng(seed)``.
     """
     args = _validate(out_dir, seed, n_cameras, n_figures, fps, size, seconds)
     plan = _build_plan(args)
