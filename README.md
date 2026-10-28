@@ -15,7 +15,7 @@ Words used later in this file:
 - **SMOKE** is a label for a synthetic wiring run. Smoke output is not evidence for any acceptance criterion.
 - **T9** is the retention and purge task. Some of its pieces are merged. The rest are not. The status list says which.
 
-Cut 01 is still in progress. End-to-end route search does not run yet. What you can run today is below.
+Cut 01 is still in progress. A synthetic end-to-end demo does run. It is not evidence for any acceptance criterion. What you can run today is below.
 
 ## What it is not
 
@@ -94,7 +94,33 @@ python scripts/run_reid_eval.py --embedder osnet-lite --synthetic-seed 0 --json
 
 `--embedder osnet-lite` is `OsnetLiteEmbedder` with random init only. The placeholder is `UntrainedPlaceholderEmbedder`. Neither one is trained.
 
-A short terminal demo of these commands is in `docs/demo.cast`. It shows the current pipeline steps, not route search.
+### End-to-end demo
+
+Synthetic `CODE_TEST` clips only. The `Lint, Test, and License Check` job runs this after the unit tests and before the clean-worktree check. The workdir is outside the checkout:
+
+```bash
+python scripts/run_e2e_demo.py --workdir "$RUNNER_TEMP/e2e"
+```
+
+`$RUNNER_TEMP` is set by Actions. The directory must be empty if it already exists. A local run can omit `--workdir`. `make e2e` runs `python scripts/run_e2e_demo.py`, which creates its own temp directory outside the repository.
+
+The first output line is:
+
+```
+CODE_TEST: not evidence for any AC (AC-07 is DEFERRED)
+```
+
+The command then prints one line per figure, `F1: <found>/<truth>` through `F4: <found>/<truth>` on the default schedule (4 figures). A passing run exits 0 and prints these three lines. Each score is that run's value, to four decimal places. The bars in parentheses are fixed:
+
+```
+segment_recall=<score> (>= 0.80) PASS
+segment_precision=<score> (>= 0.90) PASS
+false_merge_rate=<score> (<= 0.05) PASS
+```
+
+Segment recall has to be at least 0.80. Segment precision has to be at least 0.90. The false-merge rate has to be at most 0.05. A miss prints `FAIL` on that line and the process exits 1. This output is not evidence for any acceptance criterion. AC-07 is DEFERRED.
+
+A short terminal demo of the smoke and ReID commands is in `docs/demo.cast`. It shows those pipeline steps, not this route demo.
 
 ```bash
 asciinema play docs/demo.cast
@@ -106,10 +132,10 @@ Or [watch the GIF](https://github.com/user-attachments/assets/efbd22e3-568c-4c1a
 
 - Smoke clips are synthetic only. This repo has no real footage and no consented footage.
 - The embedders are random-init: an untrained placeholder and a random-init OSNet-lite. No training runs. There is no trained ReID model here.
-- Scores are not evidence. Smoke output is not evidence for any acceptance criterion. ReID eval output is not an AC-06 result. The AC-06 harness is DEFERRED.
+- Scores are not evidence. Smoke output is not evidence for any acceptance criterion. ReID eval output is not an AC-06 result. The AC-06 harness is DEFERRED. The end-to-end demo output is not evidence for any acceptance criterion. AC-07 is DEFERRED.
 - Cut 01 is still in progress.
 - The web UI and the search API are planned. Both packages are stubs.
-- End-to-end route search is planned. `matching/` has route, topology, and tracklet code, and nothing serves that as a search yet.
+- A synthetic end-to-end demo runs (`scripts/run_e2e_demo.py`). Its output is not evidence for any acceptance criterion. `matching/` has route, topology, and tracklet code. Nothing serves that as a search API yet.
 - Retention windows and a footage-derived purge function are in `retention/`. There is no operator UI for them. The status list marks T9 partly done.
 
 A GPU is not required for the commands above. The planned on-prem target is below.
@@ -124,7 +150,7 @@ trace-search/
 │   ├── ingest/             # Video file/RTSP ingest
 │   ├── detection/          # Person detection (YOLOX-S on onnxruntime, plus scripted detectors)
 │   ├── tracking/           # Single-camera tracking (in-repo ByteTrack)
-│   ├── pipeline/           # Per-camera ingest, detect, track, and persist
+│   ├── pipeline/           # Per-camera ingest, detect, track, persist, and the synthetic end-to-end demo
 │   ├── attributes/         # Clothing color + bag detection
 │   ├── reid/               # Cross-camera ReID (untrained placeholder and random-init OSNet-lite embedders; no training)
 │   ├── matching/           # Route, topology, and tracklets (library code; end-to-end search is planned)
@@ -140,6 +166,7 @@ trace-search/
 │   ├── generate_smoke_fixtures.py  # Synthetic video generator (T1)
 │   ├── run_smoke.py                # M1a smoke runner (scripted-figures)
 │   ├── run_reid_eval.py            # Synthetic ReID eval (placeholder or osnet-lite)
+│   ├── run_e2e_demo.py             # Synthetic end-to-end demo (CODE_TEST; not evidence)
 │   ├── check_separation.py         # Fixture separation checker (T1)
 │   ├── check_project_rules.py      # Project rules checker
 │   └── demo_audit_log.py   # AC-13 JSON proof
@@ -241,10 +268,11 @@ Pull requests to `main`, and pushes to `main`, run these checks. The CI workflow
 1. **Lint** with ruff (`ruff check src/ tests/ scripts/`)
 2. **FFmpeg LGPL check** before the tests
 3. **Unit tests** with pytest (`pytest tests/ -v --tb=short`)
-4. **Clean worktree** — fails if `git status --porcelain` is not empty after pytest, and fails if pytest created `audit_logs/` in the checkout
-5. **License fence check** — the `check_licenses.py` command above. It fails on any AGPL/GPL/NC/unknown license or banned component
-6. **CI tools banned-licence check** — separate venv from `requirements-ci.lock`
-7. **AC-13 demo** — the command below
+4. **End-to-end demo** — synthetic `CODE_TEST` only. The command and the output lines are in [End-to-end demo](#end-to-end-demo). The output is not evidence for any acceptance criterion.
+5. **Clean worktree** — fails if `git status --porcelain` is not empty after pytest, and fails if pytest created `audit_logs/` in the checkout. This step runs after the demo.
+6. **License fence check** — the `check_licenses.py` command above. It fails on any AGPL/GPL/NC/unknown license or banned component
+7. **CI tools banned-licence check** — separate venv from `requirements-ci.lock`
+8. **AC-13 demo** — the command below
 
 ```bash
 python scripts/demo_audit_log.py --json

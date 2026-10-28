@@ -386,7 +386,23 @@ PYTHONPATH=src .venv-ci-fence/bin/python -m scripts.check_ci_licenses --path "$s
 
 `scripts/check_ci_licenses.py` reads each installed package's `License-Expression`, every licence classifier, and a one-line `License` header. The header is checked even when classifiers exist, so `OSI Approved` plus `License: AGPL-3.0` fails. Classifier tails and shorthands are mapped to SPDX, then passed to `is_license_banned` in `scripts/check_licenses.py`. `GNU General Public License v3 (GPLv3)`, `GNU Affero General Public License v3 or later (AGPLv3+)`, and bare `GPLv3` fail. `GNU Lesser General Public License v2 or later (LGPLv2+)` stays allowed. `ISC License (ISCL)` maps to ISC. `The Unlicense (Unlicense)` and `Public Domain` map to Unlicense. A classifier that is only `OSI Approved` is not a licence and fails closed. Any other free text that does not map to SPDX fails closed. Missing or `UNKNOWN` metadata fails closed, except the exact name and version `face==26.0.1` (BSD-3-Clause, https://github.com/mahmoud/face/blob/v26.0.1/LICENSE) and `peewee==3.19.0` (MIT, https://github.com/coleifer/peewee/blob/3.19.0/LICENSE). Those two rows are warnings, and only when metadata is missing. `PYTHONPATH` is only so the checker can import the package; it is not the scan scope. No allowlist entry was added for LGPL or MPL.
 
-**Note:** This check is part of the existing `.github/workflows/ci.yml` from PR #1. The job name is `Lint, Test, and License Check` and includes linting, tests, the app licence fence, and the CI-tools banned-licence check. No extra required check name is added.
+**E2E demo step.** The same job, `Lint, Test, and License Check`, runs one more step: `E2E demo (synthetic, CODE_TEST)`. It is after `Run unit tests` and before `Worktree clean after pytest`. The run line is:
+
+```bash
+python scripts/run_e2e_demo.py --workdir "$RUNNER_TEMP/e2e"
+```
+
+`$RUNNER_TEMP/e2e` is outside the checkout. The script refuses a workdir inside the repository, an ancestor of the repository, the home directory, or an ancestor of home. An existing workdir must be empty. The step uses the same shell and working directory as the other `run` steps in this job.
+
+The first output line is `CODE_TEST: not evidence for any AC (AC-07 is DEFERRED)`. The process exits 0 only when all three bars pass. The bars are fixed in `src/trace_search/pipeline/e2e.py` (`SEGMENT_RECALL_MIN`, `SEGMENT_PRECISION_MIN`, `FALSE_MERGE_MAX`). They are not fitted to a run. A passing line is `{name}={score:.4f} ({op} {limit:.2f}) PASS`. A miss prints `FAIL` and the process exits 1.
+
+- **Segment recall** at least 0.80. `segment_recall` is matched truth segments divided by the truth-segment count (`trace_search.matching.route_metrics.segment_recall`). A predicted segment matches a truth segment when the ownership map gives the predicted track that figure, the camera ids are equal, and the gap between the two intervals is at most 10.0 seconds. The gap of 10.0 matches. The gap of 10.1 does not. Matching is one-to-one. An empty truth count raises `ValueError`. It is not reported as 0.0 or 1.0. The printed line is `segment_recall=<score> (>= 0.80) PASS` when `score >= 0.80`.
+- **Segment precision** at least 0.90. `segment_precision` is matched predicted segments divided by the predicted-segment count. The match rule is the same one-to-one rule as recall. An empty predicted count raises `ValueError`. The printed line is `segment_precision=<score> (>= 0.90) PASS` when `score >= 0.90`.
+- **False-merge rate** at most 0.05. `false_merge_rate` is the number of cross-camera links whose tracks belong to different figures, divided by all cross-camera links in the routes. A cross-camera link is two consecutive segments in a route with different `camera_id`s. Same-camera consecutive pairs are not in the denominator. The seed is not an extra link. No cross-camera link raises `ValueError` rather than returning 0.0. The printed line is `false_merge_rate=<score> (<= 0.05) PASS` when `score <= 0.05`.
+
+`<score>` is the value that run measured, printed to four decimal places. These numbers are not evidence for any acceptance criterion. AC-07 is DEFERRED.
+
+**Note:** This check is part of the existing `.github/workflows/ci.yml` from PR #1. The job name is `Lint, Test, and License Check` and includes linting, tests, the synthetic end-to-end demo, the app licence fence, and the CI-tools banned-licence check. No extra required check name is added.
 
 ---
 
@@ -673,9 +689,10 @@ jobs:
 | Project Rules | `rules / project-rules` | Banned imports, media files | `python scripts/check_project_rules.py` |
 | Action pins | `rules / validate-action-shas` | Unpinned, unverified, or mixed SHAs for one action | `python scripts/validate_action_shas.py` |
 | License Fence | `Lint, Test, and License Check` | AGPL/GPL/NC, missing manifest | `python scripts/check_licenses.py` |
+| E2E demo | `Lint, Test, and License Check` | Segment recall below 0.80, segment precision below 0.90, or false-merge rate above 0.05 | `python scripts/run_e2e_demo.py` |
 
 ---
 
-**Last Updated:** Tue 20 Oct 2026 (IST)  
+**Last Updated:** Wed 28 Oct 2026  
 **Owner:** Shitanshu Sharma  
 **Source:** PRD Cut 01 rev 2, CI/CD implementation (T1)
