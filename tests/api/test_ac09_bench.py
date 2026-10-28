@@ -382,6 +382,10 @@ def test_build_ratio_and_three_times_bound() -> None:
         bench._build_ratio(True, 1.0)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="one_row_s"):
         bench._within_3x(True, 1.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="one_batch_s"):
+        bench._within_3x(1.0, True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="one_batch_s"):
+        bench._within_3x(1.0, -1.0)
     with pytest.raises(ValueError, match="finite"):
         bench._require_build_time("one_batch_s", math.nan)
 
@@ -655,6 +659,40 @@ def test_one_track_per_camera_is_offset_along_the_chain() -> None:
     assert bench._track_start(plan, 5, 0) == 50.0
 
 
+@pytest.mark.parametrize(
+    "plan",
+    [
+        case_plan("ac09", scale=0.01),
+        case_plan("ac09", scale=0.003),
+        case_plan("ac09"),
+        case_plan("stress-6000x512"),
+    ],
+    ids=["small", "two-tracks", "full", "stress"],
+)
+def test_last_track_on_the_last_camera_ends_at_the_window(plan: bench.CasePlan) -> None:
+    """The last cam-5 track ends on the window, and its start is span minus slack.
+
+    Slack is the chain offset plus the track duration. The last camera adds
+    that offset back, so its start is ``span - slack + chain``.
+    """
+    assert plan.tracks_per_camera >= 2
+    if plan.tracks_per_camera == 2:
+        assert plan.case == "ac09"
+    span = plan.hours_per_camera * 3600.0
+    duration = (plan.observations_per_track - 1) * 0.05
+    chain = (plan.cameras - 1) * 10.0
+    slack = chain + duration
+    last_track = plan.tracks_per_camera - 1
+    start = bench._track_start(plan, plan.cameras - 1, last_track)
+    end = start + duration
+    window_end = bench._window(plan)[1]
+    assert bench._track_start(plan, 0, last_track) == pytest.approx(span - slack)
+    assert start == pytest.approx(span - slack + chain)
+    assert end <= window_end
+    assert end == pytest.approx(window_end)
+    assert bench._schedule_slack(plan) == pytest.approx(slack)
+
+
 def test_timers_subtract_the_start_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     ticks = iter((10.0, 10.25, 20.0, 20.5, 30.0, 30.75))
     monkeypatch.setattr(bench.time, "perf_counter", lambda: next(ticks))
@@ -753,6 +791,7 @@ def test_small_index_search_and_route_do_the_work(
     assert world.vectors.count("CODE_TEST", plan.run_id) == plan.tracks
     assert bench._window(plan) == (0.0, 7200.0)
     assert world.topology.successors("cam-0") == ("cam-1",)
+    assert world.topology.successors("cam-4") == ("cam-5",)
     assert world.topology.successors("cam-5") == ()
     red_ids = [track_id for track_id in range(plan.tracks_per_camera) if track_id % 6 == 0]
     found = bench._attribute_search(world, {"upper_color": "red"})
