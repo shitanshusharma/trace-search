@@ -1301,13 +1301,10 @@ def test_describe_source_clock_starts_at_zero(
         def frames(self) -> object:
             start = 0.0 if self.start is None else float(self.start)
             for number in range(2):
-                stamp = start + number / 10.0
-                stamps.append(stamp)
-                yield stamp
+                yield start + number / 10.0
 
     def _capture(source: _Source, *_args: object, **_kwargs: object) -> None:
-        for _frame in source.frames():
-            continue
+        stamps.extend(float(item) for item in source.frames())
 
     monkeypatch.setattr(e2e, "FileVideoSource", _Source)
     monkeypatch.setattr(e2e, "load_tracklets", lambda *_args, **_kwargs: ())
