@@ -11,8 +11,6 @@ from typing import Any
 
 import pytest
 
-collect_ignore = ["test_e2e_demo.py"]
-
 SCHEMA_PATH = Path("licenses/manifest_schema.json")
 
 SmokeSet = tuple[Path, list[dict[str, Any]]]

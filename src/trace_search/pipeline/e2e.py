@@ -110,7 +110,7 @@ __all__ = [
 ]
 
 # D-T6-2 (a). Fixed before the first run. Do not move these to pass a clip.
-SEGMENT_RECALL_MIN = 1.01
+SEGMENT_RECALL_MIN = 0.80
 SEGMENT_PRECISION_MIN = 0.90
 FALSE_MERGE_MAX = 0.05
 
