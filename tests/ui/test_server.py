@@ -572,6 +572,33 @@ def test_symlink_to_repo_root_is_refused(
     assert "data dir is inside the repository" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "rel",
+    ["src/trace_search", "src/trace_search/ui/static", "tests/ui"],
+)
+def test_deep_path_under_repo_is_refused(rel: str, capsys: pytest.CaptureFixture[str]) -> None:
+    target = _REPO / rel
+    before = _snapshot(target)
+    assert main(["--data", str(target), "--port", "9"]) == 1
+    assert "inside the repository" in capsys.readouterr().err
+    assert _snapshot(target) == before
+    assert not (_REPO / "audit_logs").exists()
+
+
+def test_symlink_to_deep_repo_dir_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _REPO / "src" / "trace_search"
+    link = tmp_path / "deep"
+    link.symlink_to(target, target_is_directory=True)
+    before_target = _snapshot(target)
+    before_tmp = _snapshot(tmp_path)
+    assert main(["--data", str(link), "--port", "9"]) == 1
+    assert "inside the repository" in capsys.readouterr().err
+    assert _snapshot(target) == before_target
+    assert _snapshot(tmp_path) == before_tmp
+
+
 def test_relative_data_dir_inside_repo_is_refused(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -814,6 +841,49 @@ def test_http_headers_on_ok_unauthorized_and_not_found() -> None:
     assert dotted == 404
     assert _SOURCE_MARKER not in dotted_body
     _assert_security_headers(dotted_headers, api=True)
+
+
+@pytest.mark.parametrize("path", ["/loginx", "/login/x", "/login/", "/search/", "/searchx"])
+def test_route_match_is_exact(path: str) -> None:
+    with _running() as port:
+        status, headers, body = _request(port, "GET", path)
+    assert status == 404
+    assert json.loads(body) == {"error": "not_found"}
+    _assert_security_headers(headers, api=True)
+
+
+def test_garbled_request_keeps_status_line_and_security_headers() -> None:
+    requests = (
+        b"GARBAGE\r\n\r\n",
+        b"GET /login HTTP/9.9\r\nHost: 127.0.0.1\r\n\r\n",
+        b"GET /login\r\n\r\n",
+    )
+    with _running() as port:
+        for raw in requests:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+            try:
+                sock.sendall(raw)
+                payload = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    payload += chunk
+            finally:
+                sock.close()
+            head, separator, body = payload.partition(b"\r\n\r\n")
+            assert separator == b"\r\n\r\n", raw
+            status = head.split(b"\r\n", 1)[0]
+            assert status.startswith(b"HTTP/1.0 "), raw
+            assert status.split()[1] in {b"200", b"400", b"505"}, raw
+            lowered = head.lower()
+            for key, value in _HEADER_VALUES.items():
+                assert f"{key}: {value}".lower().encode() in lowered, raw
+            if status.split()[1] == b"200":
+                assert b"<form" in body
+            else:
+                assert b"cache-control: no-store" in lowered
+                assert json.loads(body) == {"error": "error"}
 
 
 @pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])

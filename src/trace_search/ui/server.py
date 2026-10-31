@@ -70,6 +70,10 @@ class UiHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _send(self, response: UiResponse) -> None:
+        # The stdlib omits the status line for HTTP/0.9, including a garbled
+        # request line and HTTP/9.9, which stay on that default. Answer as 1.0.
+        if self.request_version == "HTTP/0.9":
+            self.request_version = "HTTP/1.0"
         payload = b"" if self.command == "HEAD" else response.body
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
