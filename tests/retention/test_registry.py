@@ -338,6 +338,11 @@ def _created_at_tables_in_source(package_root: Path) -> set[str]:
     return found
 
 
+# Operator accounts are not footage. ``users.created_at`` is when the
+# account was created. The retention purge must not delete those rows.
+_NOT_PURGED = frozenset({"users"})
+
+
 def _uncovered_created_at_tables(
     root: Path,
     clock: _Clock,
@@ -352,7 +357,7 @@ def _uncovered_created_at_tables(
     scanned = _created_at_tables_in_source(package_root)
     assert scanned, "source scan found no created_at tables"
     found.update(scanned)
-    return found - covered
+    return (found - covered) - _NOT_PURGED
 
 
 def _assert_created_at_tables_are_covered(
@@ -529,9 +534,18 @@ def test_created_at_tables_are_covered_by_a_registered_purgeable(tmp_path: Path)
 
 
 def test_source_scan_reads_the_create_table_statements_on_main() -> None:
-    """The scan sees the footage tables, including DDL that nests parentheses."""
+    """The scan sees the footage tables, including DDL that nests parentheses.
+
+    ``users`` is the operator-account table. Its ``created_at`` is not a
+    retention clock, so it is not a purge target.
+    """
     found = _created_at_tables_in_source(_package_source())
-    assert found == {"track_observations", "track_attributes", "appearance_embeddings"}
+    assert found - _NOT_PURGED == {
+        "track_observations",
+        "track_attributes",
+        "appearance_embeddings",
+    }
+    assert found & _NOT_PURGED == _NOT_PURGED
 
 
 def test_source_scan_ignores_a_table_without_created_at(tmp_path: Path) -> None:
