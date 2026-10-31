@@ -72,7 +72,7 @@ class World:
             port=8765,
         )
 
-    def add(self, username: str, role: str, password: str = _SECRET) -> None:
+    def add(self, username: str, role: str, password: str) -> None:
         self.users.add_user(username, role, password)
 
 
@@ -269,7 +269,7 @@ def test_enabled_role_is_operator_or_admin_only(tmp_path: Path) -> None:
 
 
 def test_login_sets_cookie_and_one_success_audit(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     before = len(_entries(world))
     response = _login(world, "ada", _SECRET)
     assert response.status == 200
@@ -295,7 +295,7 @@ def test_login_sets_cookie_and_one_success_audit(world: World) -> None:
 def test_session_id_comes_from_token_urlsafe_32(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     seen: list[int] = []
     real = secrets.token_urlsafe
 
@@ -311,7 +311,7 @@ def test_session_id_comes_from_token_urlsafe_32(
 
 
 def test_login_rotates_a_preset_cookie(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     planted = world.app.sessions.create("intruder", "operator")
     response = _login(world, "ada", _SECRET, cookie=f"session={planted.session_key}")
     issued = _cookie_value(response)
@@ -326,7 +326,7 @@ def test_login_rotates_a_preset_cookie(world: World) -> None:
 
 
 def test_logout_invalidates_the_server_session(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     session_key = _cookie_value(response)
     csrf = _csrf(response)
@@ -349,7 +349,7 @@ def test_logout_invalidates_the_server_session(world: World) -> None:
 
 
 def test_csrf_rejects_another_sessions_token(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     world.add("bea", "admin", _OTHER)
     first = _login(world, "ada", _SECRET)
     second = _login(world, "bea", _OTHER)
@@ -361,7 +361,7 @@ def test_csrf_rejects_another_sessions_token(world: World) -> None:
 
 
 def test_csrf_uses_compare_digest(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     cookie = f"session={_cookie_value(response)}"
     csrf = _csrf(response)
@@ -385,7 +385,7 @@ def test_csrf_uses_compare_digest(world: World, monkeypatch: pytest.MonkeyPatch)
 
 
 def test_csrf_rejects_a_non_ascii_token(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     cookie = f"session={_cookie_value(response)}"
     denied = _post(world, "/logout", cookie, "bad-\u00e9")
@@ -394,7 +394,7 @@ def test_csrf_rejects_a_non_ascii_token(world: World) -> None:
 
 
 def test_post_without_csrf_is_forbidden_and_does_not_run_the_handler(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     cookie = f"session={_cookie_value(response)}"
     csrf = _csrf(response)
@@ -406,7 +406,7 @@ def test_post_without_csrf_is_forbidden_and_does_not_run_the_handler(world: Worl
 
 
 def test_admin_route_requires_the_admin_role(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     world.add("bea", "admin", _OTHER)
     operator = _login(world, "ada", _SECRET)
     admin = _login(world, "bea", _OTHER)
@@ -418,7 +418,7 @@ def test_admin_route_requires_the_admin_role(world: World) -> None:
 
 
 def test_session_id_in_the_query_does_not_authenticate(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     session_key = _cookie_value(response)
     leaked = _get(world, "", path=f"/search?session={session_key}")
@@ -428,7 +428,7 @@ def test_session_id_in_the_query_does_not_authenticate(world: World) -> None:
 
 
 def test_idle_timeout_boundary(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     early = _login(world, "ada", _SECRET)
     early_cookie = f"session={_cookie_value(early)}"
     world.clock.current = 1799
@@ -441,7 +441,7 @@ def test_idle_timeout_boundary(world: World) -> None:
 
 
 def test_idle_window_slides_and_absolute_is_not_swapped(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     cookie = f"session={_cookie_value(response)}"
     world.clock.current = 1799
@@ -453,7 +453,7 @@ def test_idle_window_slides_and_absolute_is_not_swapped(world: World) -> None:
 
 
 def test_absolute_timeout_boundary(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     cookie = f"session={_cookie_value(response)}"
     stamp = 1700
@@ -468,7 +468,7 @@ def test_absolute_timeout_boundary(world: World) -> None:
 
 
 def test_failure_writes_one_detailed_audit_entry(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     before = len(_entries(world))
     response = _login(world, "ada", _OTHER)
     assert response.status == 401
@@ -482,7 +482,7 @@ def test_failure_writes_one_detailed_audit_entry(world: World) -> None:
 
 
 def test_unknown_and_disabled_users_are_failures(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     world.users.disable_user("ada")
     unknown = _login(world, "ghost", _SECRET)
     disabled = _login(world, "ada", _SECRET)
@@ -496,7 +496,7 @@ def test_unknown_and_disabled_users_are_failures(world: World) -> None:
 def test_authenticate_runs_for_unknown_disabled_wrong_and_blocked(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     world.add("ned", "operator", _OTHER)
     world.users.disable_user("ned")
     calls: list[str] = []
@@ -519,7 +519,7 @@ def test_authenticate_runs_for_unknown_disabled_wrong_and_blocked(
 
 
 def test_four_failures_do_not_block_and_five_do(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     world.clock.current = 100
     for _ in range(4):
         assert _login(world, "ada", _OTHER).status == 401
@@ -541,7 +541,7 @@ def test_four_failures_do_not_block_and_five_do(world: World) -> None:
 
 
 def test_block_duration_and_window_boundaries(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     world.add("bea", "operator", _OTHER)
     world.clock.current = 0
     for _ in range(4):
@@ -558,7 +558,7 @@ def test_block_duration_and_window_boundaries(world: World) -> None:
 
 
 def test_block_lasts_fifteen_minutes_for_that_username_only(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     world.add("bea", "operator", _OTHER)
     world.clock.current = 100
     for _ in range(5):
@@ -573,7 +573,7 @@ def test_block_lasts_fifteen_minutes_for_that_username_only(world: World) -> Non
 
 
 def test_success_clears_failures_but_not_an_active_block(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     for _ in range(4):
         assert _login(world, "ada", _OTHER).status == 401
     assert _login(world, "ada", _SECRET).status == 200
@@ -588,7 +588,7 @@ def test_success_clears_failures_but_not_an_active_block(world: World) -> None:
 
 
 def test_malformed_login_is_not_an_attempt(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     before = len(_entries(world))
     bodies = (
         b"user=a&secret=b",
@@ -620,7 +620,7 @@ def test_malformed_login_is_not_an_attempt(world: World) -> None:
 
 @pytest.mark.parametrize("as_json", [False, True])
 def test_form_and_json_bodies_both_login(world: World, as_json: bool) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET, as_json=as_json)
     assert response.status == 200
     assert _cookie_header(response) is not None
@@ -635,7 +635,7 @@ def test_form_and_json_bodies_both_login(world: World, as_json: bool) -> None:
     ],
 )
 def test_each_loopback_host_is_allowed(world: World, host: str) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _OTHER, host=host.format(port=world.app.port))
     assert response.status == 401
     assert _entries(world)[-1].details == "invalid credentials"
@@ -650,7 +650,7 @@ def test_each_loopback_host_is_allowed(world: World, host: str) -> None:
     ],
 )
 def test_each_loopback_origin_is_allowed(world: World, origin: str) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(
         world,
         "ada",
@@ -662,7 +662,7 @@ def test_each_loopback_origin_is_allowed(world: World, origin: str) -> None:
 
 
 def test_missing_origin_is_allowed_and_empty_origin_is_refused(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     missing = _login(world, "ada", _OTHER)
     assert missing.status == 401
     assert len(_entries(world)) == 1
@@ -688,7 +688,7 @@ def test_missing_origin_is_allowed_and_empty_origin_is_refused(world: World) -> 
     ],
 )
 def test_foreign_host_variants_are_refused(world: World, host: str) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     before = len(_entries(world))
     response = _login(world, "ada", _SECRET, host=host.format(port=world.app.port))
     assert response.status == 403
@@ -716,7 +716,7 @@ def test_foreign_host_variants_are_refused(world: World, host: str) -> None:
 def test_foreign_origin_variants_are_refused(
     world: World, monkeypatch: pytest.MonkeyPatch, origin: str
 ) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     before = len(_entries(world))
     calls = {"count": 0}
     real = UserStore.authenticate
@@ -740,7 +740,7 @@ def test_foreign_origin_variants_are_refused(
 
 
 def test_refused_host_does_not_authenticate(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
 
     def _boom(self: UserStore, username: str, password: str) -> bool:
         raise AssertionError("authenticate called")
@@ -796,7 +796,7 @@ def test_non_get_methods_require_a_loopback_host(world: World, method: str) -> N
 
 
 def test_missing_host_is_refused(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET, include_host=False)
     assert response.status == 403
     assert len(world.app.sessions) == 0
@@ -853,7 +853,7 @@ def test_login_does_not_initialize_a_missing_audit_log(
 
 
 def test_verify_accepts_the_log_after_mixed_attempts(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     assert _login(world, "ada", _OTHER).status == 401
     success = _login(world, "ada", _SECRET)
     assert success.status == 200
@@ -863,7 +863,7 @@ def test_verify_accepts_the_log_after_mixed_attempts(world: World) -> None:
 
 
 def test_http_cookie_flags_logout_and_duplicate_host(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     with _running(world.app) as httpd:
         port = int(httpd.server_address[1])
         status, headers, body = _exchange(port, "POST", "/login", _body("ada", _SECRET))
@@ -937,7 +937,7 @@ def test_http_cookie_flags_logout_and_duplicate_host(world: World) -> None:
 
 
 def test_extra_cookie_pair_still_selects_the_session(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     session_key = _cookie_value(response)
     allowed = _get(world, f"theme=dark; session={session_key}")
@@ -983,7 +983,7 @@ def test_server_start_creates_a_private_user_db_and_does_not_initialize(
 
 
 def test_login_does_not_leak_file_descriptors(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     before = set(os.listdir("/proc/self/fd"))
     for _ in range(4):
         assert _login(world, "ada", _OTHER).status == 401
@@ -996,7 +996,7 @@ def test_logout_handler_rejects_a_missing_session_and_a_bad_csrf(world: World) -
     from trace_search.ui.pages.login import handle_logout
     from trace_search.ui.routes import _from_handler
 
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     signed_in = _login(world, "ada", _SECRET)
     session_key = _cookie_value(signed_in)
     csrf = _csrf(signed_in)
@@ -1036,7 +1036,7 @@ def test_logout_handler_rejects_a_missing_session_and_a_bad_csrf(world: World) -
 
 
 def test_odd_cookies_do_not_authenticate(world: World) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     assert _get(world, "theme=dark").status == 401
     assert _get(world, 'session="a\nb"').status == 401
     world.app.sessions.invalidate(None)
@@ -1046,7 +1046,7 @@ def test_odd_cookies_do_not_authenticate(world: World) -> None:
 def test_login_fails_when_the_enabled_role_disappears(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
 
     def _missing(self: UserStore, username: str) -> None:
         return None
@@ -1078,7 +1078,7 @@ def test_empty_csrf_value_does_not_match() -> None:
 def test_non_canonical_session_key_is_rejected(world: World) -> None:
     from trace_search.ui.sessions import Session
 
-    world.add("ada", "operator")
+    world.add("ada", "operator", _SECRET)
     planted = (
         "short-key",
         "a" * 42,

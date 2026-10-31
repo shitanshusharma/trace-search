@@ -12,8 +12,14 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from trace_search.audit import AuditLog
+    from trace_search.ui.users import UserStore
 
 IDLE_TIMEOUT_SECONDS = 30 * 60
 ABSOLUTE_TIMEOUT_SECONDS = 8 * 60 * 60
@@ -141,6 +147,29 @@ def _absolute_expired(session: Session, now: float) -> bool:
 
 def _expired(session: Session, now: float) -> bool:
     return _idle_expired(session, now) or _absolute_expired(session, now)
+
+
+@dataclass
+class AppState:
+    """Stores for one running UI process. ``port`` is the bound port."""
+
+    users: UserStore
+    audit: AuditLog
+    sessions: SessionStore
+    limiter: LoginLimiter
+    port: int
+
+
+@dataclass(frozen=True)
+class UiRequest:
+    """One HTTP request the route table can answer."""
+
+    method: str
+    path: str
+    static_root: Path
+    body: bytes = b""
+    header_map: Mapping[str, str] = field(default_factory=dict)
+    app: AppState | None = None
 
 
 class SessionStore:

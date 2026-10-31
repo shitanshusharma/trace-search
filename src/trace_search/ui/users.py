@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeVar, cast
 
-from trace_search.ui.cli import outside_repo, repo_root_from
+from trace_search.ui.data_path import outside_repo, repo_root_from
 
 _ROLES = frozenset({"operator", "admin"})
 # D-T7-4. New hashes use this row.

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from trace_search.ui.routes import UiRequest, UiResponse, dispatch, server_error
 
 if TYPE_CHECKING:
-    from trace_search.ui.pages.login import AppState
+    from trace_search.ui.sessions import AppState
 
 _ERROR_BODY = b'{"error":"error"}'
 

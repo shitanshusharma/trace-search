@@ -12,31 +12,18 @@ import json
 import urllib.parse
 from dataclasses import dataclass
 
-from trace_search.audit import AuditAction, AuditLog
-from trace_search.ui.routes import UiRequest
+from trace_search.audit import AuditAction
 from trace_search.ui.sessions import (
-    LoginLimiter,
-    SessionStore,
+    AppState,
+    UiRequest,
     clear_session_cookie,
     csrf_matches,
     session_id_from_cookie,
     set_session_cookie,
 )
-from trace_search.ui.users import UserStore
 
 DETAIL_INVALID = "invalid credentials"
 DETAIL_BLOCKED = "blocked"
-
-
-@dataclass
-class AppState:
-    """Stores for one running UI process. ``port`` is the bound port."""
-
-    users: UserStore
-    audit: AuditLog
-    sessions: SessionStore
-    limiter: LoginLimiter
-    port: int
 
 
 @dataclass(frozen=True)

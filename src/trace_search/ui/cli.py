@@ -7,33 +7,19 @@ and returns before any directory or file is written.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from trace_search.ui.pages.login import AppState
+    from trace_search.ui.sessions import AppState
 
 from trace_search.audit import AuditLog, default_log_path
+from trace_search.ui.data_path import outside_repo, repo_root_from
 from trace_search.ui.server import BIND_HOST, UiServer, host_is_loopback, make_server, serve_forever
 
 INIT_COMMAND = "AuditLog.initialize()"
-
-
-def repo_root_from(start: Path) -> Path | None:
-    """Return the checkout that contains ``start``, if one can be proved."""
-    try:
-        current = start.resolve()
-    except (OSError, RuntimeError):
-        return None
-    for parent in (current, *current.parents):
-        marker = parent / "pyproject.toml"
-        package = parent / "src" / "trace_search"
-        if marker.is_file() and package.is_dir():
-            return parent
-    return None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -42,27 +28,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default=BIND_HOST)
     parser.add_argument("--port", type=int, default=8765)
     return parser
-
-
-def _within(path: Path, root: Path) -> bool:
-    return path == root or root in path.parents
-
-
-def outside_repo(data_dir: Path, root: Path) -> Path:
-    """Resolve ``data_dir`` and refuse a path that sits inside the checkout."""
-    expanded = data_dir.expanduser()
-    try:
-        lexical = Path(os.path.abspath(expanded))
-        resolved = expanded.resolve()
-    except (OSError, RuntimeError) as exc:
-        raise ValueError(f"data dir is inside the repository: {data_dir}") from exc
-    root_resolved = root.resolve()
-    lexical_inside = _within(lexical, root_resolved)
-    resolved_inside = _within(resolved, root_resolved)
-    if lexical_inside or resolved_inside:
-        shown = resolved if resolved_inside else lexical
-        raise ValueError(f"data dir is inside the repository: {shown}")
-    return resolved
 
 
 def _host_problem(host: str) -> str | None:
@@ -117,8 +82,7 @@ def build_server(argv: list[str] | None = None) -> UiServer | int:
 
 def _live_app(data_dir: Path, port: int) -> AppState:
     """Open the user db and attach in-memory sessions. The audit log already exists."""
-    from trace_search.ui.pages.login import AppState
-    from trace_search.ui.sessions import LoginLimiter, SessionStore
+    from trace_search.ui.sessions import AppState, LoginLimiter, SessionStore
     from trace_search.ui.users import UserStore
 
     clock = time.time

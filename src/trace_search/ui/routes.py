@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from trace_search.ui.sessions import (
+    UiRequest as UiRequest,
+)
 from trace_search.ui.sessions import (
     csrf_matches,
     is_state_changing,
@@ -17,7 +20,7 @@ from trace_search.ui.sessions import (
 )
 
 if TYPE_CHECKING:
-    from trace_search.ui.pages.login import AppState, HandlerResult
+    from trace_search.ui.pages.login import HandlerResult
 
 AuthRule = Literal["public", "operator", "admin"]
 
@@ -30,18 +33,6 @@ STATIC_FILES: dict[str, str] = {
     "app.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
 }
-
-
-@dataclass(frozen=True)
-class UiRequest:
-    """One HTTP request the route table can answer."""
-
-    method: str
-    path: str
-    static_root: Path
-    body: bytes = b""
-    header_map: Mapping[str, str] = field(default_factory=dict)
-    app: AppState | None = None
 
 
 @dataclass(frozen=True)
