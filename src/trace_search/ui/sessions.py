@@ -127,11 +127,11 @@ def _cookie_pairs(header: str) -> list[tuple[str, str]]:
     """
     found: list[tuple[str, str]] = []
     for part in header.split(";"):
-        piece = part.strip()
+        piece = part.strip(" \t")
         if len(piece) == 0:
             continue
         cookie_name, _separator, raw = piece.partition("=")
-        found.append((cookie_name.strip(), raw.strip()))
+        found.append((cookie_name.strip(" \t"), raw.strip(" \t")))
     return found
 
 

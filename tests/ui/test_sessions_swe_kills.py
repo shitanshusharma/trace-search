@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 from pathlib import Path
@@ -385,14 +386,14 @@ def test_space_before_equals_in_the_session_pair_is_pinned(world: World) -> None
 
 
 def test_space_around_equals_in_the_session_pair_is_padding(world: World) -> None:
-    """``session= K`` and a trailing space are the same cookie."""
+    """``session= K`` and a trailing space are the same cookie. A newline is not."""
     world.add("ada", "operator", _SECRET)
     key = _cookie_value(_login(world, "ada", _SECRET))
     assert session_id_from_cookie(f"session= {key}") == key
     assert session_id_from_cookie(f"session={key} ") == key
     assert session_id_from_cookie(f"session\t={key}") == key
-    assert session_id_from_cookie(f"session=\n{key}") == key
-    assert session_id_from_cookie(f"session\n={key}") == key
+    assert session_id_from_cookie(f"session=\n{key}") is None
+    assert session_id_from_cookie(f"session\n={key}") is None
 
 
 def test_username_cap_counts_characters_not_bytes(world: World) -> None:
@@ -439,3 +440,60 @@ def test_empty_pieces_and_foreign_names_do_not_hide_one_session(world: World) ->
     assert session_id_from_cookie(f"a=b; c=d; session={key}") == key
     assert session_id_from_cookie(f"session={key}; a=b; c=d") == key
     assert _get(world, f"theme=x;; session={key}").status == 501
+
+
+def _two(world: World) -> tuple[str, str]:
+    world.add("ada", "operator", _SECRET)
+    world.add("bea", "operator", _OTHER)
+    return _cookie_value(_login(world, "ada", _SECRET)), _cookie_value(_login(world, "bea", _OTHER))
+
+
+def test_identical_duplicate_session_pairs_fail_closed(world: World) -> None:
+    """The session name must appear once, even when both values are the same key."""
+    a, _b = _two(world)
+    assert session_id_from_cookie(f"session={a}; session={a}") is None
+    assert _get(world, f"session={a}; theme=dark; session={a}").status == 401
+
+
+def test_second_session_with_an_equals_in_its_value_still_counts(world: World) -> None:
+    """``session=x=y`` is a second session pair. The name is the text before the first ``=``."""
+    a, b = _two(world)
+    assert session_id_from_cookie(f"session={a}; session=x=y") is None
+    assert session_id_from_cookie(f"session=x=y; session={a}") is None
+    assert session_id_from_cookie(f"session={a}; session={b}=") is None
+
+
+def test_a_name_ending_in_session_is_a_different_cookie(world: World) -> None:
+    """``xsession`` and ``my_session`` are other cookies."""
+    a, b = _two(world)
+    assert session_id_from_cookie(f"xsession={b}; session={a}") == a
+    assert session_id_from_cookie(f"session={a}; my_session={b}") == a
+    assert session_id_from_cookie(f"xsession={a}") is None
+
+
+def test_repeated_cookie_headers_over_http_fail_closed(world: World) -> None:
+    """Two Cookie headers are refused. One Cookie header still authenticates."""
+    a, _b = _two(world)
+    with _running(world.app) as httpd:
+        port = int(httpd.server_address[1])
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("GET", "/search", skip_host=True)
+        conn.putheader("Host", f"127.0.0.1:{port}")
+        conn.putheader("Cookie", f"session={a}")
+        conn.putheader("Cookie", "theme=dark")
+        conn.endheaders()
+        response = conn.getresponse()
+        response.read()
+        conn.close()
+        assert response.status == 401
+        ok, _h, _p = _exchange(port, "GET", "/search", headers={"Cookie": f"session={a}"})
+        assert ok == 501
+
+
+def test_nbsp_is_not_cookie_padding(world: World) -> None:
+    """Only space and tab are padding. A leading NBSP is part of the name."""
+    world.add("ada", "operator", _SECRET)
+    key = _cookie_value(_login(world, "ada", _SECRET))
+    assert session_id_from_cookie(f"\xa0session={key}") is None
+    assert session_id_from_cookie(f"session={key}\xa0") is None
+    assert _get(world, f"\xa0session={key}").status == 401
