@@ -133,8 +133,8 @@ Or [watch the GIF](https://github.com/user-attachments/assets/efbd22e3-568c-4c1a
 - The embedders are random-init: an untrained placeholder and a random-init OSNet-lite. No training runs. There is no trained ReID model here.
 - Scores are not evidence. Smoke output is not evidence for any acceptance criterion. ReID eval output is not an AC-06 result. The AC-06 harness is DEFERRED. The end-to-end demo output is not evidence for any acceptance criterion. AC-07 is DEFERRED.
 - Cut 01 is still in progress.
-- The web UI and the search API are planned. Both packages are stubs.
-- A synthetic end-to-end demo runs (`scripts/run_e2e_demo.py`). Its output is not evidence for any acceptance criterion. `matching/` has route, topology, and tracklet code. Nothing serves that as a search API yet.
+- The web UI is planned. That package is a stub. `api/` is in-process search for attributes, crops, and a chosen track, plus a synthetic latency harness.
+- A synthetic end-to-end demo runs (`scripts/run_e2e_demo.py`). Its output is not evidence for any acceptance criterion. `matching/` has camera topology, tracklets, appearance, cross-camera links, and ordered routes.
 - Retention windows and a footage-derived purge function are in `retention/`. There is no operator UI for them. The status list marks T9 partly done.
 
 A GPU is not required for the commands above. The planned on-prem target is below.
