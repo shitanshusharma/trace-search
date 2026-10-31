@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from scripts.manage_users import main
+from trace_search.ui import users as users_mod
 from trace_search.ui.users import UserStore
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -766,18 +767,40 @@ def test_lost_create_race_still_opens(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_existing_db_mode_is_left_alone(tmp_path: Path) -> None:
     path = tmp_path / "users.sqlite"
-    previous = os.umask(0)
+    previous = os.umask(0o027)
     try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o640)
+        os.close(fd)
         with sqlite3.connect(path) as connection:
             connection.execute("SELECT 1")
         created = path.stat().st_mode & 0o777
     finally:
         os.umask(previous)
-    assert created != 0o600
+    assert created == 0o640
     again = UserStore(path)
     again.add_user("ada", "operator", _SECRET)
     assert again.authenticate("ada", _SECRET) is True
     assert path.stat().st_mode & 0o777 == created
+
+
+def test_strict_umask_still_gives_owner_rw(tmp_path: Path) -> None:
+    previous = os.umask(0o277)
+    try:
+        store = UserStore(tmp_path / "users.sqlite")
+        store.add_user("ada", "operator", _SECRET)
+        mode = store.db_path.stat().st_mode & 0o777
+    finally:
+        os.umask(previous)
+    assert mode == 0o600
+    assert store.authenticate("ada", _SECRET) is True
+
+
+def test_new_db_does_not_leak_a_descriptor(tmp_path: Path) -> None:
+    UserStore(tmp_path / "warm.sqlite")
+    before = len(os.listdir("/proc/self/fd"))
+    for index in range(5):
+        UserStore(tmp_path / f"users-{index}.sqlite")
+    assert len(os.listdir("/proc/self/fd")) == before
 
 
 def test_unknown_and_disabled_pay_for_scrypt(
@@ -813,6 +836,12 @@ def test_unknown_and_disabled_pay_for_scrypt(
 def test_verify_uses_stored_scrypt_parameters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Production verification accepts only the D-T7-4 row. This call adds p=2
+    # for the fixture so the parsed fields are the ones scrypt receives.
+    monkeypatch.setattr(
+        "trace_search.ui.users._ALLOWED_KDF",
+        frozenset({(2**14, 8, 1, 64), (2**14, 8, 2, 64)}),
+    )
     store = _store(tmp_path)
     store.add_user("ada", "operator", _SECRET)
     salt = bytes(range(16))
@@ -848,7 +877,9 @@ def test_verify_uses_stored_scrypt_parameters(
     ("n", "r", "p", "dklen"),
     [
         (2**13, 8, 1, 64),
+        (2**12, 8, 1, 64),
         (2**14, 4, 1, 64),
+        (2**14, 1, 1, 64),
         (2**14, 8, 3, 64),
         (2**14, 8, 1, 32),
     ],
@@ -868,6 +899,129 @@ def test_disallowed_kdf_parameters_do_not_authenticate(
         dklen=dklen,
     )
     _set_hash(store, "ada", _frame(n, r, p, dklen, salt, digest))
+    assert store.authenticate("ada", _SECRET) is False
+
+
+@pytest.mark.parametrize(
+    ("n", "r", "p", "dklen"),
+    [
+        (2**15, 8, 1, 64),
+        (2**14, 16, 1, 64),
+        (2**14, 8, 1, 128),
+        (2**14, 8, 1, 65),
+    ],
+)
+def test_stronger_kdf_cells_are_refused(tmp_path: Path, n: int, r: int, p: int, dklen: int) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    salt = bytes(range(16))
+    # n=2**15 and r=16 need 32 MiB, which is hashlib's default maxmem.
+    if n * r * 128 < 32 * 1024 * 1024:
+        digest = hashlib.scrypt(
+            _SECRET.encode("utf-8"),
+            salt=salt,
+            n=n,
+            r=r,
+            p=p,
+            dklen=dklen,
+        )
+    else:
+        digest = bytes(dklen)
+    _set_hash(store, "ada", _frame(n, r, p, dklen, salt, digest))
+    assert store.authenticate("ada", _SECRET) is False
+
+
+@pytest.mark.parametrize(
+    "n_text",
+    [
+        "+16384",
+        " 16384",
+        "16384 ",
+        "16_384",
+        "\u0661\u0666\u0663\u0668\u0664",
+        "000016384",
+        "0000016384",
+        "0000000016384",
+    ],
+)
+def test_non_canonical_kdf_field_is_refused(tmp_path: Path, n_text: str) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    salt = bytes(range(16))
+    digest = hashlib.scrypt(
+        _SECRET.encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=64,
+    )
+    framed = f"scrypt${n_text}$8$1$64${salt.hex()}${digest.hex()}"
+    _set_hash(store, "ada", framed)
+    assert store.authenticate("ada", _SECRET) is False
+    _set_hash(store, "ada", _frame(2**14, 8, 1, 64, salt, digest))
+    assert store.authenticate("ada", _SECRET) is True
+
+
+def test_kdf_field_cap_boundary(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    salt = bytes(range(16))
+    digest = hashlib.scrypt(
+        _SECRET.encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=64,
+    )
+    _set_hash(store, "ada", f"scrypt$00016384$8$1$64${salt.hex()}${digest.hex()}")
+    assert store.authenticate("ada", _SECRET) is True
+
+
+def test_kdf_allowlist_is_exact() -> None:
+    allowed = {(2**14, 8, 1, 64)}
+    accepted: set[tuple[int, int, int, int]] = set()
+    for power in range(1, 21):
+        for block_r in range(1, 17):
+            for parallel in range(1, 5):
+                for length in (16, 32, 63, 64, 65, 128):
+                    fields = (
+                        "scrypt",
+                        str(2**power),
+                        str(block_r),
+                        str(parallel),
+                        str(length),
+                        bytes(range(16)).hex(),
+                        bytes(length).hex(),
+                    )
+                    stored = "$".join(fields)
+                    if users_mod._parsed_hash(stored) is not None:
+                        accepted.add((2**power, block_r, parallel, length))
+    assert accepted == allowed
+
+
+@pytest.mark.parametrize(
+    ("field", "text"),
+    [
+        (1, "8192"),
+        (1, "32768"),
+        (2, "4"),
+        (2, "16384"),
+        (3, "2"),
+        (4, "32"),
+    ],
+)
+def test_digit_valid_tampered_kdf_field_does_not_authenticate(
+    tmp_path: Path, field: int, text: str
+) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    parts = str(
+        _scalar(store, "SELECT password_hash FROM users WHERE username = ?", ("ada",))
+    ).split("$")
+    parts[field] = text
+    _set_hash(store, "ada", "$".join(parts))
     assert store.authenticate("ada", _SECRET) is False
 
 
@@ -1009,6 +1163,7 @@ def test_script_process_exit_codes(tmp_path: Path) -> None:
             env=env,
             capture_output=True,
             stdin=subprocess.DEVNULL,
+            start_new_session=True,
             timeout=60,
             check=False,
         )

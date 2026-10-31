@@ -27,14 +27,8 @@ _SCRYPT_P = 1
 _SCRYPT_DKLEN = 64
 _SALT_BYTES = 16
 _HASH_PARTS = 7
-# Verification uses the n, r, p and dklen stored in the hash. p=2 costs
-# more CPU and the same memory, so it stays inside the allowed set.
-_ALLOWED_KDF = frozenset(
-    {
-        (_SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_DKLEN),
-        (_SCRYPT_N, _SCRYPT_R, 2, _SCRYPT_DKLEN),
-    }
-)
+# Verification accepts only the D-T7-4 row stored in the hash.
+_ALLOWED_KDF = frozenset({(_SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_DKLEN)})
 _KDF_DIGIT_CAP = 8
 _DUMMY_SALT = bytes(range(_SALT_BYTES))
 _DUMMY_DIGEST = bytes(_SCRYPT_DKLEN)
