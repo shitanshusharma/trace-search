@@ -75,6 +75,7 @@ _SOURCE_MARKER = b"ThreadingHTTPServer"
 _ROUTE_AUTH = {
     ("GET", "/login"): "public",
     ("POST", "/login"): "public",
+    ("POST", "/logout"): "operator",
     ("GET", "/static/*"): "public",
     ("GET", "/search"): "operator",
     ("GET", "/route"): "operator",
@@ -199,10 +200,13 @@ def test_logged_out_protected_route_is_unauthorized(method: str, path: str, auth
     assert route.auth == auth
     direct = route.handler(UiRequest(method, path, STATIC_DIR))
     gated = dispatch(UiRequest(method, path, STATIC_DIR))
-    assert direct.status == 501
     assert gated.status == 401
     assert json.loads(gated.body) == {"error": "unauthorized"}
     assert gated.api is True
+    if (method, path) == ("POST", "/logout"):
+        assert direct.status == 401
+        return
+    assert direct.status == 501
 
 
 def test_token_query_does_not_authorize_or_echo() -> None:

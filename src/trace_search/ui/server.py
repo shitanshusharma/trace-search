@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import ipaddress
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from trace_search.ui.routes import UiRequest, UiResponse, dispatch, server_error
+
+if TYPE_CHECKING:
+    from trace_search.ui.sessions import AppState
 
 _ERROR_BODY = b'{"error":"error"}'
 
@@ -35,21 +40,50 @@ def host_is_loopback(host: str) -> bool:
     return bool(parsed.is_loopback)
 
 
+_HEADER_KEYS = ("host", "origin", "cookie", "x-csrf-token")
+
+
+def header_map(headers: Message[str, str]) -> dict[str, str]:
+    """Copy the headers the session gate reads. Duplicate values fail closed."""
+    found: dict[str, str] = {}
+    for key in _HEADER_KEYS:
+        values = headers.get_all(key)
+        if not values:
+            continue
+        if len(values) != 1:
+            found[key] = ""
+            continue
+        found[key] = values[0]
+    return found
+
+
 class UiServer(ThreadingHTTPServer):
     """Threaded server bound by ``make_server`` to the IPv4 loopback address."""
 
     allow_reuse_address = True
     daemon_threads = True
     static_root: Path
+    app_state: AppState | None
 
     def __init__(
         self,
         server_address: tuple[str, int],
         handler: type[BaseHTTPRequestHandler],
         static_root: Path,
+        app_state: AppState | None = None,
     ) -> None:
         self.static_root = static_root
+        self.app_state = app_state
         super().__init__(server_address, handler)
+
+    def server_bind(self) -> None:
+        super().server_bind()
+        state = self.app_state
+        if state is None:
+            return
+        bound_port = self.server_address[1]
+        if isinstance(bound_port, int):
+            state.port = bound_port
 
 
 class UiHandler(BaseHTTPRequestHandler):
@@ -78,6 +112,8 @@ class UiHandler(BaseHTTPRequestHandler):
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
         self.send_header("Content-Length", str(len(payload)))
+        for key, value in response.header_pairs:
+            self.send_header(key, value)
         for key, value in SECURITY_HEADERS:
             self.send_header(key, value)
         if response.api:
@@ -88,7 +124,14 @@ class UiHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self) -> None:
         try:
-            request = UiRequest(self.command, self.path, self.server.static_root, self._read_body())
+            request = UiRequest(
+                self.command,
+                self.path,
+                self.server.static_root,
+                self._read_body(),
+                header_map(self.headers),
+                self.server.app_state,
+            )
             response = dispatch(request)
         except Exception:
             self.log_error("request failed")
@@ -130,10 +173,14 @@ class UiHandler(BaseHTTPRequestHandler):
         return
 
 
-def make_server(port: int, static_root: Path | None = None) -> UiServer:
+def make_server(
+    port: int,
+    static_root: Path | None = None,
+    app_state: AppState | None = None,
+) -> UiServer:
     """Bind ``127.0.0.1`` and ``port``. The host argument is not a bind address."""
     root = STATIC_DIR if static_root is None else static_root
-    return UiServer((BIND_HOST, port), UiHandler, root)
+    return UiServer((BIND_HOST, port), UiHandler, root, app_state)
 
 
 def serve_forever(httpd: UiServer) -> None:
