@@ -115,16 +115,15 @@ class UiHandler(BaseHTTPRequestHandler):
     def send_error(
         self,
         code: int,
-        message: str | None = None,
-        explain: str | None = None,
+        _message: str | None = None,
+        _explain: str | None = None,
     ) -> None:
         """Replace the stdlib HTML error page so every error keeps the security headers."""
-        del message, explain
         self._send(UiResponse(int(code), _ERROR_BODY, "application/json", True))
 
-    def log_message(self, fmt: str, *args: object) -> None:
+    def log_message(self, _fmt: str, *_args: object) -> None:
         """Keep request lines off stderr. Startup errors are printed by the CLI."""
-        del fmt, args
+        return
 
 
 def make_server(port: int, static_root: Path | None = None) -> UiServer:
