@@ -7,7 +7,6 @@ never written into a URL. The audit log is not opened or initialized here.
 from __future__ import annotations
 
 import hmac
-import http.cookies
 import re
 import secrets
 import threading
@@ -119,37 +118,36 @@ def clear_session_cookie() -> str:
     return f"{SESSION_COOKIE}=; {_cookie_attributes()}; Max-Age=0"
 
 
-def _cookie_pair_names(header: str) -> list[str]:
-    """Cookie names in header order. The match is case-sensitive."""
-    found: list[str] = []
+def _cookie_pairs(header: str) -> list[tuple[str, str]]:
+    """Cookie pairs in header order, split on ``;`` only.
+
+    The name match is case-sensitive. Space and tab around ``=`` are padding.
+    A comma stays inside the value. Other cookies are kept so a second
+    ``session`` name is visible; their values are not interpreted.
+    """
+    found: list[tuple[str, str]] = []
     for part in header.split(";"):
         piece = part.strip()
         if len(piece) == 0:
             continue
-        cookie_name, _separator, _raw = piece.partition("=")
-        found.append(cookie_name.strip())
+        cookie_name, _separator, raw = piece.partition("=")
+        found.append((cookie_name.strip(), raw.strip()))
     return found
 
 
 def session_id_from_cookie(header: str | None) -> str | None:
-    """Return the session cookie when the name appears once and the value is canonical.
+    """Return the session cookie when that name appears once and the value is canonical.
 
-    ``session=A; session=B`` is refused. ``Session=`` is a different name.
-    Query strings are ignored.
+    ``session=A; session=B`` is refused. A second ``session`` written with a
+    space, tab, or comma is part of one value, and that value is not
+    canonical, so it is refused too. ``Session=`` is a different name.
+    Quoted and escaped values are refused. Cookies set by another localhost
+    app are ignored, whatever they contain. ``session =value`` is accepted:
+    the space before ``=`` is padding. Query strings are ignored.
     """
     if header is None or header == "":
         return None
-    jar = http.cookies.SimpleCookie()
-    try:
-        jar.load(header)
-    except http.cookies.CookieError:
-        return None
-    chosen: list[str] = []
-    for cookie_name in _cookie_pair_names(header):
-        if cookie_name == SESSION_COOKIE:
-            morsel = jar.get(cookie_name)
-            if morsel is not None:
-                chosen.append(morsel.value)
+    chosen = [raw for cookie_name, raw in _cookie_pairs(header) if cookie_name == SESSION_COOKIE]
     if len(chosen) != 1:
         return None
     value = chosen[0]

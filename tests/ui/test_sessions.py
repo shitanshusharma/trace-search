@@ -1083,6 +1083,23 @@ def test_json_that_is_not_an_object_is_not_an_attempt() -> None:
     assert _parse_json(b'"ada"') is None
 
 
+def test_deeply_nested_json_is_not_an_attempt(world: World) -> None:
+    nested = b'{"a":' + (b"[" * 4000) + b"1" + (b"]" * 4000) + b"}"
+    response = dispatch(
+        UiRequest(
+            "POST",
+            "/login",
+            STATIC_DIR,
+            nested,
+            {"host": f"127.0.0.1:{world.app.port}"},
+            world.app,
+        )
+    )
+    assert response.status == 401
+    assert json.loads(response.body) == {"error": "unauthorized"}
+    assert _entries(world) == []
+
+
 def test_empty_csrf_value_does_not_match() -> None:
     from trace_search.ui.sessions import csrf_matches
 

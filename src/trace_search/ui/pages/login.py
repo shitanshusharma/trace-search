@@ -60,7 +60,7 @@ def _object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str,
 def _parse_json(body: bytes) -> tuple[str, str] | None:
     try:
         loaded = json.loads(body, object_pairs_hook=_object_without_duplicate_keys)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, RecursionError):
         return None
     if isinstance(loaded, dict):
         return _usable_pair(loaded.get("username"), loaded.get("password"))

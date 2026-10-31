@@ -30,6 +30,7 @@ from trace_search.ui.sessions import (
     bound_host_values,
     bound_origin_values,
     csrf_matches,
+    session_id_from_cookie,
 )
 from trace_search.ui.users import UserStore
 
@@ -197,3 +198,51 @@ def test_k10_blocked_attempt_still_runs_authenticate(
         _login(world, "ada", _OTHER)
     assert _login(world, "ada", _SECRET).status == 403
     assert len(calls) == 6
+
+
+def _two_sessions(world: World) -> tuple[str, str]:
+    world.add("ada", "operator", _SECRET)
+    world.add("bea", "operator", _OTHER)
+    return (
+        _cookie_value(_login(world, "ada", _SECRET)),
+        _cookie_value(_login(world, "bea", _OTHER)),
+    )
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "session={a} session={b}",
+        "session={a}\tsession={b}",
+        "session={a}, session={b}",
+        'session="{a}" session={b}',
+    ],
+)
+def test_k11_duplicate_session_pairs_fail_closed_with_any_separator(
+    world: World, template: str
+) -> None:
+    a, b = _two_sessions(world)
+    header = template.format(a=a, b=b)
+    assert session_id_from_cookie(header) is None
+    assert _get(world, header).status == 401
+
+
+def test_k12_planted_pair_inside_another_cookie_value_is_not_chosen(world: World) -> None:
+    """A cookie whose value has a space (``x=foo session=B``) must not override the real pair."""
+    a, b = _two_sessions(world)
+    assert session_id_from_cookie(f"session={a}; x=foo session={b}") in (None, a)
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "session ={a}; session={b}",
+        "session={a};; session={b}",
+        "session={a}; ; session={b}",
+    ],
+)
+def test_k13_duplicate_pairs_with_odd_spacing_fail_closed(world: World, template: str) -> None:
+    a, b = _two_sessions(world)
+    header = template.format(a=a, b=b)
+    assert session_id_from_cookie(header) is None
+    assert _get(world, header).status == 401

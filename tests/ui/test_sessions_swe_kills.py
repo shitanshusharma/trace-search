@@ -342,3 +342,100 @@ def test_built_server_audits_into_the_verified_log(
     entries = log.read_all()
     assert [entry.operator_username for entry in entries] == ["ada"]
     assert log.verify().valid
+
+
+def test_space_in_another_cookie_value_does_not_smuggle_a_session(world: World) -> None:
+    """A planted ``theme=x session=<other key>`` must not run the request as that other key."""
+    world.add("ada", "admin", _SECRET)
+    world.add("mal", "operator", _OTHER)
+    victim = _login(world, "ada", _SECRET)
+    attacker = _login(world, "mal", _OTHER)
+    legit = _cookie_value(victim)
+    evil = _cookie_value(attacker)
+    header = f"session={legit}; theme=x session={evil}"
+    assert session_id_from_cookie(header) in (legit, None)
+    assert session_id_from_cookie(f"session={legit} session={evil}") is None
+    assert session_id_from_cookie(f"session={legit}\tsession={evil}") is None
+    assert session_id_from_cookie(f"session={legit}\nsession={evil}") is None
+    status = _post(world, "/retention", header, _csrf(victim)).status
+    assert status in (501, 401)
+
+
+def test_empty_cookie_pieces_do_not_hide_a_duplicate(world: World) -> None:
+    """An empty piece must not stop the walk, or ``session=A;; session=B`` is accepted."""
+    world.add("ada", "operator", _SECRET)
+    first = _cookie_value(_login(world, "ada", _SECRET))
+    second = _cookie_value(_login(world, "ada", _SECRET))
+    assert session_id_from_cookie(f"session={first};; session={second}") is None
+    assert _get(world, f"session={first};; session={second}").status == 401
+
+
+def test_comma_inside_another_cookie_value_is_not_a_separator(world: World) -> None:
+    """``theme=a,session`` is one pair. A comma is a legal value character."""
+    world.add("ada", "operator", _SECRET)
+    key = _cookie_value(_login(world, "ada", _SECRET))
+    assert session_id_from_cookie(f"theme=a,session; session={key}") == key
+
+
+def test_space_before_equals_in_the_session_pair_is_pinned(world: World) -> None:
+    """``session =K`` is the session cookie. The space before ``=`` is padding."""
+    world.add("ada", "operator", _SECRET)
+    key = _cookie_value(_login(world, "ada", _SECRET))
+    assert session_id_from_cookie(f"session ={key}") == key
+
+
+def test_space_around_equals_in_the_session_pair_is_padding(world: World) -> None:
+    """``session= K`` and a trailing space are the same cookie."""
+    world.add("ada", "operator", _SECRET)
+    key = _cookie_value(_login(world, "ada", _SECRET))
+    assert session_id_from_cookie(f"session= {key}") == key
+    assert session_id_from_cookie(f"session={key} ") == key
+    assert session_id_from_cookie(f"session\t={key}") == key
+    assert session_id_from_cookie(f"session=\n{key}") == key
+    assert session_id_from_cookie(f"session\n={key}") == key
+
+
+def test_username_cap_counts_characters_not_bytes(world: World) -> None:
+    """A 64-character non-ASCII name is still an attempt. The cap is not UTF-8 bytes."""
+    name = "\u00e9" * 64
+    response = _login(world, name, _OTHER)
+    assert response.status == 401
+    assert _entries(world)[-1].operator_username == name
+
+
+def test_other_apps_odd_cookie_does_not_drop_our_session(world: World) -> None:
+    """Another localhost app's cookie, placed first, must not hide our session."""
+    world.add("ada", "operator", _SECRET)
+    key = _cookie_value(_login(world, "ada", _SECRET))
+    for other in (
+        'prefs={"a":1}',
+        'x=a"b',
+        "x=a b",
+        "x=caf\u00e9",
+        "x=a\\b",
+        'x="a\x01b"',
+    ):
+        header = f"{other}; session={key}"
+        assert session_id_from_cookie(header) == key, header
+        assert _get(world, header).status == 501, header
+
+
+def test_quoted_session_value_is_not_canonical(world: World) -> None:
+    """The cookie we set is not quoted and not backslash-escaped."""
+    world.add("ada", "operator", _SECRET)
+    key = _cookie_value(_login(world, "ada", _SECRET))
+    assert session_id_from_cookie(f'session="{key}"') is None
+    assert session_id_from_cookie(f'session="{key[:5]}\\{key[5:]}"') is None
+
+
+def test_empty_pieces_and_foreign_names_do_not_hide_one_session(world: World) -> None:
+    """One real session still counts when other pairs are empty or not named session."""
+    world.add("ada", "operator", _SECRET)
+    key = _cookie_value(_login(world, "ada", _SECRET))
+    assert session_id_from_cookie(f"theme=x;; session={key}") == key
+    assert session_id_from_cookie(f"\x01bad; session={key}") == key
+    assert session_id_from_cookie(f"Session=x; session={key}") == key
+    assert session_id_from_cookie(f"sessionx=1; session={key}") == key
+    assert session_id_from_cookie(f"a=b; c=d; session={key}") == key
+    assert session_id_from_cookie(f"session={key}; a=b; c=d") == key
+    assert _get(world, f"theme=x;; session={key}").status == 501
