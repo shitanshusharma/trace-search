@@ -497,3 +497,27 @@ def test_nbsp_is_not_cookie_padding(world: World) -> None:
     assert session_id_from_cookie(f"\xa0session={key}") is None
     assert session_id_from_cookie(f"session={key}\xa0") is None
     assert _get(world, f"\xa0session={key}").status == 401
+
+
+KEY = "Ab3_-" * 8 + "Ab3"  # 43 chars, canonical alphabet
+
+
+def test_tab_after_equals_is_padding() -> None:
+    assert len(KEY) == 43
+    assert session_id_from_cookie(f"session=\t{KEY}") == KEY
+    assert session_id_from_cookie(f"theme=dark; session=\t{KEY}; x=1") == KEY
+
+
+def test_tab_inside_the_value_is_not_padding() -> None:
+    assert session_id_from_cookie(f"session={KEY[:20]}\t{KEY[20:]}") is None
+
+
+def test_only_space_and_tab_are_padding_around_a_pair() -> None:
+    # Kills widening the piece strip to CR/LF (q_add_crlf) or to VT/FF
+    # (q_all_add_vt): those characters are part of the name, so no pair is
+    # named ``session``.
+    for junk in ("\r", "\n", "\r\n", "\x0b", "\x0c", "\x1c", "\x85"):
+        assert session_id_from_cookie(f"{junk}session={KEY}") is None, repr(junk)
+        assert session_id_from_cookie(f"session={KEY}{junk}") is None, repr(junk)
+        assert session_id_from_cookie(f"session{junk}={KEY}") is None, repr(junk)
+        assert session_id_from_cookie(f"session={junk}{KEY}") is None, repr(junk)
