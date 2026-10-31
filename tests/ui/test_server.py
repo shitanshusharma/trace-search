@@ -23,7 +23,17 @@ from trace_search.audit import (
     init_hmac_key,
 )
 from trace_search.ui.cli import INIT_COMMAND, build_server, main, repo_root_from
-from trace_search.ui.routes import ROUTES, UiRequest, dispatch, match_route
+from trace_search.ui.routes import (
+    ROUTES,
+    STATIC_FILES,
+    UiRequest,
+    _contained_file,
+    _decode_leaf,
+    _forbidden_leaf,
+    dispatch,
+    match_route,
+    static_leaf,
+)
 from trace_search.ui.server import (
     BIND_HOST,
     SECURITY_HEADERS,
@@ -229,6 +239,13 @@ def test_static_traversal_is_not_found(path: str) -> None:
     assert json.loads(response.body) == {"error": "not_found"}
 
 
+def _encode_markers(text: str, rounds: int) -> str:
+    current = text
+    for _ in range(rounds):
+        current = current.replace("%", "%25").replace(".", "%2e")
+    return current
+
+
 def test_encoded_static_leaf_is_served() -> None:
     plain = dispatch(UiRequest("GET", "/static/app.css", STATIC_DIR))
     encoded = dispatch(UiRequest("GET", "/static/app%2ecss", STATIC_DIR))
@@ -249,10 +266,105 @@ def test_invalid_percent_encoding_is_not_found() -> None:
 
 
 def test_static_leaf_rejects_a_non_static_path() -> None:
-    from trace_search.ui.routes import static_leaf
-
     assert static_leaf("/login") is None
     assert static_leaf("/static") is None
+    assert static_leaf("/abcdefgapp.css") is None
+    assert static_leaf("/static/unknown.css") is None
+    assert static_leaf("/static/server.py") is None
+    assert static_leaf("/static/app.css?v=1") == "app.css"
+    assert static_leaf("/static/app.css#part") == "app.css"
+
+
+def test_static_allowlist_is_exactly_three_files() -> None:
+    assert set(STATIC_FILES) == {"login.html", "app.css", "app.js"}
+    assert STATIC_FILES["login.html"] == "text/html; charset=utf-8"
+    assert STATIC_FILES["app.css"] == "text/css; charset=utf-8"
+    assert STATIC_FILES["app.js"] == "text/javascript; charset=utf-8"
+
+
+def test_forbidden_leaf_rejects_each_shape() -> None:
+    assert _forbidden_leaf("app.css") is False
+    assert _forbidden_leaf("") is True
+    assert _forbidden_leaf(".") is True
+    assert _forbidden_leaf("..") is True
+    assert _forbidden_leaf("a/b") is True
+    assert _forbidden_leaf("a\\b") is True
+    assert _forbidden_leaf("a\x00b") is True
+    assert _forbidden_leaf("x..y") is True
+
+
+def test_decode_leaf_stops_bad_encoding_and_the_fifth_round() -> None:
+    assert _decode_leaf("%ff") is None
+    assert _decode_leaf("..") is None
+    assert _decode_leaf("%2e%2e") is None
+    assert _decode_leaf("%252e%252e") is None
+    assert _decode_leaf(_encode_markers("..", 5)) is None
+    assert _decode_leaf(_encode_markers("app.css", 5)) == "app.css"
+    assert _decode_leaf(_encode_markers("app.css", 6)) != "app.css"
+
+
+def test_contained_file_rejects_missing_directory_and_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "static"
+    root.mkdir()
+    (root / "app.css").mkdir()
+    (root / "login.html").write_text("page", encoding="utf-8")
+    (root / "app.js").symlink_to(root / "login.html")
+    assert _contained_file(root, "missing.css") is None
+    assert _contained_file(root, "app.css") is None
+    assert _contained_file(root, "app.js") is None
+    assert _contained_file(root, "login.html") == (root / "login.html").resolve()
+
+
+def test_http_traversal_shapes_are_refused() -> None:
+    paths = (
+        "/static/" + _encode_markers("../server.py", 1),
+        "/static/" + _encode_markers("../server.py", 2),
+        "/static/%5c..%5cserver.py",
+        "/static/%2fetc%2fpasswd",
+        "/static//etc/passwd",
+        "/static/" + _encode_markers("app.css", 6),
+    )
+    with _running() as port:
+        for path in paths:
+            status, headers, body = _request(port, "GET", path)
+            assert status == 404, path
+            assert _SOURCE_MARKER not in body
+            assert b"root:" not in body
+            _assert_security_headers(headers, api=True)
+
+
+def test_http_static_query_content_types_and_head_body() -> None:
+    with _running() as port:
+        login, login_headers, _login_body = _request(port, "GET", "/login")
+        css, css_headers, css_body = _request(port, "GET", "/static/app.css?v=1")
+        script, script_headers, script_body = _request(port, "GET", "/static/app.js")
+        denied, denied_headers, _denied_body = _request(port, "GET", "/search")
+        sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+        try:
+            sock.sendall(b"HEAD /login HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            payload = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                payload += chunk
+        finally:
+            sock.close()
+    assert login == 200
+    assert login_headers.get("content-type") == "text/html; charset=utf-8"
+    assert css == 200
+    assert b"font-family" in css_body
+    assert css_headers.get("content-type") == "text/css; charset=utf-8"
+    assert script == 200
+    assert b"use strict" in script_body
+    assert script_headers.get("content-type") == "text/javascript; charset=utf-8"
+    assert denied == 401
+    assert denied_headers.get("content-type") == "application/json"
+    head, separator, body = payload.partition(b"\r\n\r\n")
+    assert separator == b"\r\n\r\n"
+    assert b"404" in head.split(b"\r\n", 1)[0]
+    assert body == b""
+    assert b"content-length: 0" in head.lower()
 
 
 def test_missing_login_page_is_not_found(tmp_path: Path) -> None:
@@ -399,6 +511,31 @@ def test_loopback_host_is_accepted_and_bind_stays_ipv4(
         _close_if_server(result)
 
 
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.10"])
+def test_non_loopback_host_is_refused_before_a_valid_audit_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    host: str,
+) -> None:
+    data = _ready_data(tmp_path, monkeypatch)
+    calls = {"count": 0}
+    original = AuditLog.verify
+
+    def _count(self: AuditLog) -> object:
+        calls["count"] += 1
+        return original(self)
+
+    monkeypatch.setattr(AuditLog, "verify", _count)
+    result = build_server(["--data", str(data), "--host", host, "--port", "0"])
+    try:
+        assert result == 1
+    finally:
+        _close_if_server(result)
+    assert calls["count"] == 0
+    assert f"refusing non-loopback host: {host}" in capsys.readouterr().err
+
+
 def test_data_dir_inside_repo_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
     before = _snapshot(_REPO / "src")
     code = main(["--data", str(_REPO / "src"), "--host", "127.0.0.1", "--port", "9"])
@@ -407,6 +544,32 @@ def test_data_dir_inside_repo_is_refused(capsys: pytest.CaptureFixture[str]) -> 
     assert "data dir is inside the repository" in error
     assert "AuditLog.initialize()" not in error
     assert _snapshot(_REPO / "src") == before
+
+
+def test_repo_root_itself_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["--data", str(_REPO), "--host", "127.0.0.1", "--port", "9"])
+    assert code == 1
+    assert "data dir is inside the repository" in capsys.readouterr().err
+
+
+def test_dot_data_dir_from_repo_root_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(_REPO)
+    code = main(["--data", ".", "--host", "127.0.0.1", "--port", "9"])
+    assert code == 1
+    assert "data dir is inside the repository" in capsys.readouterr().err
+
+
+def test_symlink_to_repo_root_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    link = tmp_path / "repo-root"
+    link.symlink_to(_REPO, target_is_directory=True)
+    code = main(["--data", str(link), "--host", "127.0.0.1", "--port", "9"])
+    assert code == 1
+    assert "data dir is inside the repository" in capsys.readouterr().err
 
 
 def test_relative_data_dir_inside_repo_is_refused(
@@ -525,6 +688,39 @@ def test_missing_hmac_key_fails_verify_without_creating(
     assert result == 1
     assert "failed verify()" in capsys.readouterr().err
     assert _snapshot(tmp_path) == before
+
+
+def test_repo_root_requires_the_package_directory(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    assert repo_root_from(nested / "mod.py") is None
+    package = tmp_path / "src" / "trace_search"
+    package.mkdir(parents=True)
+    assert repo_root_from(nested / "mod.py") == tmp_path
+
+
+def test_repo_root_from_returns_none_when_resolve_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _fail(_self: Path, _strict: bool = False) -> Path:
+        raise RuntimeError("resolve failed")
+
+    monkeypatch.setattr(Path, "resolve", _fail)
+    assert repo_root_from(tmp_path / "missing.py") is None
+
+
+def test_unresolvable_data_dir_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.symlink_to(right)
+    right.symlink_to(left)
+    result = build_server(["--data", str(left), "--host", "127.0.0.1", "--port", "0"])
+    _close_if_server(result)
+    assert result == 1
+    assert "data dir is inside the repository" in capsys.readouterr().err
 
 
 def test_repo_root_lookup(tmp_path: Path) -> None:
