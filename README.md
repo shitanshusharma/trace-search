@@ -152,8 +152,8 @@ trace-search/
 │   ├── pipeline/           # Per-camera ingest, detect, track, persist, and the synthetic end-to-end demo
 │   ├── attributes/         # Clothing color + bag detection
 │   ├── reid/               # Cross-camera ReID (untrained placeholder and random-init OSNet-lite embedders; no training)
-│   ├── matching/           # Route, topology, and tracklets (library code; end-to-end search is planned)
-│   ├── api/                # Search and query API (planned; the package is a stub)
+│   ├── matching/           # Camera topology, tracklets, appearance, cross-camera links, and ordered routes
+│   ├── api/                # In-process search (attributes, crops, chosen track) and a synthetic latency harness
 │   ├── ui/                 # Web UI (planned: site map, route view, clips; the package is a stub)
 │   ├── fixtures/           # Synthetic fixture generation + separation guards (T1)
 │   ├── audit/              # Append-only HMAC audit log (T8, AC-13)
@@ -293,7 +293,7 @@ This is a **multi-task build** (T0–T10). Each task is one pull request. Curren
 - ✅ **T3:** Detection and single-camera tracking: YOLOX-S on onnxruntime (CPU; weights stay outside the repo), scripted detectors, an in-repo ByteTrack tracker, a stdlib SQLite track store outside the repo, and the M1a runner `scripts/run_smoke.py`.
 - ⏳ **T4:** Attributes (color + bag)
 - ⏳ **T5:** ReID has landed: untrained placeholder and random-init OSNet-lite embedders, vector stores, and an eval harness. The AC-06 harness is DEFERRED. No training runs.
-- ⏳ **T6:** Cross-camera matching + route
+- ✅ **T6:** Cross-camera matching and route are on main: camera topology, tracklets, appearance, a cross-camera linker, ordered routes, and an in-process search API. The synthetic end-to-end demo is CODE_TEST and is not evidence. The AC-07 harness is DEFERRED.
 - ⏳ **T7:** Web UI + auth
 - ✅ **T8:** Audit log (HMAC chain and signed head anchor; see below). Merged in #5.
 - **Partly done — T9:** Retention and purge. T-P-1, T-P-2, and T-P-3 are merged (#48, #49, #50). T-P-4 through T-P-9 are not.
