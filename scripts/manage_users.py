@@ -80,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    except (EOFError, KeyboardInterrupt):
+        print("password prompt closed", file=sys.stderr)
+        return 1
     return 0
 
 

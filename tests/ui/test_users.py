@@ -7,6 +7,8 @@ import hmac
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -620,3 +622,426 @@ def test_cli_missing_or_unknown_command_exits_2(capsys: pytest.CaptureFixture[st
     captured = capsys.readouterr()
     assert captured.err.strip() == "invalid arguments"
     assert "nope" not in captured.err
+
+
+def _set_hash(store: UserStore, username: str, stored: str) -> None:
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE users SET password_hash = ? WHERE username = ?",
+            (stored, username),
+        )
+
+
+def _frame(n: object, r: object, p: object, dklen: object, salt: bytes, digest: bytes) -> str:
+    return f"scrypt${n}${r}${p}${dklen}${salt.hex()}${digest.hex()}"
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [" " + _SECRET, _SECRET + " ", _SECRET.upper(), _SECRET[:-1], _SECRET + "x"],
+)
+def test_near_miss_password_is_rejected(tmp_path: Path, variant: str) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    assert store.authenticate("ada", variant) is False
+    assert store.authenticate("ada", _SECRET) is True
+
+
+def test_tampered_digest_tail_is_rejected(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    stored = str(_scalar(store, "SELECT password_hash FROM users WHERE username = ?", ("ada",)))
+    head, digest = stored.rsplit("$", 1)
+    flipped = digest[:-2] + ("00" if digest[-2:] != "00" else "11")
+    _set_hash(store, "ada", head + "$" + flipped)
+    assert store.authenticate("ada", _SECRET) is False
+
+
+@pytest.mark.parametrize("probe", ["ADA", "Ada", "a%", "a_a", "_a_", "%"])
+def test_username_lookup_is_exact(tmp_path: Path, probe: str) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    assert store.authenticate(probe, _SECRET) is False
+    store.add_user(probe, "admin", _OTHER)
+    assert _count(store) == 2
+    assert store.authenticate("ada", _SECRET) is True
+    assert store.authenticate(probe, _OTHER) is True
+    assert store.authenticate(probe, _SECRET) is False
+
+
+def test_disable_and_set_role_touch_only_one_row(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    store.add_user("bea", "operator", _OTHER)
+    store.disable_user("ada")
+    store.set_role("ada", "admin")
+    assert store.authenticate("bea", _OTHER) is True
+    assert store.authenticate("ada", _SECRET) is False
+    assert _scalar(store, "SELECT role FROM users WHERE username = ?", ("bea",)) == "operator"
+    assert _scalar(store, "SELECT disabled FROM users WHERE username = ?", ("bea",)) == 0
+    assert _scalar(store, "SELECT role FROM users WHERE username = ?", ("ada",)) == "admin"
+    assert _scalar(store, "SELECT disabled FROM users WHERE username = ?", ("ada",)) == 1
+
+
+def test_injection_username_does_not_reach_other_rows(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    odd = "x' OR '1'='1"
+    assert store.authenticate(odd, _SECRET) is False
+    store.add_user(odd, "operator", _OTHER)
+    assert _count(store) == 2
+    assert store.authenticate(odd, _SECRET) is False
+    assert store.authenticate(odd, _OTHER) is True
+    assert store.authenticate("ada", _SECRET) is True
+
+
+def test_refused_nested_db_path_creates_no_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    parent = _REPO / "src" / "kill-probe-dir"
+    assert not parent.exists()
+    created: list[Path] = []
+    opened: list[object] = []
+    real_mkdir = Path.mkdir
+    real_open = os.open
+
+    def _mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        created.append(self)
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    def _open(*args: object, **kwargs: object) -> int:
+        opened.append(args[0] if args else None)
+        return real_open(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", _mkdir)
+    monkeypatch.setattr(os, "open", _open)
+    before = _snapshot(_REPO / "src")
+    try:
+        with pytest.raises(ValueError, match="db path is inside the repository"):
+            UserStore(parent / "deeper" / "users.sqlite")
+        assert created == []
+        assert opened == []
+        assert not parent.exists()
+        assert _snapshot(_REPO / "src") == before
+    finally:
+        if parent.exists():
+            for path in sorted(parent.rglob("*"), reverse=True):
+                if path.is_dir() and not path.is_symlink():
+                    path.rmdir()
+                else:
+                    path.unlink()
+            parent.rmdir()
+
+
+def test_new_parent_directories_are_created_outside_repo(tmp_path: Path) -> None:
+    store = UserStore(tmp_path / "a" / "b" / "users.sqlite")
+    store.add_user("ada", "operator", _SECRET)
+    assert (tmp_path / "a" / "b").is_dir()
+    assert store.authenticate("ada", _SECRET) is True
+
+
+def test_new_db_file_is_mode_0600(tmp_path: Path) -> None:
+    parent_mode = tmp_path.stat().st_mode
+    previous = os.umask(0)
+    try:
+        store = UserStore(tmp_path / "users.sqlite")
+        mode = store.db_path.stat().st_mode & 0o777
+    finally:
+        os.umask(previous)
+    assert mode == 0o600
+    assert tmp_path.stat().st_mode == parent_mode
+
+
+def test_lost_create_race_still_opens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_open = os.open
+
+    def _open(*args: object, **kwargs: object) -> int:
+        fd = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        os.close(fd)
+        raise FileExistsError
+
+    monkeypatch.setattr("trace_search.ui.users.os.open", _open)
+    store = UserStore(tmp_path / "users.sqlite")
+    store.add_user("ada", "operator", _SECRET)
+    assert store.authenticate("ada", _SECRET) is True
+
+
+def test_existing_db_mode_is_left_alone(tmp_path: Path) -> None:
+    path = tmp_path / "users.sqlite"
+    UserStore(path).add_user("ada", "operator", _SECRET)
+    os.chmod(path, 0o644)
+    again = UserStore(path)
+    assert again.authenticate("ada", _SECRET) is True
+    assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_unknown_and_disabled_pay_for_scrypt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    store.disable_user("ada")
+    seen: list[tuple[int, int, int, int, int]] = []
+    real = hashlib.scrypt
+
+    def _wrapped(*args: object, **kwargs: object) -> bytes:
+        salt = kwargs["salt"]
+        assert isinstance(salt, bytes)
+        seen.append(
+            (
+                int(kwargs["n"]),  # type: ignore[call-overload]
+                int(kwargs["r"]),  # type: ignore[call-overload]
+                int(kwargs["p"]),  # type: ignore[call-overload]
+                int(kwargs["dklen"]),  # type: ignore[call-overload]
+                len(salt),
+            )
+        )
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("trace_search.ui.users.hashlib.scrypt", _wrapped)
+    monkeypatch.setattr("trace_search.ui.users.hmac.compare_digest", lambda *_a, **_k: True)
+    assert store.authenticate("bea", _SECRET) is False
+    assert store.authenticate("ada", _SECRET) is False
+    assert seen == [(2**14, 8, 1, 64, 16), (2**14, 8, 1, 64, 16)]
+
+
+def test_verify_uses_stored_scrypt_parameters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    salt = bytes(range(16))
+    digest = hashlib.scrypt(
+        _SECRET.encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=2,
+        dklen=64,
+    )
+    _set_hash(store, "ada", _frame(2**14, 8, 2, 64, salt, digest))
+    seen: list[tuple[int, int, int, int]] = []
+    real = hashlib.scrypt
+
+    def _wrapped(*args: object, **kwargs: object) -> bytes:
+        seen.append(
+            (
+                int(kwargs["n"]),  # type: ignore[call-overload]
+                int(kwargs["r"]),  # type: ignore[call-overload]
+                int(kwargs["p"]),  # type: ignore[call-overload]
+                int(kwargs["dklen"]),  # type: ignore[call-overload]
+            )
+        )
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("trace_search.ui.users.hashlib.scrypt", _wrapped)
+    assert store.authenticate("ada", _SECRET) is True
+    assert seen == [(2**14, 8, 2, 64)]
+
+
+@pytest.mark.parametrize(
+    ("n", "r", "p", "dklen"),
+    [
+        (2**13, 8, 1, 64),
+        (2**14, 4, 1, 64),
+        (2**14, 8, 3, 64),
+        (2**14, 8, 1, 32),
+    ],
+)
+def test_disallowed_kdf_parameters_do_not_authenticate(
+    tmp_path: Path, n: int, r: int, p: int, dklen: int
+) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    salt = bytes(range(16))
+    digest = hashlib.scrypt(
+        _SECRET.encode("utf-8"),
+        salt=salt,
+        n=n,
+        r=r,
+        p=p,
+        dklen=dklen,
+    )
+    _set_hash(store, "ada", _frame(n, r, p, dklen, salt, digest))
+    assert store.authenticate("ada", _SECRET) is False
+
+
+@pytest.mark.parametrize("field", [1, 2, 3, 4])
+def test_tampered_kdf_field_does_not_authenticate(tmp_path: Path, field: int) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    parts = str(
+        _scalar(store, "SELECT password_hash FROM users WHERE username = ?", ("ada",))
+    ).split("$")
+    parts[field] = "999999999" if field == 1 else "7"
+    _set_hash(store, "ada", "$".join(parts))
+    assert store.authenticate("ada", _SECRET) is False
+
+
+def test_non_numeric_kdf_field_does_not_authenticate(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    parts = str(
+        _scalar(store, "SELECT password_hash FROM users WHERE username = ?", ("ada",))
+    ).split("$")
+    parts[1] = "abc"
+    _set_hash(store, "ada", "$".join(parts))
+    assert store.authenticate("ada", _SECRET) is False
+
+
+def test_sqlite_connection_is_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    closed: list[bool] = []
+    real_connect = sqlite3.connect
+
+    class _Tracking(sqlite3.Connection):
+        def close(self) -> None:
+            closed.append(True)
+            super().close()
+
+    def _connect(database: str, *args: object, **kwargs: object) -> sqlite3.Connection:
+        kwargs["factory"] = _Tracking
+        return real_connect(database, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("trace_search.ui.users.sqlite3.connect", _connect)
+    store = UserStore(tmp_path / "users.sqlite")
+    store.add_user("ada", "operator", _SECRET)
+    assert store.authenticate("ada", _SECRET) is True
+    assert len(closed) >= 3
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["add", "--username", "ada", "--role", "operator"],
+        ["add", "--db", "DB", "--role", "operator"],
+        ["add", "--db", "DB", "--username", "ada"],
+        ["disable", "--username", "ada"],
+        ["disable", "--db", "DB"],
+        ["set-role", "--username", "ada", "--role", "admin"],
+        ["set-role", "--db", "DB", "--role", "admin"],
+        ["set-role", "--db", "DB", "--username", "ada"],
+    ],
+)
+def test_cli_required_options(
+    argv: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "users.sqlite"
+    UserStore(db).add_user("ada", "operator", _SECRET)
+    monkeypatch.chdir(tmp_path)
+    argv = [str(db) if part == "DB" else part for part in argv]
+    code, calls = _run_cli(argv, monkeypatch, None)
+    assert code == 2
+    assert calls == 0
+    assert _count(UserStore(db)) == 1
+    assert _scalar(UserStore(db), "SELECT role FROM users WHERE username = ?", ("ada",)) == (
+        "operator"
+    )
+    assert UserStore(db).authenticate("ada", _SECRET) is True
+
+
+def test_missing_db_option_creates_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    code, calls = _run_cli(
+        ["add", "--username", "ada", "--role", "operator"],
+        monkeypatch,
+        None,
+    )
+    assert code == 2
+    assert calls == 0
+    assert list(empty.iterdir()) == []
+
+
+@pytest.mark.parametrize("prompt_error", [EOFError, KeyboardInterrupt])
+def test_password_prompt_closed_exits_1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    prompt_error: type[BaseException],
+) -> None:
+    db = tmp_path / "users.sqlite"
+
+    def _getpass(*_args: object, **_kwargs: object) -> str:
+        raise prompt_error()
+
+    monkeypatch.setattr("scripts.manage_users.getpass.getpass", _getpass)
+    code = main(["add", "--db", str(db), "--username", "ada", "--role", "operator"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Traceback" not in captured.err
+    assert "password prompt closed" in captured.err
+    assert _count(UserStore(db)) == 0
+
+
+def test_padded_role_is_a_value_error(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    with pytest.raises(ValueError, match="role"):
+        store.add_user("ada", " admin", _SECRET)
+    assert _count(store) == 0
+
+
+def _script_env(tmp_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    src = str(_REPO / "src")
+    previous = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = src if previous is None else src + os.pathsep + previous
+    env["HOME"] = str(tmp_path)
+    return env
+
+
+def test_script_process_exit_codes(tmp_path: Path) -> None:
+    db = tmp_path / "users.sqlite"
+    UserStore(db).add_user("ada", "operator", _SECRET)
+    script = _REPO / "scripts" / "manage_users.py"
+    env = _script_env(tmp_path)
+    inside = _REPO / "users.sqlite"
+
+    def run(*args: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
+
+    try:
+        missing = run("disable", "--db", str(db), "--username", "zed")
+        assert missing.returncode == 1
+        assert b"Traceback" not in missing.stderr
+        disabled = run("disable", "--db", str(db), "--username", "ada")
+        assert disabled.returncode == 0
+        bogus = run("bogus")
+        assert bogus.returncode == 2
+        assert b"Traceback" not in bogus.stderr
+        omitted = run("add")
+        assert omitted.returncode == 2
+        refused = run(
+            "add",
+            "--db",
+            str(inside),
+            "--username",
+            "ada",
+            "--role",
+            "operator",
+        )
+        assert refused.returncode == 1
+        assert b"Traceback" not in refused.stderr
+        assert not inside.exists()
+        prompted = run(
+            "add",
+            "--db",
+            str(db),
+            "--username",
+            "bea",
+            "--role",
+            "operator",
+        )
+        assert prompted.returncode == 1
+        assert b"Traceback" not in prompted.stderr
+        assert b"password prompt closed" in prompted.stderr
+        assert UserStore(db).authenticate("ada", _SECRET) is False
+    finally:
+        if inside.is_file():
+            inside.unlink()

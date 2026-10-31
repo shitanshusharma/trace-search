@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 import sqlite3
 from collections.abc import Callable
@@ -19,13 +20,24 @@ from typing import TypeVar, cast
 from trace_search.ui.cli import outside_repo, repo_root_from
 
 _ROLES = frozenset({"operator", "admin"})
-# D-T7-4.
+# D-T7-4. New hashes use this row.
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
 _SCRYPT_P = 1
 _SCRYPT_DKLEN = 64
 _SALT_BYTES = 16
 _HASH_PARTS = 7
+# Verification uses the n, r, p and dklen stored in the hash. p=2 costs
+# more CPU and the same memory, so it stays inside the allowed set.
+_ALLOWED_KDF = frozenset(
+    {
+        (_SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_DKLEN),
+        (_SCRYPT_N, _SCRYPT_R, 2, _SCRYPT_DKLEN),
+    }
+)
+_KDF_DIGIT_CAP = 8
+_DUMMY_SALT = bytes(range(_SALT_BYTES))
+_DUMMY_DIGEST = bytes(_SCRYPT_DKLEN)
 
 _CREATE_SQL = (
     "CREATE TABLE IF NOT EXISTS users ("
@@ -90,15 +102,28 @@ def _password_bytes(password: str) -> bytes:
     return password.encode("utf-8")
 
 
-def _scrypt(password: str, salt: bytes) -> bytes:
+def _scrypt(
+    password: str,
+    salt: bytes,
+    n: int = _SCRYPT_N,
+    r: int = _SCRYPT_R,
+    p: int = _SCRYPT_P,
+    dklen: int = _SCRYPT_DKLEN,
+) -> bytes:
     return hashlib.scrypt(
         _password_bytes(password),
         salt=salt,
-        n=_SCRYPT_N,
-        r=_SCRYPT_R,
-        p=_SCRYPT_P,
-        dklen=_SCRYPT_DKLEN,
+        n=n,
+        r=r,
+        p=p,
+        dklen=dklen,
     )
+
+
+def _burn_password(password: str) -> None:
+    """Run one scrypt so a missing or disabled account is not faster."""
+    derived = _scrypt(password, _DUMMY_SALT)
+    hmac.compare_digest(derived, _DUMMY_DIGEST)
 
 
 def _hash_password(password: str) -> str:
@@ -116,31 +141,55 @@ def _hash_password(password: str) -> str:
     return "$".join(fields)
 
 
-def _parsed_hash(stored: str) -> tuple[bytes, bytes] | None:
+def _kdf_int(text: str) -> int:
+    if len(text) > _KDF_DIGIT_CAP or not text.isascii() or not text.isdigit():
+        raise ValueError(text)
+    return int(text)
+
+
+def _parsed_hash(stored: str) -> tuple[int, int, int, int, bytes, bytes] | None:
     pieces = stored.split("$")
     if len(pieces) != _HASH_PARTS:
         return None
     if pieces[0] != "scrypt":
         return None
     try:
+        n = _kdf_int(pieces[1])
+        r = _kdf_int(pieces[2])
+        p = _kdf_int(pieces[3])
+        dklen = _kdf_int(pieces[4])
         salt = bytes.fromhex(pieces[5])
         expected = bytes.fromhex(pieces[6])
     except ValueError:
         return None
+    if (n, r, p, dklen) not in _ALLOWED_KDF:
+        return None
     if len(salt) != _SALT_BYTES:
         return None
-    if len(expected) != _SCRYPT_DKLEN:
+    if len(expected) != dklen:
         return None
-    return salt, expected
+    return n, r, p, dklen, salt, expected
 
 
 def _password_matches(password: str, stored: str) -> bool:
     parsed = _parsed_hash(stored)
     if parsed is None:
         return False
-    salt, expected = parsed
-    derived = _scrypt(password, salt)
+    n, r, p, dklen, salt, expected = parsed
+    derived = _scrypt(password, salt, n, r, p, dklen)
     return hmac.compare_digest(derived, expected)
+
+
+def _create_private_file(path: Path) -> None:
+    """Create a new db file as mode 0600. An existing file is left alone."""
+    if path.exists():
+        return
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    except FileExistsError:
+        return
+    os.close(fd)
+    os.chmod(path, 0o600)
 
 
 class UserStore:
@@ -153,6 +202,7 @@ class UserStore:
         checked = _checked_db_path(Path(db_path))
         checked.parent.mkdir(parents=True, exist_ok=True)
         self.db_path: Path = checked
+        _create_private_file(checked)
         self._ensure_schema()
 
     def add_user(self, username: str, role: str, password: str) -> None:
@@ -200,8 +250,10 @@ class UserStore:
         """Return whether this enabled account matches ``password``."""
         row = self._find(username)
         if row is None:
+            _burn_password(password)
             return False
         if int(row["disabled"]) != 0:
+            _burn_password(password)
             return False
         return _password_matches(password, cast(str, row["password_hash"]))
 
@@ -222,6 +274,10 @@ class UserStore:
         self._using(_create)
 
     def _using(self, fn: Callable[[sqlite3.Connection], _T]) -> _T:
-        with sqlite3.connect(self.db_path) as connection:
+        connection = sqlite3.connect(self.db_path)
+        try:
             connection.row_factory = sqlite3.Row
-            return fn(connection)
+            with connection:
+                return fn(connection)
+        finally:
+            connection.close()
