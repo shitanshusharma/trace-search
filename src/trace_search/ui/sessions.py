@@ -119,8 +119,24 @@ def clear_session_cookie() -> str:
     return f"{SESSION_COOKIE}=; {_cookie_attributes()}; Max-Age=0"
 
 
+def _cookie_pair_names(header: str) -> list[str]:
+    """Cookie names in header order. The match is case-sensitive."""
+    found: list[str] = []
+    for part in header.split(";"):
+        piece = part.strip()
+        if len(piece) == 0:
+            continue
+        cookie_name, _separator, _raw = piece.partition("=")
+        found.append(cookie_name.strip())
+    return found
+
+
 def session_id_from_cookie(header: str | None) -> str | None:
-    """Return the session cookie when it is canonical. Query strings are ignored."""
+    """Return the session cookie when the name appears once and the value is canonical.
+
+    ``session=A; session=B`` is refused. ``Session=`` is a different name.
+    Query strings are ignored.
+    """
     if header is None or header == "":
         return None
     jar = http.cookies.SimpleCookie()
@@ -128,10 +144,15 @@ def session_id_from_cookie(header: str | None) -> str | None:
         jar.load(header)
     except http.cookies.CookieError:
         return None
-    morsel = jar.get(SESSION_COOKIE)
-    if morsel is None:
+    chosen: list[str] = []
+    for cookie_name in _cookie_pair_names(header):
+        if cookie_name == SESSION_COOKIE:
+            morsel = jar.get(cookie_name)
+            if morsel is not None:
+                chosen.append(morsel.value)
+    if len(chosen) != 1:
         return None
-    value = morsel.value
+    value = chosen[0]
     if not is_session_key(value):
         return None
     return value

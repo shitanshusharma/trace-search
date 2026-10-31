@@ -237,6 +237,10 @@ def _authorize(request: UiRequest, route: Route) -> UiResponse | None:
     session = app.sessions.resolve(session_key, touch=False)
     if session is None or session_key is None:
         return unauthorized()
+    live_role = app.users.enabled_role(session.username)
+    if live_role != session.role:
+        app.sessions.invalidate(session_key)
+        return unauthorized()
     if route.auth == "admin" and session.role != "admin":
         return _json_response("forbidden", 403)
     if is_state_changing(request.method):

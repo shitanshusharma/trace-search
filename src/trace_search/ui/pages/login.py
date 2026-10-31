@@ -24,6 +24,7 @@ from trace_search.ui.sessions import (
 
 DETAIL_INVALID = "invalid credentials"
 DETAIL_BLOCKED = "blocked"
+MAX_USERNAME_LENGTH = 64
 
 
 @dataclass(frozen=True)
@@ -41,13 +42,25 @@ def _usable_pair(username: object, password: object) -> tuple[str, str] | None:
         return None
     if len(username) == 0 or username != username.strip() or len(password) == 0:
         return None
+    if len(username) > MAX_USERNAME_LENGTH:
+        return None
     return username, password
+
+
+def _object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Refuse a repeated JSON key instead of keeping the last value."""
+    collected: dict[str, object] = {}
+    for key, value in pairs:
+        if key in collected:
+            raise ValueError("duplicate key")
+        collected[key] = value
+    return collected
 
 
 def _parse_json(body: bytes) -> tuple[str, str] | None:
     try:
-        loaded = json.loads(body)
-    except json.JSONDecodeError:
+        loaded = json.loads(body, object_pairs_hook=_object_without_duplicate_keys)
+    except (json.JSONDecodeError, ValueError):
         return None
     if isinstance(loaded, dict):
         return _usable_pair(loaded.get("username"), loaded.get("password"))

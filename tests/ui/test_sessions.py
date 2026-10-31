@@ -37,13 +37,18 @@ from trace_search.ui.users import UserStore
 _SECRET = "session-secret-value"
 _OTHER = "other-secret-value"
 _KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+EPOCH = 1_793_000_000.0
 
 
 class Clock:
-    """Injectable clock. Tests move ``current`` instead of sleeping."""
+    """Injectable clock. Tests move ``current`` instead of sleeping.
+
+    The start is a real wall-clock value. A clock that starts at 0 hides a
+    ``now - stamp`` flipped to ``now + stamp``.
+    """
 
     def __init__(self) -> None:
-        self.current = 0.0
+        self.current = EPOCH
 
     def __call__(self) -> float:
         return self.current
@@ -431,12 +436,12 @@ def test_idle_timeout_boundary(world: World) -> None:
     world.add("ada", "operator", _SECRET)
     early = _login(world, "ada", _SECRET)
     early_cookie = f"session={_cookie_value(early)}"
-    world.clock.current = 1799
+    world.clock.current = EPOCH + 1799
     assert _get(world, early_cookie).status == 501
-    world.clock.current = 0
+    world.clock.current = EPOCH
     expired = _login(world, "ada", _SECRET)
     expired_cookie = f"session={_cookie_value(expired)}"
-    world.clock.current = 1800
+    world.clock.current = EPOCH + 1800
     assert _get(world, expired_cookie).status == 401
 
 
@@ -444,11 +449,11 @@ def test_idle_window_slides_and_absolute_is_not_swapped(world: World) -> None:
     world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     cookie = f"session={_cookie_value(response)}"
-    world.clock.current = 1799
+    world.clock.current = EPOCH + 1799
     assert _get(world, cookie).status == 501
-    world.clock.current = 1800
+    world.clock.current = EPOCH + 1800
     assert _get(world, cookie).status == 501
-    world.clock.current = 1799 + 1799
+    world.clock.current = EPOCH + 1799 + 1799
     assert _get(world, cookie).status == 501
 
 
@@ -456,14 +461,14 @@ def test_absolute_timeout_boundary(world: World) -> None:
     world.add("ada", "operator", _SECRET)
     response = _login(world, "ada", _SECRET)
     cookie = f"session={_cookie_value(response)}"
-    stamp = 1700
-    while stamp < 28800:
+    stamp = EPOCH + 1700
+    while stamp < EPOCH + 28800:
         world.clock.current = stamp
         assert _get(world, cookie).status == 501
         stamp += 1700
-    world.clock.current = 28799
+    world.clock.current = EPOCH + 28799
     assert _get(world, cookie).status == 501
-    world.clock.current = 28800
+    world.clock.current = EPOCH + 28800
     assert _get(world, cookie).status == 401
 
 
@@ -520,12 +525,12 @@ def test_authenticate_runs_for_unknown_disabled_wrong_and_blocked(
 
 def test_four_failures_do_not_block_and_five_do(world: World) -> None:
     world.add("ada", "operator", _SECRET)
-    world.clock.current = 100
+    world.clock.current = EPOCH + 100
     for _ in range(4):
         assert _login(world, "ada", _OTHER).status == 401
     assert _login(world, "ada", _SECRET).status == 200
     world.add("bea", "operator", _OTHER)
-    world.clock.current = 300
+    world.clock.current = EPOCH + 300
     for _ in range(5):
         assert _login(world, "bea", _SECRET).status == 401
     blocked = _login(world, "bea", _OTHER)
@@ -543,16 +548,16 @@ def test_four_failures_do_not_block_and_five_do(world: World) -> None:
 def test_block_duration_and_window_boundaries(world: World) -> None:
     world.add("ada", "operator", _SECRET)
     world.add("bea", "operator", _OTHER)
-    world.clock.current = 0
+    world.clock.current = EPOCH
     for _ in range(4):
         assert _login(world, "ada", _OTHER).status == 401
-    world.clock.current = 899
+    world.clock.current = EPOCH + 899
     assert _login(world, "ada", _OTHER).status == 401
     assert _login(world, "ada", _SECRET).status == 403
-    world.clock.current = 0
+    world.clock.current = EPOCH
     for _ in range(4):
         assert _login(world, "bea", _SECRET).status == 401
-    world.clock.current = 900
+    world.clock.current = EPOCH + 900
     assert _login(world, "bea", _SECRET).status == 401
     assert _login(world, "bea", _OTHER).status == 200
 
@@ -560,13 +565,13 @@ def test_block_duration_and_window_boundaries(world: World) -> None:
 def test_block_lasts_fifteen_minutes_for_that_username_only(world: World) -> None:
     world.add("ada", "operator", _SECRET)
     world.add("bea", "operator", _OTHER)
-    world.clock.current = 100
+    world.clock.current = EPOCH + 100
     for _ in range(5):
         assert _login(world, "ada", _OTHER).status == 401
-    world.clock.current = 999
+    world.clock.current = EPOCH + 999
     assert _login(world, "ada", _SECRET).status == 403
     assert _login(world, "bea", _OTHER).status == 200
-    world.clock.current = 1000
+    world.clock.current = EPOCH + 1000
     released = _login(world, "ada", _SECRET)
     assert released.status == 200
     assert _entries(world)[-1].details is None
@@ -580,7 +585,7 @@ def test_success_clears_failures_but_not_an_active_block(world: World) -> None:
     for _ in range(4):
         assert _login(world, "ada", _OTHER).status == 401
     assert _login(world, "ada", _SECRET).status == 200
-    world.clock.current = 50
+    world.clock.current = EPOCH + 50
     for _ in range(5):
         assert _login(world, "ada", _OTHER).status == 401
     assert _login(world, "ada", _SECRET).status == 403
@@ -598,6 +603,7 @@ def test_malformed_login_is_not_an_attempt(world: World) -> None:
         b"username=ada&username=bea&password=x",
         b"\xff",
         b"{",
+        b"{\xff",
         json.dumps({"username": "ada", "password": 1}).encode("ascii"),
         json.dumps({"username": " ada", "password": _SECRET}).encode("utf-8"),
     )
@@ -1005,6 +1011,7 @@ def test_logout_handler_rejects_a_missing_session_and_a_bad_csrf(world: World) -
         handle_logout(UiRequest("POST", "/logout", STATIC_DIR, b"", host, world.app))
     )
     assert missing.status == 401
+    world.clock.current = EPOCH + 1000
     bad = _from_handler(
         handle_logout(
             UiRequest(
@@ -1018,7 +1025,9 @@ def test_logout_handler_rejects_a_missing_session_and_a_bad_csrf(world: World) -
         )
     )
     assert bad.status == 403
-    assert world.app.sessions.resolve(session_key, touch=False) is not None
+    live = world.app.sessions.resolve(session_key, touch=False)
+    assert live is not None
+    assert live.last_seen == EPOCH
     accepted = _from_handler(
         handle_logout(
             UiRequest(
@@ -1036,11 +1045,18 @@ def test_logout_handler_rejects_a_missing_session_and_a_bad_csrf(world: World) -
 
 
 def test_odd_cookies_do_not_authenticate(world: World) -> None:
+    from trace_search.ui.sessions import session_id_from_cookie
+
     world.add("ada", "operator", _SECRET)
     assert _get(world, "theme=dark").status == 401
     assert _get(world, 'session="a\nb"').status == 401
     world.app.sessions.invalidate(None)
     assert len(world.app.sessions) == 0
+    signed_in = _login(world, "ada", _SECRET)
+    session_key = _cookie_value(signed_in)
+    assert _get(world, "session;").status == 401
+    assert session_id_from_cookie("session;") is None
+    assert _get(world, f"session={session_key};").status == 501
 
 
 def test_login_fails_when_the_enabled_role_disappears(
@@ -1092,8 +1108,8 @@ def test_non_canonical_session_key_is_rejected(world: World) -> None:
             username="ada",
             role="operator",
             csrf_token="b" * 43,
-            created_at=0.0,
-            last_seen=0.0,
+            created_at=world.clock.current,
+            last_seen=world.clock.current,
         )
         assert _get(world, f"session={key}").status == 401
         assert world.app.sessions.resolve(key, touch=False) is None
@@ -1108,3 +1124,93 @@ def test_direct_host_helper_matches_the_allowlist() -> None:
     assert request_is_allowed("evil.example:8765", None, port) is False
     assert request_is_allowed(f"127.0.0.1:{port}", "null", port) is False
     assert request_is_allowed(f"127.0.0.1:{port}", f"http://127.0.0.1:{port}", port) is True
+
+
+def test_disabling_an_account_ends_its_live_session(world: World) -> None:
+    world.add("ada", "operator", _SECRET)
+    signed_in = _login(world, "ada", _SECRET)
+    cookie = f"session={_cookie_value(signed_in)}"
+    session_key = _cookie_value(signed_in)
+    assert _get(world, cookie).status == 501
+    world.users.disable_user("ada")
+    refused = _get(world, cookie)
+    assert refused.status == 401
+    assert json.loads(refused.body) == {"error": "unauthorized"}
+    assert world.app.sessions.resolve(session_key, touch=False) is None
+    assert _post(world, "/logout", cookie, _csrf(signed_in)).status == 401
+    assert [row.operator_username for row in _entries(world)] == ["ada"]
+
+
+def test_changing_the_role_ends_the_live_session(world: World) -> None:
+    world.add("ada", "operator", _SECRET)
+    signed_in = _login(world, "ada", _SECRET)
+    cookie = f"session={_cookie_value(signed_in)}"
+    world.users.set_role("ada", "admin")
+    refused = _get(world, cookie)
+    assert refused.status == 401
+    assert world.app.sessions.resolve(_cookie_value(signed_in), touch=False) is None
+    again = _login(world, "ada", _SECRET)
+    assert again.status == 200
+    assert _post(world, "/retention", f"session={_cookie_value(again)}", _csrf(again)).status == 501
+
+
+def test_setting_the_same_role_keeps_the_session(world: World) -> None:
+    world.add("ada", "operator", _SECRET)
+    signed_in = _login(world, "ada", _SECRET)
+    cookie = f"session={_cookie_value(signed_in)}"
+    world.users.set_role("ada", "operator")
+    assert _get(world, cookie).status == 501
+    assert world.app.sessions.resolve(_cookie_value(signed_in), touch=False) is not None
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_username_length_is_capped_before_the_audit_log(world: World, as_json: bool) -> None:
+    exact = "u" * 64
+    too_long = "u" * 65
+    allowed = _login(world, exact, _OTHER, as_json=as_json)
+    assert allowed.status == 401
+    assert _entries(world)[-1].operator_username == exact
+    assert _entries(world)[-1].details == "invalid credentials"
+    before = len(_entries(world))
+    size_before = world.log.log_path.stat().st_size
+    refused = _login(world, too_long, _SECRET, as_json=as_json)
+    assert refused.status == 401
+    assert json.loads(refused.body) == {"error": "unauthorized"}
+    assert len(_entries(world)) == before
+    assert world.log.log_path.stat().st_size == size_before
+    assert too_long.encode("utf-8") not in world.log.log_path.read_bytes()
+
+
+def test_megabyte_username_is_not_an_attempt(world: World) -> None:
+    huge = "u" * 1_000_000
+    size_before = world.log.log_path.stat().st_size
+    refused = _login(world, huge, _OTHER)
+    assert refused.status == 401
+    assert json.loads(refused.body) == {"error": "unauthorized"}
+    assert _entries(world) == []
+    assert len(world.app.sessions) == 0
+    assert world.log.log_path.stat().st_size == size_before
+
+
+def test_duplicate_json_keys_are_not_an_attempt(world: World) -> None:
+    world.add("ada", "operator", _SECRET)
+    bodies = (
+        b'{"username":"x","username":"ada","password":"session-secret-value"}',
+        b'{"username":"ada","username":"x","password":"session-secret-value"}',
+        b'{"username":"ada","password":"nope","password":"session-secret-value"}',
+    )
+    for body in bodies:
+        response = dispatch(
+            UiRequest(
+                "POST",
+                "/login",
+                STATIC_DIR,
+                body,
+                {"host": f"127.0.0.1:{world.app.port}"},
+                world.app,
+            )
+        )
+        assert response.status == 401
+        assert _SECRET.encode("utf-8") not in response.body
+    assert _entries(world) == []
+    assert len(world.app.sessions) == 0
