@@ -964,6 +964,9 @@ def test_non_canonical_kdf_field_is_refused(tmp_path: Path, n_text: str) -> None
 
 
 def test_kdf_field_cap_boundary(tmp_path: Path) -> None:
+    assert users_mod._kdf_int("10000000") == 10000000
+    with pytest.raises(ValueError):
+        users_mod._kdf_int("100000000")
     store = _store(tmp_path)
     store.add_user("ada", "operator", _SECRET)
     salt = bytes(range(16))
@@ -976,6 +979,39 @@ def test_kdf_field_cap_boundary(tmp_path: Path) -> None:
         dklen=64,
     )
     _set_hash(store, "ada", f"scrypt$00016384$8$1$64${salt.hex()}${digest.hex()}")
+    assert store.authenticate("ada", _SECRET) is False
+    _set_hash(store, "ada", _frame(2**14, 8, 1, 64, salt, digest))
+    assert store.authenticate("ada", _SECRET) is True
+
+
+@pytest.mark.parametrize(
+    ("field", "text"),
+    [
+        (1, "016384"),
+        (1, "00016384"),
+        (2, "08"),
+        (3, "01"),
+        (4, "064"),
+        (1, "0"),
+    ],
+)
+def test_zero_padded_kdf_field_is_refused(tmp_path: Path, field: int, text: str) -> None:
+    store = _store(tmp_path)
+    store.add_user("ada", "operator", _SECRET)
+    salt = bytes(range(16))
+    digest = hashlib.scrypt(
+        _SECRET.encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=64,
+    )
+    parts = ["scrypt", "16384", "8", "1", "64", salt.hex(), digest.hex()]
+    parts[field] = text
+    _set_hash(store, "ada", "$".join(parts))
+    assert store.authenticate("ada", _SECRET) is False
+    _set_hash(store, "ada", _frame(2**14, 8, 1, 64, salt, digest))
     assert store.authenticate("ada", _SECRET) is True
 
 

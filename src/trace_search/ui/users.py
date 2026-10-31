@@ -138,6 +138,8 @@ def _hash_password(password: str) -> str:
 def _kdf_int(text: str) -> int:
     if len(text) > _KDF_DIGIT_CAP or not text.isascii() or not text.isdigit():
         raise ValueError(text)
+    if text != str(int(text)):
+        raise ValueError(text)
     return int(text)
 
 
