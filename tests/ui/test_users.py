@@ -766,11 +766,18 @@ def test_lost_create_race_still_opens(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_existing_db_mode_is_left_alone(tmp_path: Path) -> None:
     path = tmp_path / "users.sqlite"
-    UserStore(path).add_user("ada", "operator", _SECRET)
-    os.chmod(path, 0o644)
+    previous = os.umask(0)
+    try:
+        with sqlite3.connect(path) as connection:
+            connection.execute("SELECT 1")
+        created = path.stat().st_mode & 0o777
+    finally:
+        os.umask(previous)
+    assert created != 0o600
     again = UserStore(path)
+    again.add_user("ada", "operator", _SECRET)
     assert again.authenticate("ada", _SECRET) is True
-    assert path.stat().st_mode & 0o777 == 0o644
+    assert path.stat().st_mode & 0o777 == created
 
 
 def test_unknown_and_disabled_pay_for_scrypt(
