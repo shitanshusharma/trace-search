@@ -1,0 +1,14 @@
+main {
+  font-family: sans-serif;
+  margin: 2rem;
+}
+
+label,
+input,
+button {
+  display: block;
+}
+
+button {
+  margin-top: 1rem;
+}
