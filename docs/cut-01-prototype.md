@@ -87,6 +87,8 @@ He confirmed at 11:25 PM IST in the requesting agent's chat. His chief-of-staff 
 | M7 | Thu 3 – Fri 4 Dec | **Active:** QA runs every active AC from the frozen SHA. **PARKED:** FX-HOLD accuracy runs and the AC-11 timed study | M6, independent QA grader named by Mon 30 Nov (Q10, decided) |
 | M8 | Tue 8 Dec | **Pipeline-ready review** (§5): READY or NOT READY. It is a kill/continue review only if M2, M3 and the M7 study have been unparked and completed | M7 |
 
+**Note (31 Oct 2026, 1:55 PM IST):** Superseded by D-T5-3 (decided 24 Oct 2026, 12:58 PM IST). The M5 words "Embedding store (Qdrant)." are unchanged. D-T5-3 (a) is the in-repo VectorStore: an in-memory numpy store and a stdlib SQLite store outside the repo, with 7-day retention.
+
 **Code-only order (rev 2):** licences → smoke test on stock + synthetic → single-camera pipeline → ReID placeholder and linker → UI/privacy → frozen SHA → QA on active ACs → pipeline-ready review.
 
 **Original full order (applies once unparked):** **licences → (smoke test on stock clips, parallel, no scoring) → consent and fixtures → interview gate → pipeline → ReID → UI/privacy → frozen SHA → QA on held-out → decision.** Nothing is trained, evaluated or demoed on footage that lacks a consent record. M1a does not unlock or block any later milestone. If it slips, M4 absorbs the bring-up work and dates hold.
