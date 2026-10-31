@@ -9,7 +9,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from trace_search.ui.pages.login import AppState
 
 from trace_search.audit import AuditLog, default_log_path
 from trace_search.ui.server import BIND_HOST, UiServer, host_is_loopback, make_server, serve_forever
@@ -107,7 +112,23 @@ def build_server(argv: list[str] | None = None) -> UiServer | int:
     if audit_problem is not None:
         print(audit_problem, file=sys.stderr)
         return 1
-    return make_server(int(parsed.port))
+    return make_server(int(parsed.port), app_state=_live_app(data_dir, int(parsed.port)))
+
+
+def _live_app(data_dir: Path, port: int) -> AppState:
+    """Open the user db and attach in-memory sessions. The audit log already exists."""
+    from trace_search.ui.pages.login import AppState
+    from trace_search.ui.sessions import LoginLimiter, SessionStore
+    from trace_search.ui.users import UserStore
+
+    clock = time.time
+    return AppState(
+        users=UserStore(data_dir / "users.sqlite"),
+        audit=AuditLog(data_dir / default_log_path()),
+        sessions=SessionStore(clock),
+        limiter=LoginLimiter(clock),
+        port=port,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

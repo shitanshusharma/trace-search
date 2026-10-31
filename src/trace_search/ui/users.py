@@ -253,6 +253,15 @@ class UserStore:
             return False
         return _password_matches(password, cast(str, row["password_hash"]))
 
+    def enabled_role(self, username: str) -> str | None:
+        """Return ``operator`` or ``admin`` for an enabled account."""
+        row = self._find(username)
+        if row is None:
+            return None
+        if int(row["disabled"]) != 0:
+            return None
+        return cast(str, row["role"])
+
     def _find(self, username: str) -> sqlite3.Row | None:
         def _query(connection: sqlite3.Connection) -> sqlite3.Row | None:
             cursor = connection.execute(_SELECT_SQL, (username,))

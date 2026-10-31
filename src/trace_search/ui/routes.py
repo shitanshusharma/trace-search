@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+from trace_search.ui.sessions import (
+    csrf_matches,
+    is_state_changing,
+    request_is_allowed,
+    session_id_from_cookie,
+)
+
+if TYPE_CHECKING:
+    from trace_search.ui.pages.login import AppState, HandlerResult
 
 AuthRule = Literal["public", "operator", "admin"]
 
@@ -30,6 +40,8 @@ class UiRequest:
     path: str
     static_root: Path
     body: bytes = b""
+    header_map: Mapping[str, str] = field(default_factory=dict)
+    app: AppState | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +52,7 @@ class UiResponse:
     body: bytes
     content_type: str
     api: bool
+    header_pairs: tuple[tuple[str, str], ...] = ()
 
 
 Handler = Callable[[UiRequest], UiResponse]
@@ -154,9 +167,35 @@ def serve_login_page(request: UiRequest) -> UiResponse:
     return UiResponse(200, body, content_type, False)
 
 
-def reject_login(_request: UiRequest) -> UiResponse:
-    """Public login submit. This skeleton does not open a session."""
-    return unauthorized()
+def _from_handler(result: HandlerResult) -> UiResponse:
+    pairs: tuple[tuple[str, str], ...] = ()
+    if result.set_cookie is not None:
+        pairs = (("Set-Cookie", result.set_cookie),)
+    if result.csrf_token is not None:
+        body = json.dumps(
+            {"csrf_token": result.csrf_token, "ok": True},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        return UiResponse(result.status, body, _JSON, True, pairs)
+    if result.error is not None:
+        return _json_response(result.error, result.status)
+    body = json.dumps({"ok": True}, separators=(",", ":"), sort_keys=True).encode("ascii")
+    return UiResponse(result.status, body, _JSON, True, pairs)
+
+
+def post_login(request: UiRequest) -> UiResponse:
+    """Public login. A bad Host or Origin never reaches the handler."""
+    from trace_search.ui.pages.login import handle_login
+
+    return _from_handler(handle_login(request))
+
+
+def post_logout(request: UiRequest) -> UiResponse:
+    """End the session. Dispatch already requires a session and CSRF."""
+    from trace_search.ui.pages.login import handle_logout
+
+    return _from_handler(handle_logout(request))
 
 
 def serve_static(request: UiRequest) -> UiResponse:
@@ -186,19 +225,56 @@ def match_route(method: str, url_path: str) -> Route | None:
     return None
 
 
+def _origin_block(request: UiRequest) -> UiResponse | None:
+    """403 when a state-changing request fails the loopback Host/Origin check."""
+    app = request.app
+    if app is None or not is_state_changing(request.method):
+        return None
+    host_header = request.header_map.get("host")
+    origin_header = request.header_map.get("origin")
+    if request_is_allowed(host_header, origin_header, app.port):
+        return None
+    return _json_response("forbidden", 403)
+
+
+def _authorize(request: UiRequest, route: Route) -> UiResponse | None:
+    """401 without a live session. 403 for the wrong role or a bad CSRF token."""
+    app = request.app
+    if app is None:
+        return unauthorized()
+    session_key = session_id_from_cookie(request.header_map.get("cookie"))
+    session = app.sessions.resolve(session_key, touch=False)
+    if session is None or session_key is None:
+        return unauthorized()
+    if route.auth == "admin" and session.role != "admin":
+        return _json_response("forbidden", 403)
+    if is_state_changing(request.method):
+        provided = request.header_map.get("x-csrf-token")
+        if not csrf_matches(session.csrf_token, provided):
+            return _json_response("forbidden", 403)
+    app.sessions.touch(session_key)
+    return None
+
+
 def dispatch(request: UiRequest) -> UiResponse:
-    """Answer one request. Non-public routes are 401 until a later task adds sessions."""
+    """Answer one request. Protected routes need a live server-side session."""
+    blocked = _origin_block(request)
+    if blocked is not None:
+        return blocked
     route = match_route(request.method, request.path)
     if route is None:
         return not_found()
     if route.auth != "public":
-        return unauthorized()
+        denied = _authorize(request, route)
+        if denied is not None:
+            return denied
     return route.handler(request)
 
 
 ROUTES: tuple[Route, ...] = (
     Route("GET", "/login", serve_login_page, "public"),
-    Route("POST", "/login", reject_login, "public"),
+    Route("POST", "/login", post_login, "public"),
+    Route("POST", "/logout", post_logout, "operator"),
     Route("GET", "/static/*", serve_static, "public"),
     Route("GET", "/search", unavailable, "operator"),
     Route("GET", "/route", unavailable, "operator"),
