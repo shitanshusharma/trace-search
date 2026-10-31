@@ -61,7 +61,13 @@ jobs:
     - name: Check for UI code
       id: check-ui
       run: |
-        if find ui/ web/ -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" 2>/dev/null | grep -q .; then
+        ui_paths=()
+        for dir in ui web src/trace_search/ui/static; do
+          if [ -d "$dir" ]; then
+            ui_paths+=("$dir")
+          fi
+        done
+        if [ "${#ui_paths[@]}" -gt 0 ] && find "${ui_paths[@]}" \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \) 2>/dev/null | grep -q .; then
           echo "has_ui=true" >> $GITHUB_OUTPUT
         else
           echo "has_ui=false" >> $GITHUB_OUTPUT
